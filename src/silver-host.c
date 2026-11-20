@@ -84,7 +84,6 @@ static int os_booted(void) {
 // pidfd_getfd and import the same GPU memory. this process only spawns and
 // reaps — it never touches pixels or fds. layout MIRRORS trinity.cc.
 #define HM_SLOTS   1024
-#define HOST_APPS  8
 #define HOST_TEX   10
 #define HOST_AUDIO 49152        // stereo frames of sound per slot (~1 s at 48 kHz)
 typedef struct { int32_t type, a, b, c; } HostMsg;
@@ -117,13 +116,37 @@ typedef struct {
 #define HOST_CLIP (8 << 20)     // the system clipboard's bytes
 typedef struct {
     volatile int32_t host_pid;  // this supervisor; spawn requests SIGUSR1 it
-    HostApp app[HOST_APPS];
+    // the slots the block holds: it only grows (twice, when all are taken)
+    volatile int32_t slots;
     // the one clipboard every app shares (orbiter-os has no X server):
     // seq odd while written; kind 1 text, 2 png; n its bytes
     volatile uint32_t clip_seq;
     volatile int32_t  clip_kind, clip_n;
     char clip[HOST_CLIP];
+    HostApp app[];
 } HostShared;
+// addresses kept for the block: a slot never moves as it grows
+#define HOST_RESERVE ((size_t)1 << 36)
+
+// the block's bytes for n slots, in 64 KB steps
+static size_t shm_bytes(int n) {
+    size_t b = sizeof(HostShared) + (size_t)n * sizeof(HostApp);
+    return (b + 65535) & ~(size_t)65535;
+}
+
+// the block mapped whole into addresses kept for its growth
+static HostShared* shm_map(int fd, size_t* mapped) {
+    struct stat st;
+    if (fd < 0 || fstat(fd, &st) != 0
+        || (size_t)st.st_size < sizeof(HostShared)) return NULL;
+    void* r = mmap(0, HOST_RESERVE, PROT_NONE,
+        MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    if (r == MAP_FAILED) return NULL;
+    if (mmap(r, st.st_size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED,
+             fd, 0) == MAP_FAILED) { munmap(r, HOST_RESERVE); return NULL; }
+    *mapped = st.st_size;
+    return (HostShared*)r;
+}
 
 static int rebuild_blocking(const char* name, int clean);
 #if defined(__linux__)
@@ -369,8 +392,38 @@ static char** g_argv;
 // process we spawn. its number in each child is published as SILVER_SHM_FD.
 static int         g_shm_fd = -1;
 // each slot's spawned process: the one its exit is read from
-static pid_t       g_slot_proc[HOST_APPS];
+static pid_t*      g_slot_proc   = NULL;
+static int         g_slot_proc_n = 0;
 static HostShared* g_shm    = NULL;
+static int         g_shm_mfd    = -1;
+static size_t      g_shm_mapped = 0;
+
+// the slots there are now: a part the block grew by is mapped first
+static int shm_cap(void) {
+    if (!g_shm) return 0;
+    int n = g_shm->slots;
+    size_t want = shm_bytes(n);
+    if (want > g_shm_mapped) {
+        if (mmap((char*)g_shm + g_shm_mapped, want - g_shm_mapped,
+                 PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, g_shm_mfd,
+                 (off_t)g_shm_mapped) == MAP_FAILED)
+            return (int)((g_shm_mapped - sizeof(HostShared))
+                / sizeof(HostApp));
+        g_shm_mapped = want;
+    }
+    return n;
+}
+
+static void slot_proc_set(int k, pid_t p) {
+    if (k >= g_slot_proc_n) {
+        int n = (k + 1) * 2;
+        g_slot_proc = realloc(g_slot_proc, n * sizeof(pid_t));
+        memset(g_slot_proc + g_slot_proc_n, 0,
+            (n - g_slot_proc_n) * sizeof(pid_t));
+        g_slot_proc_n = n;
+    }
+    g_slot_proc[k] = p;
+}
 #define SILVER_SHM_CHILD_FD 21   // fixed number the channel lands on in children
 
 #ifndef __linux__
@@ -387,13 +440,15 @@ static void shm_create(void) {
     if (g_shm_fd >= 0) return;
     g_shm_fd = memfd_create("silver-ide", 0);
     if (g_shm_fd < 0) { perror("silver-host: memfd_create"); return; }
-    if (ftruncate(g_shm_fd, sizeof(HostShared)) != 0) {
+    size_t b = shm_bytes(8);
+    if (ftruncate(g_shm_fd, (off_t)b) != 0) {
         perror("silver-host: ftruncate"); close(g_shm_fd); g_shm_fd = -1; return;
     }
-    void* p = mmap(0, sizeof(HostShared), PROT_READ | PROT_WRITE, MAP_SHARED, g_shm_fd, 0);
-    if (p == MAP_FAILED) { close(g_shm_fd); g_shm_fd = -1; return; }
-    memset(p, 0, sizeof(HostShared));
-    g_shm = (HostShared*)p;
+    HostShared* p = shm_map(g_shm_fd, &g_shm_mapped);
+    if (!p) { close(g_shm_fd); g_shm_fd = -1; return; }
+    g_shm = p;
+    g_shm_mfd = g_shm_fd;
+    g_shm->slots = (int32_t)((b - sizeof(HostShared)) / sizeof(HostApp));
     g_shm->host_pid = (int32_t)getpid();
 }
 
@@ -629,7 +684,7 @@ static void spawn_slot_app(int k, const char* bindir) {
         return;
     }
     // a bound app puts its own pid here
-    g_slot_proc[k] = pid;
+    slot_proc_set(k, pid);
     ap->app_pid = (int32_t)pid;
     ap->state   = 2;
     fprintf(stderr, "silver-host: hosting %s (pid %d, slot %d)\n", name, (int)pid, k);
@@ -638,7 +693,8 @@ static void spawn_slot_app(int k, const char* bindir) {
 // kill every hosted slot app (the window that hosts them is going away)
 static void slots_shutdown(void) {
     if (!g_shm) return;
-    for (int k = 1; k < HOST_APPS; k++) {
+    int cap = shm_cap();
+    for (int k = 1; k < cap; k++) {
         int p = g_shm->app[k].app_pid;
         if (g_shm->app[k].state == 2 && p > 0 && kill((pid_t)p, 0) == 0)
             kill((pid_t)p, SIGTERM);
@@ -723,9 +779,9 @@ static int supervise_wait(int argc, char** argv, const char* appname,
         // child event — the request sat for minutes. the signal now only
         // shortens the poll tick; state==1 in a slot is the request itself.
         int spawned = 0;
-        if (g_shm)
-            for (int k = 1; k < HOST_APPS; k++)
-                if (g_shm->app[k].state == 1) { spawn_slot_app(k, bindir); spawned = 1; }
+        int cap = shm_cap();
+        for (int k = 1; k < cap; k++)
+            if (g_shm->app[k].state == 1) { spawn_slot_app(k, bindir); spawned = 1; }
         int   st = 0;
         // WUNTRACED: a frozen peer (crash handler raised SIGSTOP) reports here
         pid_t r  = waitpid(-1, &st, WNOHANG | WUNTRACED);
@@ -759,7 +815,7 @@ static int supervise_wait(int argc, char** argv, const char* appname,
         }
         if (r != pid) {                    // a hosted app exited
             if (g_shm)
-                for (int k = 1; k < HOST_APPS; k++)
+                for (int k = 1; k < g_slot_proc_n; k++)
                     if (g_slot_proc[k] == r) {
                         g_slot_proc[k] = 0;
                         g_shm->app[k].verdict = WIFSIGNALED(st)
@@ -1953,13 +2009,6 @@ static int view_build(const char* home, const char* run,
     snprintf(p, sizeof(p), "%s/install/tmp", SILVER_ROOT);
     view_tmpfs(p, "mode=755");
     view_put(log, log, 1);
-    // each slot's log: a later instance of the app joins this view
-    for (int k = 1; k < HOST_APPS; k++) {
-        app_log_path(q, sizeof(q), view_app_name, k);
-        if (strcmp(q, log) == 0) continue;
-        view_touch(q);
-        view_put(q, q, 1);
-    }
     view_signins(view_app_name);
     // the covers themselves take no files
     struct mount_attr ro = { .attr_set = MOUNT_ATTR_RDONLY };
@@ -2366,6 +2415,8 @@ static void bound_lock(const char* app, int argc, char** argv) {
             found[i] = strdup(real);
     }
     if (keep) {
+        // its log, made here, into the view it joins
+        view_graft_into(keep, log, 1);
         // a joiner's paths go into the view it joins
         for (int i = 1; i < argc; i++) {
             if (!found[i]) continue;
@@ -2482,12 +2533,13 @@ static void bound_lock(const char* app, int argc, char** argv) {
         // the slot names the app itself, before its first frame
         const char* fds = getenv("SILVER_SHM_FD");
         int sfd = (fds && *fds) ? atoi(fds) : -1;
-        void* m = sfd < 0 ? MAP_FAILED : mmap(0, sizeof(HostShared),
-            PROT_READ | PROT_WRITE, MAP_SHARED, sfd, 0);
-        if (m != MAP_FAILED) {
-            if (slot > 0 && slot < HOST_APPS)
-                ((HostShared*)m)->app[slot].app_pid = hp;
-            munmap(m, sizeof(HostShared));
+        size_t mb = 0;
+        HostShared* m = shm_map(sfd, &mb);
+        if (m) {
+            if (slot > 0 && (size_t)slot < (mb - sizeof(HostShared))
+                / sizeof(HostApp))
+                m->app[slot].app_pid = hp;
+            munmap(m, HOST_RESERVE);
         }
     }
     // the standard places: ~, /tmp and /run/user/<uid> are its own
@@ -2676,9 +2728,8 @@ int main(int argc, char** argv) {
         const char* fs = getenv("SILVER_SHM_FD");
         int shmfd = fs ? atoi(fs) : -1;
         if (shmfd >= 0) {
-            void* p = mmap(0, sizeof(HostShared), PROT_READ | PROT_WRITE,
-                MAP_SHARED, shmfd, 0);
-            if (p != MAP_FAILED) g_shm = (HostShared*)p;
+            g_shm = shm_map(shmfd, &g_shm_mapped);
+            if (g_shm) g_shm_mfd = shmfd;
         }
     }
 

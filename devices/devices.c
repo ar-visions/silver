@@ -3272,7 +3272,6 @@ enum {
 };
 
 #define HM_SLOTS  1024
-#define HOST_APPS 8
 #define HOST_TEX  10
 #define HOST_AUDIO 49152       // stereo frames of sound per slot (~1 s at 48 kHz)
 typedef struct { int32_t type, a, b, c; } HostMsg;
@@ -3309,17 +3308,27 @@ typedef struct {
 #define HOST_CLIP (8 << 20)     // the system clipboard's bytes
 typedef struct {
     volatile int32_t host_pid;  // supervising silver-host; spawn asks signal it
-    HostApp app[HOST_APPS];
+    // the slots the block holds: it only grows (twice, when all are taken)
+    volatile int32_t slots;
     // the one clipboard every app shares (orbiter-os has no X server):
     // seq odd while written; kind 1 text, 2 png; n its bytes
     volatile uint32_t clip_seq;
     volatile int32_t  clip_kind, clip_n;
     char clip[HOST_CLIP];
+    HostApp app[];
 } HostShared;
+// addresses kept for the block: a slot never moves as it grows
+#define HOST_RESERVE ((size_t)1 << 36)
+
+// the block's bytes for n slots, in 64 KB steps
+static size_t hs_bytes(int n) {
+    size_t b = sizeof(HostShared) + (size_t)n * sizeof(HostApp);
+    return (b + 65535) & ~(size_t)65535;
+}
 
 static HostShared* g_hs = 0;
-// an older supervisor's block ends before the clipboard: not touched
-static int g_hs_clip = 0;
+static int    g_hs_fd = -1;
+static size_t g_hs_mapped = 0;
 static HostShared* host_shared(void) {
     if (g_hs) return g_hs;
     // NO file. silver-host created an anonymous memfd, sized it, and handed
@@ -3327,19 +3336,39 @@ static HostShared* host_shared(void) {
     const char* fds = getenv("SILVER_SHM_FD");
     if (!fds || !*fds) return 0;
     int fd = atoi(fds);
-    if (fd < 0) return 0;
-    void* p = mmap(0, sizeof(HostShared), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    if (p == MAP_FAILED) return 0;
-    g_hs = (HostShared*)p;
     struct stat hst;
-    g_hs_clip = fstat(fd, &hst) == 0
-        && (size_t)hst.st_size >= sizeof(HostShared);
+    if (fd < 0 || fstat(fd, &hst) != 0
+        || (size_t)hst.st_size < sizeof(HostShared)) return 0;
+    void* r = mmap(0, HOST_RESERVE, PROT_NONE,
+        MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    if (r == MAP_FAILED) return 0;
+    if (mmap(r, hst.st_size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED,
+             fd, 0) == MAP_FAILED) { munmap(r, HOST_RESERVE); return 0; }
+    g_hs_fd = fd;
+    g_hs_mapped = hst.st_size;
+    g_hs = (HostShared*)r;
     // a bound app is pid 2 inside: the host uses its own pid
     const char* hp = getenv("SILVER_HOST_PID");
     const char* sl = getenv("SILVER_APP_SLOT");
     int k = (sl && *sl) ? atoi(sl) : 0;
-    if (hp && *hp && k > 0 && k < HOST_APPS) g_hs->app[k].app_pid = atoi(hp);
+    if (hp && *hp && k > 0 && k < g_hs->slots) g_hs->app[k].app_pid = atoi(hp);
     return g_hs;
+}
+
+// the slots there are now: a part the block grew by is mapped first
+static int hs_cap(void) {
+    HostShared* h = host_shared();
+    if (!h) return 0;
+    int n = h->slots;
+    size_t want = hs_bytes(n);
+    if (want > g_hs_mapped) {
+        if (mmap((char*)h + g_hs_mapped, want - g_hs_mapped,
+                 PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, g_hs_fd,
+                 (off_t)g_hs_mapped) == MAP_FAILED)
+            return (int)((g_hs_mapped - sizeof(HostShared)) / sizeof(HostApp));
+        g_hs_mapped = want;
+    }
+    return n;
 }
 
 // this process as the host sees it
@@ -3351,7 +3380,7 @@ static int host_self_pid(void) {
 // the shared clipboard: written under an odd seq, read when even
 static int shared_clip_put(int kind, const void* data, int n) {
     HostShared* h = host_shared();
-    if (!h || !g_hs_clip || n < 0 || n > HOST_CLIP) return 0;
+    if (!h || n < 0 || n > HOST_CLIP) return 0;
     uint32_t s0 = __atomic_load_n(&h->clip_seq, __ATOMIC_ACQUIRE);
     __atomic_store_n(&h->clip_seq, s0 | 1, __ATOMIC_RELEASE);
     memcpy(h->clip, data, n);
@@ -3365,7 +3394,7 @@ static int shared_clip_put(int kind, const void* data, int n) {
 static char* shared_clip_get(int kind, int* n) {
     *n = 0;
     HostShared* h = host_shared();
-    if (!h || !g_hs_clip) return NULL;
+    if (!h) return NULL;
     for (int tries = 0; tries < 100; tries++) {
         uint32_t s0 = __atomic_load_n(&h->clip_seq, __ATOMIC_ACQUIRE);
         if (s0 == 0) return NULL;
@@ -3393,7 +3422,7 @@ HOST_API int host_slot(void) {
 // post a message to a slot's ring (0 = to_ide, 1 = to_app). SPSC.
 HOST_API void host_post2(int slot, int ring, int type, int a, int b, int c) {
     HostShared* h = host_shared();
-    if (!h || slot < 0 || slot >= HOST_APPS) return;
+    if (!h || slot < 0 || slot >= hs_cap()) return;
     HostRing* r = ring ? &h->app[slot].to_app : &h->app[slot].to_ide;
     uint32_t head = r->head;
     // full: wait for the reader (a second at most), never overwrite
@@ -3414,7 +3443,7 @@ HOST_API void host_post2(int slot, int ring, int type, int a, int b, int c) {
 static HostMsg g_last;
 HOST_API int host_poll2(int slot, int ring) {
     HostShared* h = host_shared();
-    if (!h || slot < 0 || slot >= HOST_APPS) return 0;
+    if (!h || slot < 0 || slot >= hs_cap()) return 0;
     HostRing* r = ring ? &h->app[slot].to_app : &h->app[slot].to_ide;
     if (r->tail == r->head) { g_last.type = 0; return 0; }
     g_last = r->m[r->tail % HM_SLOTS];
@@ -3432,7 +3461,7 @@ typedef struct { volatile int32_t* rate; volatile uint32_t* w; volatile uint32_t
 static struct { volatile int32_t rate; volatile uint32_t w, r; int16_t buf[HOST_AUDIO * 2]; } g_local_audio;
 static int audio_at(int slot, AudioAt* a) {
     HostShared* h = host_shared();
-    if (h && slot >= 0 && slot < HOST_APPS) {
+    if (h && slot >= 0 && slot < hs_cap()) {
         HostApp* ap = &h->app[slot];
         a->rate = &ap->audio_rate; a->w = &ap->audio_w; a->r = &ap->audio_r; a->buf = ap->audio;
         return 1;
@@ -3485,7 +3514,7 @@ HOST_API int host_audio_rate(int slot) {
 // a hosted slot whose sound orbiter plays from the ring
 static HostApp* audio_played_at(int slot) {
     HostShared* h = host_shared();
-    if (!h || slot <= 0 || slot >= HOST_APPS) return 0;
+    if (!h || slot <= 0 || slot >= hs_cap()) return 0;
     return h->app[slot].audio_play ? &h->app[slot] : 0;
 }
 HOST_API int host_audio_played(int slot) { return audio_played_at(slot) != 0; }
@@ -3500,7 +3529,7 @@ HOST_API void host_audio_pace(int slot, int lag) {
 // orbiter side: start (from the newest frame) or stop playing a slot
 HOST_API void host_audio_play_set(int slot, int on) {
     HostShared* h = host_shared();
-    if (!h || slot <= 0 || slot >= HOST_APPS) return;
+    if (!h || slot <= 0 || slot >= hs_cap()) return;
     HostApp* ap = &h->app[slot];
     ap->audio_p = ap->audio_w;
     __sync_synchronize();
@@ -3533,18 +3562,34 @@ HOST_API int host_audio_play_take(int slot, int16_t* out, int max_frames) {
 // the last SCOPE_N samples each slot played (mono, -1..1): the host's
 // level and spectrum read them; written by the player, read anywhere
 #define SCOPE_N 1024
-static float g_scope[HOST_APPS][SCOPE_N];
-static int   g_scope_at[HOST_APPS];
-static void scope_put(int slot, const int16_t* b, int n) {
-    int at = g_scope_at[slot];
+typedef struct {
+    int slot; volatile int stop; pthread_t tid;
+    float scope[SCOPE_N]; int scope_at;
+} SlotPlayer;
+static void scope_put(SlotPlayer* sp, const int16_t* b, int n) {
+    int at = sp->scope_at;
     for (int i = 0; i < n; i++) {
-        g_scope[slot][at] = (b[i * 2] + b[i * 2 + 1]) * (0.5f / 32768.0f);
+        sp->scope[at] = (b[i * 2] + b[i * 2 + 1]) * (0.5f / 32768.0f);
         at = (at + 1) % SCOPE_N;
     }
-    g_scope_at[slot] = at;
+    sp->scope_at = at;
 }
-typedef struct { int slot; volatile int stop; pthread_t tid; } SlotPlayer;
-static SlotPlayer* g_players[HOST_APPS];
+// one a slot, grown as slots are (orbiter's thread alone)
+static SlotPlayer** g_players = 0;
+static int          g_players_n = 0;
+static SlotPlayer* player_of(int slot) {
+    return (slot > 0 && slot < g_players_n) ? g_players[slot] : 0;
+}
+static void player_put(int slot, SlotPlayer* sp) {
+    if (slot >= g_players_n) {
+        int n = (slot + 1) * 2;
+        g_players = realloc(g_players, n * sizeof(SlotPlayer*));
+        memset(g_players + g_players_n, 0,
+            (n - g_players_n) * sizeof(SlotPlayer*));
+        g_players_n = n;
+    }
+    g_players[slot] = sp;
+}
 
 // two periods of the system's 1024 frame block: a shorter period
 // moves every stream's block (a glitch), more would only add delay
@@ -3602,7 +3647,7 @@ static void* slot_player_run(void* arg) {
             waited++;
         }
         memset(buf + got * 2, 0, (size_t)(PLAYER_CHUNK - got) * 4);
-        scope_put(sp->slot, buf, PLAYER_CHUNK);
+        scope_put(sp, buf, PLAYER_CHUNK);
         snd_pcm_sframes_t wr = snd_pcm_writei(pcm, buf, PLAYER_CHUNK);
         if (wr < 0) snd_pcm_recover(pcm, (int)wr, 1);
     }
@@ -3611,7 +3656,7 @@ static void* slot_player_run(void* arg) {
 }
 
 HOST_API void host_audio_player_start(int slot) {
-    if (slot <= 0 || slot >= HOST_APPS || g_players[slot] || !host_shared()) return;
+    if (slot <= 0 || slot >= hs_cap() || player_of(slot)) return;
     SlotPlayer* sp = calloc(1, sizeof(SlotPlayer));
     sp->slot = slot;
     host_audio_play_set(slot, 1);
@@ -3620,12 +3665,12 @@ HOST_API void host_audio_player_start(int slot) {
         free(sp);
         return;
     }
-    g_players[slot] = sp;
+    player_put(slot, sp);
 }
 
 HOST_API void host_audio_player_stop(int slot) {
-    if (slot <= 0 || slot >= HOST_APPS || !g_players[slot]) return;
-    SlotPlayer* sp = g_players[slot];
+    SlotPlayer* sp = player_of(slot);
+    if (!sp) return;
     g_players[slot] = 0;
     host_audio_play_set(slot, 0);
     sp->stop = 1;
@@ -3636,11 +3681,12 @@ HOST_API void host_audio_player_stop(int slot) {
 // the last n (at most SCOPE_N) samples slot played, oldest first;
 // the count copied
 HOST_API int host_audio_scope(int slot, float* out, int n) {
-    if (slot <= 0 || slot >= HOST_APPS || !g_players[slot]) return 0;
+    SlotPlayer* sp = player_of(slot);
+    if (!sp) return 0;
     if (n > SCOPE_N) n = SCOPE_N;
-    int at = g_scope_at[slot];
+    int at = sp->scope_at;
     for (int i = 0; i < n; i++)
-        out[i] = g_scope[slot][(at - n + i + SCOPE_N) % SCOPE_N];
+        out[i] = sp->scope[(at - n + i + SCOPE_N) % SCOPE_N];
     return n;
 }
 
@@ -3855,7 +3901,7 @@ HOST_API int host_poll(int ring) { return host_poll2(host_slot(), ring); }
 // one published surface of a slot, or null when the index is out of range
 static SharedTex* host_tex_at(int slot, int side) {
     HostShared* hs = host_shared();
-    if (!hs || slot < 0 || slot >= HOST_APPS)  return 0;
+    if (!hs || slot < 0 || slot >= hs_cap())  return 0;
     if (side < 0 || side >= HOST_TEX)          return 0;
     return &hs->app[slot].tex[side];
 }
@@ -3944,7 +3990,17 @@ HOST_API int host_tex_pull(int slot, int side, int which, int* w, int* h, int* f
 HOST_API int host_app_request(const char* nm, int flags) {
     HostShared* hs = host_shared();
     if (!hs || !nm || !*nm || hs->host_pid <= 0) return -1;
-    for (int i = 1; i < HOST_APPS; i++) {
+    int n = hs_cap();
+    // every slot taken: twice as many
+    for (int k = 1; k < n; k++)
+        if (hs->app[k].state == 0 || hs->app[k].state == 3) { n = 0; break; }
+    if (n > 0) {
+        size_t b = hs_bytes(n * 2);
+        if (ftruncate(g_hs_fd, (off_t)b) == 0)
+            hs->slots = (int32_t)((b - sizeof(HostShared)) / sizeof(HostApp));
+    }
+    int cap = hs_cap();
+    for (int i = 1; i < cap; i++) {
         HostApp* ap = &hs->app[i];
         if (ap->state == 0 || ap->state == 3) {
             memset((void*)ap->tex, 0, sizeof(ap->tex));
@@ -3967,27 +4023,27 @@ HOST_API int host_app_request(const char* nm, int flags) {
 
 HOST_API int host_app_state(int slot) {
     HostShared* hs = host_shared();
-    if (!hs || slot < 0 || slot >= HOST_APPS) return 0;
+    if (!hs || slot < 0 || slot >= hs_cap()) return 0;
     return hs->app[slot].state;
 }
 
 HOST_API int host_app_pid(int slot) {
     HostShared* hs = host_shared();
-    if (!hs || slot < 0 || slot >= HOST_APPS) return 0;
+    if (!hs || slot < 0 || slot >= hs_cap()) return 0;
     return hs->app[slot].app_pid;
 }
 
-HOST_API int host_app_count(void) { return HOST_APPS; }
+HOST_API int host_app_count(void) { return hs_cap(); }
 
 HOST_API int host_app_flags(int slot) {
     HostShared* hs = host_shared();
-    if (!hs || slot < 0 || slot >= HOST_APPS) return 0;
+    if (!hs || slot < 0 || slot >= hs_cap()) return 0;
     return hs->app[slot].flags;
 }
 
 HOST_API int host_app_name(int slot, char* out, int cap) {
     HostShared* hs = host_shared();
-    if (!hs || !out || cap < 2 || slot < 0 || slot >= HOST_APPS) return 0;
+    if (!hs || !out || cap < 2 || slot < 0 || slot >= hs_cap()) return 0;
     strncpy(out, (const char*)hs->app[slot].name, cap - 1);
     out[cap - 1] = 0;
     return (int)strlen(out);
@@ -4016,7 +4072,7 @@ static void* app_stop_wait(void* p) {
 
 HOST_API void host_app_stop(int slot) {
     HostShared* hs = host_shared();
-    if (!hs || slot <= 0 || slot >= HOST_APPS) return;
+    if (!hs || slot <= 0 || slot >= hs_cap()) return;
     int pid = hs->app[slot].app_pid;
     if (pid <= 0) return;
     struct app_stop* st = malloc(sizeof(*st));
@@ -4031,7 +4087,7 @@ HOST_API void host_app_stop(int slot) {
 // how the peer ended: 0 unset, >0 exit code+1, <0 -signal, -1000 build failed
 HOST_API int host_app_verdict(int slot) {
     HostShared* hs = host_shared();
-    if (!hs || slot < 0 || slot >= HOST_APPS) return 0;
+    if (!hs || slot < 0 || slot >= hs_cap()) return 0;
     return hs->app[slot].verdict;
 }
 
@@ -4039,13 +4095,13 @@ HOST_API int host_app_verdict(int slot) {
 // allowed: the summoned shell pauses the very app it rides inside
 HOST_API void host_app_pause(int slot) {
     HostShared* hs = host_shared();
-    if (!hs || slot < 0 || slot >= HOST_APPS) return;
+    if (!hs || slot < 0 || slot >= hs_cap()) return;
     int pid = hs->app[slot].app_pid;
     if (pid > 0) kill((pid_t)pid, SIGSTOP);
 }
 HOST_API void host_app_resume(int slot) {
     HostShared* hs = host_shared();
-    if (!hs || slot < 0 || slot >= HOST_APPS) return;
+    if (!hs || slot < 0 || slot >= hs_cap()) return;
     int pid = hs->app[slot].app_pid;
     if (pid > 0) kill((pid_t)pid, SIGCONT);
 }
