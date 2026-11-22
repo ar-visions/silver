@@ -1,0 +1,263 @@
+extend hyperspace
+
+element HyperspacePanel
+    intern rig : HsRig
+    intern chosen : i32
+    intern problem : string
+    # the file as last saved: a change differs from it
+    intern saved : string
+    intern note : string
+
+    func init []
+        rig = hs_rig_load[ '/dev/video0' ]
+        saved = hs_rig_text[ rig ]
+
+    # a valid change saves itself; the service reads the file
+    public func tick [ w: Window ]
+        if [ !rig || !elements || !elements.contains[ 'fov' ] ] return
+        was : string problem
+        if [ !apply[] ]
+            if [ problem != was ] pristine = false
+            return
+        tx : string hs_rig_text[ rig ]
+        if [ tx == saved && problem == was ] return
+        if [ tx != saved ]
+            if [ hs_rig_save[ rig ] ]
+                saved = tx
+                note = 'Saved. The running service takes it in a second.'
+            el problem = 'The mounting file could not be saved.'
+        pristine = false
+
+    func field [ id: string ] -> string
+        if [ !elements || !elements.contains[ id ] ] return ''
+        item : element elements[ id ]
+        return (item && item.edit) ? item.edit.trim[] : ''
+
+    func seed [ id: string, value: string ]
+        if [ !elements || !elements.contains[ id ] ] return
+        elements[ id ].edit = value
+
+    func seed_mount []
+        if [ !rig || chosen < 0 || chosen >= rig.mounts.count ] return
+        mount : HsMount rig.mounts[ chosen ]
+        seed[ 'screen_width', '{rig.screen_width_m}' ]
+        seed[ 'screen_height', '{rig.screen_height_m}' ]
+        seed[ 'device', mount.device ]
+        seed[ 'mount_x', '{mount.x_m}' ]
+        seed[ 'mount_y', '{mount.y_m}' ]
+        seed[ 'mount_z', '{mount.z_m}' ]
+        seed[ 'tilt', '{mount.tilt_deg}' ]
+        seed[ 'fov', '{mount.fov_deg}' ]
+
+    func device_ok [ device: string ] -> bool
+        return device.count > 0 && device.index_of[ ' ' ] < 0
+            && device.index_of[ ',' ] < 0
+            && device.index_of[ '=' ] < 0
+
+    func apply [] -> bool
+        problem = ''
+        if [ chosen < 0 || chosen >= rig.mounts.count ] return false
+        device : string field[ 'device' ]
+        wide : f64 field[ 'screen_width' ].real_value[]
+        tall : f64 field[ 'screen_height' ].real_value[]
+        fov : f64 field[ 'fov' ].real_value[]
+        if [ !device_ok[ device ] ]
+            problem = 'The device path cannot contain spaces or commas.'
+            return false
+        if [ wide <= 0.0 || tall <= 0.0 ]
+            problem = 'Screen width and height must be above 0 meters.'
+            return false
+        if [ fov <= 0.0 || fov >= 180.0 ]
+            problem = 'Field of view must be between 0 and 180 degrees.'
+            return false
+        rig.screen_width_m = f32[ wide ]
+        rig.screen_height_m = f32[ tall ]
+        mount : HsMount rig.mounts[ chosen ]
+        mount.device = device
+        mount.x_m = f32[ field[ 'mount_x' ].real_value[] ]
+        mount.y_m = f32[ field[ 'mount_y' ].real_value[] ]
+        mount.z_m = f32[ field[ 'mount_z' ].real_value[] ]
+        mount.tilt_deg = f32[ field[ 'tilt' ].real_value[] ]
+        mount.fov_deg = f32[ fov ]
+        return true
+
+    func input [ id: string, value: string,
+                 place: string ] -> PageField
+        area : Region [ place ]
+        mounted : bool [ elements && elements.contains[ id ] ]
+        if [ mounted ] return PageField [ area: area ]
+        return PageField [ edit: value, area: area ]
+
+    public func render [] -> Elements
+        if [ !rig ] rig = hs_rig_load[ '/dev/video0' ]
+        if [ chosen >= rig.mounts.count ] chosen = 0
+        mount : HsMount rig.mounts[ chosen ]
+        out : Elements []
+        for [ i: i32 0, i < rig.mounts.count, i += 1 ]
+            out[ 'camera_{i}' ] = PageButton [
+                label: 'camera {i + 1}', selected: i == chosen,
+                area: Region [ 'l{0.7 + f32[i] * 3.5} '
+                    + 't8.65 w3.2 h1.05' ] ]
+        out['add_camera'] = PageButton [ label: '+ camera',
+            area: Region { r0.7 t8.65 w4 h1.05 } ]
+        out['screen_width'] = input[ 'screen_width',
+            '{rig.screen_width_m}', 'l0.7 t11.0 w4.8 h1.3' ]
+        out['screen_height'] = input[ 'screen_height',
+            '{rig.screen_height_m}', 'l5.8 t11.0 w4.8 h1.3' ]
+        out['device'] = input[ 'device', mount.device,
+            'l10.9 t11.0 r0.7 h1.3' ]
+        out['mount_x'] = input[ 'mount_x', '{mount.x_m}',
+            'l0.7 t13.7 w4.8 h1.3' ]
+        out['mount_y'] = input[ 'mount_y', '{mount.y_m}',
+            'l5.8 t13.7 w4.8 h1.3' ]
+        out['mount_z'] = input[ 'mount_z', '{mount.z_m}',
+            'l10.9 t13.7 w4.8 h1.3' ]
+        out['tilt'] = input[ 'tilt', '{mount.tilt_deg}',
+            'l0.7 t16.4 w4.8 h1.3' ]
+        out['fov'] = input[ 'fov', '{mount.fov_deg}',
+            'l5.8 t16.4 w4.8 h1.3' ]
+        return out
+
+    func text [ cv: Canvas, label: string, x: f32, y: f32,
+                width: f32, height: f32, size: f32, color: string ]
+        fr : string 'fonts/BarlowCondensed-Regular.ttf'
+        cv.set_font[ shared_font[ cv, fr, label_px[ cv, size + 3.0 ] ] ]
+        cv.fill_color[ rgba [ color ] ]
+        cv.draw_text[ label, rect [ x: x, y: y, w: width, h: height ],
+            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
+            null, true ]
+        cv.paint[]
+
+    func screen_shape [ cv: Canvas, x: f32, y: f32,
+                        width: f32, height: f32 ]
+        cv.fill_color[ rgba [ '#141c28' ] ]
+        cv.stroke_color[ rgba [ '#95a4ba' ] ]
+        cv.stroke_width[ 1.3 ]
+        cv.rounded_rect[ x, y, width, height, 4.0, 4.0, 4.0, 4.0 ]
+        cv.paint[]
+
+    func camera_shape [ cv: Canvas, mount: HsMount, index: i32,
+                        x: f32, y: f32 ]
+        color : string [ (index == chosen) ? '#b9afff' : '#73d8cf' ]
+        cv.fill_color[ rgba [ color ] ]
+        cv.stroke_color[ rgba [ '#081018' ] ]
+        cv.stroke_width[ 1.5 ]
+        cv.arc[ x, y, 6.0, 0.0, 6.2832 ]
+        cv.paint[]
+        text[ cv, mount.device, x + 9.0, y - 9.0, 120.0, 18.0,
+            12.0, color ]
+
+    func tilt_shape [ cv: Canvas, mount: HsMount, index: i32,
+                      x: f32, y: f32, unit: f32 ]
+        color : string [ (index == chosen) ? '#b9afff' : '#73d8cf' ]
+        angle : f32 [ mount.tilt_deg * 0.0174532925 ]
+        reach : f32 [ 1.5 * unit ]
+        end_x : f32 [ x + cos[ angle ] * reach ]
+        end_y : f32 [ y - sin[ angle ] * reach ]
+        wing : f32 [ 0.22 * unit ]
+        cv.fill_color[ rgba [ '#0000' ] ]
+        cv.stroke_color[ rgba [ color ] ]
+        cv.stroke_width[ 2.0 ]
+        cv.set_stroke_cap[ Cap.round ]
+        cv.move_to[ x, y ]
+        cv.line_to[ end_x, end_y ]
+        cv.move_to[ end_x, end_y ]
+        cv.line_to[ end_x - cos[ angle - 0.6 ] * wing,
+            end_y + sin[ angle - 0.6 ] * wing ]
+        cv.move_to[ end_x, end_y ]
+        cv.line_to[ end_x - cos[ angle + 0.6 ] * wing,
+            end_y + sin[ angle + 0.6 ] * wing ]
+        cv.paint[]
+        # under the arrow's end: clear of the camera's name
+        text[ cv, '{mount.tilt_deg} degrees', end_x + 5.0,
+            end_y + 2.0, 100.0, 18.0, 12.0, color ]
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds || !rig ]
+            return
+        cv : Canvas w.screen
+        unit : f32 [ bounds.w / 24.0 ]
+        front_x : f32 [ 0.7 * unit ]
+        front_y : f32 [ 0.45 * unit ]
+        front_w : f32 [ 13.8 * unit ]
+        front_h : f32 [ 7.7 * unit ]
+        side_x : f32 [ 15.2 * unit ]
+        side_w : f32 [ 8.1 * unit ]
+        text[ cv, 'front: x right, y up', front_x, front_y,
+            front_w, unit, 14.0, '#e4e4ea' ]
+        text[ cv, 'side: z toward user, tilt + up', side_x, front_y,
+            side_w, unit, 14.0, '#e4e4ea' ]
+        center_x : f32 [ front_x + front_w * 0.5 ]
+        center_y : f32 [ front_y + front_h * 0.56 ]
+        width_m : f32 [ max[ rig.screen_width_m, 0.01 ] ]
+        height_m : f32 [ max[ rig.screen_height_m, 0.01 ] ]
+        scale : f32 [ min[ front_w * 0.43 / width_m,
+            front_h * 0.48 / height_m ] ]
+        screen_w : f32 [ width_m * scale ]
+        screen_h : f32 [ height_m * scale ]
+        screen_shape[ cv, center_x - screen_w * 0.5,
+            center_y - screen_h * 0.5, screen_w, screen_h ]
+        plane_x : f32 [ side_x + side_w * 0.28 ]
+        screen_shape[ cv, plane_x - 3.0,
+            center_y - screen_h * 0.5, 6.0, screen_h ]
+        cv.stroke_color[ rgba [ '#ffffff28' ] ]
+        cv.stroke_width[ 1.0 ]
+        cv.move_to[ front_x, center_y ]
+        cv.line_to[ front_x + front_w, center_y ]
+        cv.move_to[ center_x, front_y + unit ]
+        cv.line_to[ center_x, front_y + front_h ]
+        cv.move_to[ plane_x, center_y ]
+        cv.line_to[ side_x + side_w, center_y ]
+        cv.paint[]
+        depth_scale : f32 [ side_w * 0.62 / max[ width_m, 0.25 ] ]
+        for [ i: i32 0, i < rig.mounts.count, i += 1 ]
+            mount : HsMount rig.mounts[i]
+            camera_shape[ cv, mount, i,
+                center_x + mount.x_m * scale,
+                center_y - mount.y_m * scale ]
+            camera_x : f32 [ plane_x + mount.z_m * depth_scale ]
+            camera_y : f32 [ center_y - mount.y_m * scale ]
+            camera_shape[ cv, mount, i, camera_x, camera_y ]
+            tilt_shape[ cv, mount, i, camera_x, camera_y, unit ]
+        text[ cv, 'screen width (meters)', 0.7 * unit, 10.0 * unit,
+            4.8 * unit, unit, 13.0, '#ffffff80' ]
+        text[ cv, 'screen height (meters)', 5.8 * unit,
+            10.0 * unit, 4.8 * unit, unit, 13.0, '#ffffff80' ]
+        text[ cv, 'camera device', 10.9 * unit, 10.0 * unit,
+            8.5 * unit, unit, 13.0, '#ffffff80' ]
+        text[ cv, 'x right (meters)', 0.7 * unit, 12.7 * unit,
+            4.8 * unit, unit, 13.0, '#ffffff80' ]
+        text[ cv, 'y up (meters)', 5.8 * unit, 12.7 * unit,
+            4.8 * unit, unit, 13.0, '#ffffff80' ]
+        text[ cv, 'z toward user (meters)', 10.9 * unit,
+            12.7 * unit, 6.5 * unit, unit, 13.0, '#ffffff80' ]
+        text[ cv, 'tilt (degrees)', 0.7 * unit, 15.4 * unit,
+            4.8 * unit, unit, 13.0, '#ffffff80' ]
+        text[ cv, 'field of view (degrees)', 5.8 * unit,
+            15.4 * unit, 5.8 * unit, unit, 13.0, '#ffffff80' ]
+        if [ problem && problem.count > 0 ]
+            text[ cv, problem, 0.7 * unit, 18.0 * unit,
+                22.6 * unit, unit, 13.0, '#ff8a8a' ]
+        el [ note && note.count > 0 ]
+            text[ cv, note, 0.7 * unit, 18.0 * unit,
+                22.6 * unit, unit, 13.0, '#ffffff80' ]
+
+    public func on_click [ ev: Event ]
+        item : cast element [ ev.origin ]
+        if [ !item || !item.id ] return
+        if [ item.id.starts_with[ 'camera_' ] ]
+            chosen = i32[ item.id.mid[ 7,
+                item.id.count - 7 ].integer_value[] ]
+            seed_mount[]
+        el [ item.id == 'add_camera' ]
+            if [ !apply[] ] return
+            rig.mounts.push[ HsMount [] ]
+            chosen = rig.mounts.count - 1
+            seed_mount[]
+        pristine = false
+        if [ ux ] ux.restyle = true
+
+expect func t_hs_mount_device [] -> bool
+    panel : HyperspacePanel []
+    return panel.device_ok[ '/dev/video0' ]
+        && !panel.device_ok[ '/dev/video 0' ]

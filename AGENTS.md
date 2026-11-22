@@ -17491,3 +17491,24 @@ not their args): ~30 hidden orbiters at 40-50% CPU and 60 GB froze
 the machine. Fixed: the box runs in its own session (killpg) and
 close kills every process whose environment names its folder. Before
 any boxed run: `pgrep -fa 'orbiter --hidden'` must be empty after.
+
+## hyperspace service — live list (Nov 20 2026)
+
+Goal: replace the separate Hyperspace apps with an Orbiter panel
+module and service. Training uses real camera and public face images,
+not the synthetic 3D face.
+1. DONE archive the current Hyperspace and Hyperspace 2 code.
+2. DONE add the Orbiter app, service and panel exports.
+3. DONE capture one or more cameras with screen targets, hands,
+   custom gestures and named scale values.
+4. DONE import and manually review public face annotations,
+   including both outer eye-corner plots.
+5. DONE train the Hyperspace 2 core from the real records.
+6. DONE export a panel with a vector screen-and-camera map.
+   It edits the screen size and each camera's x, y and depth offsets.
+7. DONE fix the mounting canvas labels compressed at the
+   panel's top edge; its drawing must use the panel's unit size.
+8. DONE show each camera's tilt on the side view as an
+   optical-axis arrow; 0 degrees follows z toward the user.
+9. DONE replace the generic cube with a simple Hyperspace
+   camera-lens mark; no robot form or busy machinery.

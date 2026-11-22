@@ -1,0 +1,74 @@
+# the software of the machine the menu shows: this one, from its
+# own lists, or the picked device's, which its own orbiter lists
+# with these same functions (asked by `get software_list`)
+extend orbiter
+
+# this machine's software, as any orbiter lists it
+func orbiter.software_here [] -> vec Software
+    out : vec Software []
+    for [ ae: AppEntry ] in app_entries[]
+        # installed: built here, not a module's source alone
+        if [ ae.remote || !built_now[ ae ] ] continue
+        kd : string [ (is_service[ ae ]) ? 'service' : 'app' ]
+        out.push[ Software [ name: ae.name, group: ae.group,
+            kind: kd, on: is_service[ ae ] && service_is_on[ ae.name ],
+            built: built_now[ ae ] ] ]
+    return out
+
+# the list a remote asker reads, kept current a second apart
+func orbiter.software_sync []
+    now : i64 epoch_millis[]
+    if [ now - soft_at < 1000 ] return
+    soft_at = now
+    if [ device_on && device_on.count > 0 ] return
+    software_list = software_text[ software_here[] ]
+
+# the picked device's host, from devices.agi (else as typed)
+func orbiter.device_host [ nm: string ] -> string
+    for [ d: string ] in device_list[]
+        sp : i32 [ d.index_of[ ' ' ] ]
+        if [ sp > 0 && d.mid[ 0, sp ] == nm ]
+            return d.mid[ sp + 1, d.count - sp - 1 ]
+    return nm
+
+# a device picked: its software read once (again after a switch)
+func orbiter.device_read []
+    dev_soft = null
+    dev_machine = null
+    if [ !device_on || device_on.count == 0 ] return
+    dev_machine = Machine [ host: device_host[ device_on ] ]
+    dev_soft = dev_machine.software[]
+    if [ dev_machine.problem.count > 0 ]
+        dev_problem = dev_machine.problem
+    log 'orbiter: {device_on}: {dev_soft.count} apps'
+
+# the picked device's apps as cards: the section, the service and
+# its switch theirs; icons from the same module here when there is
+func orbiter.device_entries [] -> vec AppEntry
+    out : vec AppEntry []
+    if [ !dev_soft ] return out
+    root : path path.path_startup[]
+    for [ s: Software ] in dev_soft
+        d : path '{root}/{s.name}'
+        fd : path '{root}/featured/{s.name}'
+        if [ !d.exists[] && fd.exists[] ] d = fd
+        ae : AppEntry [ name: s.name, file: d, module: true,
+            group: s.group, remote: true, remote_on: s.on,
+            remote_built: s.built ]
+        if [ s.kind == 'service' ] ae.daemon = 'remote'
+        out.push[ ae ]
+    return out
+
+# a switch on the picked device: its orbiter sets it, then the
+# list is read again
+func orbiter.device_service [ nm: string ]
+    if [ !dev_machine ] return
+    on : bool [ false ]
+    if [ dev_soft ]
+        for [ s: Software ] in dev_soft
+            if [ s.name == nm ] on = s.on
+    dev_machine.set_service[ nm, !on ]
+    dev_soft = dev_machine.software[]
+    app_list = null
+    apps_gen += 1
+    if [ ux ] ux.restyle = true

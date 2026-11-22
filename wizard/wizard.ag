@@ -1407,6 +1407,10 @@ class InstallAnswers
     public keys     : string [ '' ]
     # this machine's ssh keys and git settings into the user's home
     public ssh_keys : bool
+    # the services the machine runs from its first start (apache)
+    public services : vec string
+    # no screen: orbiter runs in text mode from the first start
+    public headless : bool
 
 # orbiter-os setup: the install's settings, then the install
 element InstallWizard
@@ -1417,6 +1421,10 @@ element InstallWizard
     public answers : string [ '' ]
     # the password's hash as given by the answers
     mutable given_hash : string [ '' ]
+    # the services on from the first start, as the answers give them
+    mutable given_services : vec string
+    # the answers' headless: orbiter in text mode at each start
+    mutable given_headless : bool
     # the tree that is copied: the running system
     public source  : string [ '/' ]
     mutable page    : i32
@@ -1793,6 +1801,8 @@ element InstallWizard
             out = '{out} orbiter.image=/orbiter-os/root.img'
             out = '{out} orbiter.root={root}'
         if [ swap_word.count > 0 ] out = '{out} {swap_word}'
+        if [ given_headless ]
+            out = '{out} orbiter.args=--trinity.text_mode,true'
         # from another system: orbiter-os's own words, not its
         if [ !booted_os[] ]
             rel : kernel_release[ source ]
@@ -2136,6 +2146,26 @@ element InstallWizard
             s.cmd = '{s.cmd} && ( [ -f {gc} ] && cp -a {gc} {hm}/; true )'
             # uid 1000: init makes the account so at boot
             s.cmd = '{s.cmd} && chmod 700 {hm} && chown -R 1000:1000 {hm}'
+        # the services on from its first start: orbiter's own setting
+        if [ given_services && given_services.count > 0 ]
+            sv : string ''
+            for [ n: string ] in given_services
+                sv = (sv.count > 0) ? '{sv}, {n}' : n
+            s = step[ StepKind.write, 'Turn on {sv}' ]
+            s.dst  = '{tree}/home/{user}/.local/state/orbiter/persist.agi'
+            s.text = 'services_on: [ {sv} ]\n'
+        # the keys the medium was made with (public only): the machine
+        # that made it reaches the user by ssh, with no password
+        ak : string '{base}/boot/install-authorized_keys'
+        akp : path [ ak ]
+        if [ akp.exists[] ]
+            s = step[ StepKind.run, 'Trust the keys this medium carries' ]
+            hm : sh_word[ '{tree}/home/{user}' ]
+            sd : string '{hm}/.ssh'
+            s.cmd = 'mkdir -p {sd} && cp {sh_word[ ak ]} {sd}/authorized_keys'
+            s.cmd = '{s.cmd} && chmod 700 {hm} {sd}'
+            s.cmd = '{s.cmd} && chmod 600 {sd}/authorized_keys'
+            s.cmd = '{s.cmd} && chown -R 1000:1000 {hm}'
         if [ boot == BootKind.grub_debian || boot == BootKind.grub_bls ]
             lp : Part linux_part[ dk ]
             if [ fresh && lp ]
@@ -2574,6 +2604,8 @@ element InstallWizard
         pass  = pw
         again = pw
         keys_copy  = an.ssh_keys
+        given_services = an.services
+        given_headless = an.headless
         # the pages' own checks, the hardware's but for graphics (a
         # device with no screen needs none)
         for [ pg: i32 2, pg <= 4, pg += 1 ]

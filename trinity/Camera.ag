@@ -41,6 +41,15 @@ class Camera
 
     public  image         : Texture
     public  src_rect      : rect
+    # dark frames passed in a row; lit frames taken
+    intern  dark_run      : i32
+    public  taken         : i64
+    intern  tr_at : i64
+    intern  tr_deq : i32
+    intern  tr_lit : i32
+    intern  tr_dark : i32
+    intern  tr_last : i64
+    intern  tr_gap : i64
 
     ifdef [ apple ]
         intern func backend_init []
@@ -244,7 +253,10 @@ class Camera
     func init []
         ifdef [ linux ]
             fd = open[ device.chars, O_RDWR | O_NONBLOCK ]
-            expect fd >= 0, 'camera: failed to open {device}'
+            # missing or busy: no picture, no abort
+            if [ fd < 0 ]
+                log 'camera: cannot open {device}'
+                return
             log 'sizeof v4l2_buffer silver={sizeof[v4l2_buffer]} vs kernel=88'
 
             vfmt : v4l2_format [ ]
@@ -257,7 +269,10 @@ class Camera
             log 'sizeof v4l2_format={sizeof[v4l2_format]}'
             if [ err != 0 ]
                 perror[ 'camera: VIDIOC_S_FMT' ]
-            expect err == 0, 'camera: VIDIOC_S_FMT failed'
+                log 'camera: {device} is in use: no picture'
+                close[ fd ]
+                fd = -1
+                return
             width     = vfmt.fmt.pix.width
             height    = vfmt.fmt.pix.height
             row_pitch = vfmt.fmt.pix.bytesperline
@@ -388,15 +403,13 @@ class Camera
             cam_bufs[ idx ] = buf
             cam_mem [ idx ] = mem
 
+        # the whole frame, every 4th pixel each way
         intern func brightness_of [ idx: i32 ] -> u64
             ptr    : @u8 [ mm_ptrs[idx] ]
-            stride : i32    [ width ]
-            cx     : i32    [ width  / 2 - 8 ]
-            cy     : i32    [ height / 2 - 8 ]
             sum    : u64    [ 0 ]
-            for [ yy: i32 0, yy < 16, yy += 1 ]
-                row : i32 [ (cy + yy) * stride + cx ]
-                for [ xx: i32 0, xx < 16, xx += 1 ]
+            for [ yy: i32 0, yy < height, yy += 4 ]
+                row : i32 [ yy * width ]
+                for [ xx: i32 0, xx < width, xx += 4 ]
                     sum += u64[ ptr[ row + xx ] ]
             return sum
 
@@ -416,27 +429,49 @@ class Camera
             if [ err != 0 ]
                 return
             current_idx = deq.index
+            tr_deq += 1
+            tnow : i64 epoch_micros[]
+            if [ tr_at == 0 ] tr_at = tnow
+            if [ tnow - tr_at >= 1000000 ]
+                log 'TEMPCAM {device} deq {tr_deq} lit {tr_lit} dark {tr_dark} gap {tr_gap / 1000} ms'
+                tr_at = tnow
+                tr_deq = 0
+                tr_lit = 0
+                tr_dark = 0
+                tr_gap = 0
 
+            # lit: half the last lit light; 4 dark: the light changed
             cur_bright : u64  [ brightness_of[ current_idx ] ]
-            use_prev   : bool [ prev_idx >= 0
-                                && prev_bright > cur_bright ]
-            blit_idx   : i32  [ (use_prev) ? prev_idx : current_idx ]
-
-            if [ cpu_upload ]
-                src_ptr : @u8 [ mm_ptrs[ blit_idx ] ]
-                memcpy[ staging_ptr, src_ptr, width * height ]
-                blit_from[ staging_buf ]
+            lit : bool [ cur_bright * 2 >= prev_bright
+                         || dark_run >= 4 ]
+            if [ lit ]
+                if [ cpu_upload ]
+                    src_ptr : @u8 [ mm_ptrs[ current_idx ] ]
+                    memcpy[ staging_ptr, src_ptr, width * height ]
+                    blit_from[ staging_buf ]
+                el
+                    blit_from[ cam_bufs[ current_idx ] ]
+                prev_bright = cur_bright
+                dark_run = 0
+                taken += 1
+                tr_lit += 1
+                tn : i64 epoch_micros[]
+                if [ tr_last > 0 && tn - tr_last > tr_gap ]
+                    tr_gap = tn - tr_last
+                tr_last = tn
             el
-                blit_from[ cam_bufs[ blit_idx ] ]
+                dark_run += 1
+                tr_dark += 1
 
-            if [ prev_idx >= 0 ]
+            # copied out: the buffer goes back at once (one held)
+            back : i32 [ (cpu_upload) ? current_idx : prev_idx ]
+            if [ back >= 0 ]
                 qb : v4l2_buffer [ ]
                 qb.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE
                 qb.memory = V4L2_MEMORY_MMAP
-                qb.index  = prev_idx
+                qb.index  = back
                 ioctl[ fd, VIDIOC_QBUF, @qb ]
             prev_idx    = current_idx
-            prev_bright = cur_bright
             return
 
 	        ifdef [ apple ]
@@ -513,7 +548,7 @@ element CameraView
         return img
 
     func draw [ w: Window ]
-        if [ !camera ] return
+        if [ !camera || !camera.image ] return
         if [ !once ]
             camera.src_rect = (src_rect) ? src_rect :
                 rect [ x: 0.0, y: 0.0, w: f32[ camera.width ],

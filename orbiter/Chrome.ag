@@ -990,6 +990,27 @@ func orbiter.drawer_els [] -> Elements
         t['menu_panel'] = MenuPanel [ items: popup_items, top: 0,
             filter: menu_filter, lit: menu_lit,
             area: Region { l0 t0 r0 b0 } ]
+        # the devices: under their rows, a host by its name or its
+        # address, connected to as it is (none of devices.agi's)
+        if [ popup_for == 'device' && popup_items ]
+            y : f32 [ f32[ popup_items.count - 1 ] * 1.05 + 0.9 ]
+            t['dev_addr'] = PageField [ label: 'host: name, IPv4 or IPv6',
+                area: Region [ 'l0.6 t{y} r0.6 h1.2' ] ]
+            un : f32 unit_px[]
+            ch : f32 [ round[ 1.1 * un ] ]
+            t['dev_connect'] = RoundTab [
+                buttons: vec string [] [ 'dev_connect' ],
+                icon_ids: vec string [] [ '_text' ],
+                labels: vec string [] [ 'Connect' ],
+                label_font: 'fonts/BarlowCondensed-Regular.ttf',
+                label_px: 0.5 * ch, manual: true,
+                seg_radius: ch * 0.5, use_spacing: false,
+                rest_fill: rgba [ '#00000026' ],
+                area: Region [ 'l0.6 t{y + 1.45} r0.6 h1.1' ] ]
+            if [ dev_problem && dev_problem.count > 0 ]
+                t['dev_note'] = PageNote [ label: dev_problem,
+                    wrong: true,
+                    area: Region [ 'l0.7 t{y + 2.75} r0.7 h1.4' ] ]
     el [ menu_kind == 'appinfo' ]
         t['menu_page'] = MenuPage [ info: true, panel: 'info_props',
             elements: app_info_els[], area: Region { l0 t0 r0 b0 } ]
@@ -1071,9 +1092,14 @@ func orbiter.fold_page_els [] -> Elements
         tg  : bool nm.starts_with[ '?' ]
         if [ hid || tg ] nm = nm.mid[ 1, nm.count - 1 ]
         ar : Region Region [ 'l0.6 t{y} r0.6 h1.2' ]
+        # a field's name stays beside it, its value filled or not
+        fa : Region Region [ 'l8 t{y} r0.6 h1.2' ]
+        if [ !tg ]
+            t['pn_{i}'] = PageNote [ label: nm,
+                area: Region [ 'l0.7 t{y + 0.3} w7 h0.9' ] ]
         if [ tg ] t['pf_{i}'] = PageCheck [ label: nm, area: ar ]
-        el [ hid ] t['pf_{i}'] = PageSecret [ label: nm, area: ar ]
-        el t['pf_{i}'] = PageField [ label: nm, area: ar ]
+        el [ hid ] t['pf_{i}'] = PageSecret [ label: nm, area: fa ]
+        el t['pf_{i}'] = PageField [ label: nm, area: fa ]
         y += 1.45
     gw : string page_part[ fold_page, 2 ]
     go : TrayEntry own_entry[ (gw.count > 0) ? gw
@@ -1421,6 +1447,8 @@ func orbiter.menu_pick [ i: i32 ]
         menu_page = 'fold'
         if [ ux ] ux.restyle = true
         return
+    # the orbiter menu: a row with nothing to do does nothing
+    if [ orb_mode[] && (!pe.action || pe.action.count == 0) ] return
     if [ pe.action && pe.action.starts_with[ 'fold:' ] ]
         fs : MenuSource fold_now[]
         if [ fs ]
@@ -1864,6 +1892,7 @@ func orbiter.fold_refresh [ w: Window ]
 
 # its entries, each action marked as the folder's own
 func orbiter.fold_items [ src: MenuSource ] -> vec TrayEntry
+    src.reveal = cmd_down || shift_down
     es : vec TrayEntry src.entries*[]
     for [ e: TrayEntry ] in es
         if [ e.action && e.action.count > 0 ]
@@ -1936,7 +1965,6 @@ func orbiter.sys_strip_ids [] -> vec string
         ids.push[ 'sv_mouse' ]
     ids.push[ 'sv_keyboard' ]
     ids.push[ 'sv_display' ]
-    ids.push[ 'sv_services' ]
     ids.push[ 'sv_sound' ]
     if [ batt.sync[] && ux ] ux.restyle = true
     if [ batt.here[] ] ids.push[ 'sv_battery' ]
@@ -1953,6 +1981,7 @@ func orbiter.drawer_x [] -> f32
     # a card's info menu: beside the dock, over the cards
     if [ menu_kind == 'appinfo' ] return dock_w[]
     # a popup over the main menu: at the menu's own left edge
+    if [ menu_kind == 'popup' && popup_x >= 0.0 ] return popup_x
     if [ menu_kind == 'popup' ] return (sys_under) ? sys_x[] : 0.0
     # a path's drawer is a standard menu: the same places
     if [ menu_kind != 'menu' && menu_kind != 'crumb' ] return 0.0
@@ -2542,6 +2571,7 @@ func orbiter.popup [ title: string, setting: string, rows: vec string,
             enabled: true, check: -1, target: values[ i ] ] ]
     popup_for = setting
     popup_right = false
+    popup_x = -1.0
     drawer_toggle[ 'popup', false ]
 
 # a field's name, its value after an = left off
@@ -2845,8 +2875,17 @@ func orbiter.menu_group_els [ t: Elements, x0: f32, uu: f32, pi: i32,
             x += mw
         return x
     # the orbiter menu up: a layer over the pane, nothing of the
-    # pane under it on the bar (its menus, its name)
-    if [ sys ] return x
+    # pane under it on the bar (its menus, its name); its devices,
+    # the screen's (this machine, or the one picked)
+    if [ sys ]
+        lb : string [ (device_on && device_on.count > 0)
+            ? device_on : 'Local' ]
+        dw : f32 [ (f32[ lb.count ] * 9.5 + 22.0) * uu ]
+        lit : bool [ drawer_open && menu_kind == 'popup'
+                     && popup_for == 'device' ]
+        t['devices_top'] = MenuTop [ label: lb, at: -3, pane: -1,
+            selected: lit, area: Region [ 'l{x}px t0 w{dw}px b0' ] ]
+        return x + dw
     if [ mp == active_pane && !sys ] pane_menu[]
     items : vec TrayEntry menus_of[ mp ]
     # a window's own menus (File ...) are all plain
@@ -3039,9 +3078,6 @@ func orbiter.side_view [ tab: string, body: string ] -> Elements
     el [ tab == 'display' ]
         t['set_body'] = element [ area: Region [ body ],
             elements: display_body[] ]
-    el [ tab == 'services' ]
-        t['set_body'] = element [ area: Region [ body ],
-            elements: services_body[] ]
     el [ tab == 'sound' ]
         t['set_body'] = element [ area: Region [ body ],
             elements: sound_body[] ]

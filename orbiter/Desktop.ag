@@ -1360,6 +1360,9 @@ class AppEntry
     # the line it runs at every start, in the background (export
     # startup ['steam -silent'])
     public startup : string
+    # a program run as a service, off until switched on (export
+    # daemon ['httpd -DFOREGROUND'])
+    public daemon  : string
     # it has a store folder (install/stores/<name>), apps or none
     public store   : bool
     # its store's dialog (export login): the class the drawer shows
@@ -1367,6 +1370,8 @@ class AppEntry
     public login   : string
     # its menus on the bar, its folder open (export menus): a class
     public menus   : string
+    # its app configuration panel (export panels): a class
+    public panel   : string
     # its chords (export chords): ctrl / cmd + shift + a key, 'k=word'
     public chords  : string
     # the folder of what it makes, under its home (export contains)
@@ -1383,6 +1388,10 @@ class AppEntry
     # ('agent|model'), or a session shown
     public agent_pick : string
     public agent_run  : string
+    # the picked device's, not this machine's: its state as it said
+    public remote       : bool
+    public remote_on    : bool
+    public remote_built : bool
 
 # an app over everything: its frame over the screen as it was when
 # its chord was pressed; Escape puts it away
@@ -2234,7 +2243,8 @@ func orbiter.desk_col_scroll [ dy: f32 ] -> bool
 # the orbiter menu up: the desktop arranges, and an app's drawer
 # holds its settings
 func orbiter.orb_mode [] -> bool
-    return drawer_open && menu_kind == 'system'
+    # a menu over it (the devices) keeps it: it is still under
+    return drawer_open && (menu_kind == 'system' || sys_under)
 
 func orbiter.desk_menu_open []
     drawer_toggle[ 'system', drawer_open && menu_kind == 'system' ]

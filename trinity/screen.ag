@@ -26,6 +26,14 @@ func screen_rect [] -> rect
     if [ app ] platform_screen_rect[ app, @sx, @sy, @sw, @sh ]
     return rect [ x: f32[ sx ], y: f32[ sy ], w: f32[ sw ], h: f32[ sh ] ]
 
+# the app's window's top left on the desktop, in pixels
+func window_screen_pos [] -> vec2f
+    x : i32 [ 0 ]
+    y : i32 [ 0 ]
+    app : handle [ Au.live_window_get[] ]
+    if [ app ] platform_window_get_pos[ app, @x, @y ]
+    return vec2f [ f32[ x ], f32[ y ] ]
+
 # that monitor's refresh rate in Hz (none known: 0)
 func screen_hz [] -> i32
     app : handle [ Au.live_window_get[] ]

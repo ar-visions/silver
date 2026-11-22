@@ -71,6 +71,14 @@ element AppPane
     public pane : i32
     # the app's picture last shown: a new one repaints
     intern seen : i32 [ -1 ]
+    # the app asked for the whole screen: shown on the monitor in a
+    # window of its own, orbiter paused, until it lets go or that
+    # window is closed (then off until it asks again)
+    intern screen : ScreenOut
+    intern screen_off : bool
+    # the pointer's last place on the screen, in the app's points
+    intern mx : i32
+    intern my : i32
 
     func orb [] -> orbiter
         return cast orbiter [ (ux) ? ux.app_object : null ]
@@ -90,11 +98,81 @@ element AppPane
             if [ v.lock_req == 1 ] ux.mouse_lock[ a ]
             el ux.mouse_unlock[]
             v.lock_req = 0
+        if [ !v.want_full ] screen_off = false
+        if [ v.want_full && !screen_off && !screen && !v.ended ]
+            screen = ScreenOut [ vk: w.vk, hidden: ux.hidden,
+                title: v.app_mod ]
+            if [ !screen.win ]
+                screen = null
+                screen_off = true
+            el
+                log 'orbiter: {v.app_mod} on the screen'
+                w.pause_for = a
+                return
+        # its next picture wakes the next frame, drawn here or not
+        if [ v.slot >= 0 ] host_watch[ v.slot ]
         # a new picture from the app: shown on this frame
         fr : i32 [ (v.slot >= 0) ? host_tex_front[ v.slot, 0 ] : -1 ]
         if [ fr != seen ]
             seen     = fr
             pristine = false
+
+    # orbiter paused for this app on the screen: its frames shown
+    # there, the screen window's keys and mouse to it
+    public func on_frame [ w: Window ]
+        if [ w.pause_for != a ] return
+        v : av[]
+        if [ v && v.want_full && !v.ended && screen && !screen.shut[] ]
+            screen.keep_front[]
+            # the app takes the screen's size
+            v.vw = f32[ screen.width ]
+            v.vh = f32[ screen.height ]
+            v.service[ w.screen ]
+            ft : Texture v.front[]
+            if [ ft ]
+                screen_input[ v, ft ]
+                screen.show[ ft ]
+                v.request_frame[ w.screen ]
+            el
+                screen.events.clear[]
+            return
+        if [ screen ]
+            if [ screen.closed ] screen_off = true
+            screen.close[]
+            screen = null
+            log 'orbiter: {(v) ? v.app_mod : ''} left the screen'
+        w.pause_for = null
+        w.restyle = true
+
+    # the screen window's events to the app, in its points: the
+    # picture is fitted to the screen as show draws it
+    func screen_input [ v: AppView, t: Texture ]
+        if [ v.slot < 0 || t.width <= 0 || t.height <= 0 ] return
+        tw : f64 [ t.width ]
+        th : f64 [ t.height ]
+        k : f64 [ min[ f64[ screen.width ] / tw,
+                       f64[ screen.height ] / th ] ]
+        ox : f64 [ (f64[ screen.width ] - tw * k) * 0.5 ]
+        oy : f64 [ (f64[ screen.height ] - th * k) * 0.5 ]
+        px : f64 [ f64[ v.awp[] ] / tw ]
+        for [ e: ScreenEvent ] in screen.events
+            x : i32 [ (e.x - ox) / k * px ]
+            y : i32 [ (e.y - oy) / k * px ]
+            if [ e.kind == 1 ]
+                host_post2[ v.slot, 1, i32[ HM.key ], e.code, e.state,
+                            0 ]
+            el [ e.kind == 2 ]
+                hm : i32 [ (e.state != 0) ? i32[ HM.press ]
+                                          : i32[ HM.release ] ]
+                host_post2[ v.slot, 1, hm, mx, my, e.code ]
+            el [ e.kind == 3 ]
+                mx = x
+                my = y
+                host_post2[ v.slot, 1, i32[ HM.move ], x, y, 0 ]
+            el [ e.kind == 4 ]
+                host_post2[ v.slot, 1, i32[ HM.wheel ],
+                    i32[ e.dx * 100.0 ], i32[ e.dy * 100.0 ], 0 ]
+        screen.events.clear[]
 
     public func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen || !bounds ] return

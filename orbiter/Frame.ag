@@ -84,6 +84,8 @@ func orbiter.init []
     # the phone's keyboard tables, at startup (never on a key)
     if [ mobile_on[] ] keyboard_load[]
     adopt_live_slots[]
+    # no screen (a headless machine): its services as plain programs
+    if [ text_mode ] headless_services[]
     # the navigator's model: its lists are the session's
     if [ !pins ] pins = vec string []
     if [ !repo_users ] repo_users = vec string []

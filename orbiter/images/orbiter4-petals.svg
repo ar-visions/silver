@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="24" height="24" viewBox="0 0 24 24">
+  <g fill="#fff">
+    <path fill-rule="evenodd" d="M7 1.5h10q1.2 0 1.85 1.05
+      l4.3 8.4q.55 1.05 0 2.1l-4.3 8.4Q18.2 22.5 17 22.5H7
+      q-1.2 0-1.85-1.05l-4.3-8.4q-.55-1.05 0-2.1l4.3-8.4
+      Q5.8 1.5 7 1.5Zm.4 2.7q-.7 0-1.1.7l-3.7 6.4
+      q-.35.7 0 1.4l3.7 6.4q.4.7 1.1.7h9.2q.7 0 1.1-.7
+      l3.7-6.4q.35-.7 0-1.4l-3.7-6.4q-.4-.7-1.1-.7Z"/>
+    <path d="M10.5 4.9h3l-.65 3.2h-1.7Z"/>
+    <path d="M10.5 4.9h3l-.65 3.2h-1.7Z"
+          transform="rotate(60 12 12)"/>
+    <path d="M10.5 4.9h3l-.65 3.2h-1.7Z"
+          transform="rotate(120 12 12)"/>
+    <path d="M10.5 4.9h3l-.65 3.2h-1.7Z"
+          transform="rotate(180 12 12)"/>
+    <path d="M10.5 4.9h3l-.65 3.2h-1.7Z"
+          transform="rotate(240 12 12)"/>
+    <path d="M10.5 4.9h3l-.65 3.2h-1.7Z"
+          transform="rotate(300 12 12)"/>
+    <circle cx="12" cy="12" r="2.5"/>
+  </g>
+</svg>

@@ -1,0 +1,74 @@
+extend hyperspace
+
+class HsMount
+    public device : string [ '/dev/video0' ]
+    public x_m    : f32
+    public y_m    : f32 [ 0.20 ]
+    public z_m    : f32 [ 0.03 ]
+    public tilt_deg : f32
+    public fov_deg  : f32 [ 60.0 ]
+
+class HsRig
+    public screen_width_m  : f32 [ 0.60 ]
+    public screen_height_m : f32 [ 0.34 ]
+    public mounts : vec HsMount
+
+    func init []
+        mounts = vec HsMount []
+
+func hs_mount [ value: string ] -> HsMount
+    fields : vec string value.split[ ',' ]
+    if [ fields.count < 6 ] return null
+    return HsMount [ device: fields[0],
+        x_m: f32[ fields[1].real_value[] ],
+        y_m: f32[ fields[2].real_value[] ],
+        z_m: f32[ fields[3].real_value[] ],
+        tilt_deg: f32[ fields[4].real_value[] ],
+        fov_deg: f32[ fields[5].real_value[] ] ]
+
+func hs_rig_parse [ text: string ] -> HsRig
+    rig : HsRig []
+    for [ word: string ] in text.trim[].split[ ' ' ]
+        pair : vec string word.split[ '=' ]
+        if [ pair.count != 2 ] continue
+        if [ pair[0] == 'screen_width_m' ]
+            rig.screen_width_m = f32[ pair[1].real_value[] ]
+        el [ pair[0] == 'screen_height_m' ]
+            rig.screen_height_m = f32[ pair[1].real_value[] ]
+        el [ pair[0] == 'camera' ]
+            mount : HsMount hs_mount[ pair[1] ]
+            if [ mount ] rig.mounts.push[ mount ]
+    return rig
+
+func hs_rig_text [ rig: HsRig ] -> string
+    out : 'screen_width_m={rig.screen_width_m} '
+        + 'screen_height_m={rig.screen_height_m}'
+    for [ mount: HsMount ] in rig.mounts
+        out += ' camera={mount.device},{mount.x_m},{mount.y_m},'
+            + '{mount.z_m},{mount.tilt_deg},{mount.fov_deg}'
+    return '{out}\n'
+
+func hs_rig_load [ fallback: string ] -> HsRig
+    file : path '{hs_dir[]}/mounts.agi'
+    text : string file.load[ typeid[ string ], null ]
+    rig : HsRig [ (text) ? hs_rig_parse[ text ] : HsRig [] ]
+    if [ rig.mounts.count == 0 ]
+        for [ device: string ] in fallback.split[ ',' ]
+            name : string device.trim[]
+            if [ name.count > 0 ]
+                rig.mounts.push[ HsMount [ device: name ] ]
+    if [ rig.mounts.count == 0 ] rig.mounts.push[ HsMount [] ]
+    return rig
+
+func hs_rig_save [ rig: HsRig ] -> bool
+    file : path '{hs_dir[]}/mounts.agi'
+    return file.save[ hs_rig_text[ rig ], null ]
+
+expect func t_hs_rig_text [] -> bool
+    rig : HsRig hs_rig_parse[
+        'screen_width_m=0.7 screen_height_m=0.4 '
+        + 'camera=/dev/video2,-0.2,0.1,0.03,8,64' ]
+    return rig.mounts.count == 1
+        && rig.mounts[0].device == '/dev/video2'
+        && rig.mounts[0].x_m < -0.19
+        && hs_rig_text[ rig ].index_of[ 'camera=/dev/video2' ] >= 0

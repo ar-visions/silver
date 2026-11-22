@@ -261,6 +261,14 @@ enum HM
     # ide -> app: a = 1 in view, 0 not (a tab behind another): it
     # runs on, drawing a few frames a second
     shown   : 31
+    # app -> ide: a = 1 it wants the whole screen, 0 not: the ide
+    # shows it on the monitor in a window of its own
+    full    : 32
+    # ide -> app: a b = its picture's top left on the monitor, in
+    # the monitor's pixels
+    place   : 33
+    # ide -> app: a b = that monitor's size in pixels
+    monitor : 34
 
 ifdef [ apple ]
     # an IOSurface's global id is its cross-process name, as a dma-buf
@@ -579,11 +587,10 @@ abstract live_app media_app
     intern  paned       : bool
     # the host's last frame request
     intern  req_us      : i64
+    # the host shows it nowhere (HM.shown 0); in view until told
+    intern  out_of_view : bool
     # the host asked for a frame (HM.frame)
     intern  frame_req   : bool
-    # the host shows it nowhere (HM.shown 0); so until its first
-    # draw (one never shown is never told)
-    intern  out_of_view : bool [ true ]
     # this frame drew a new picture (render)
     intern  drew        : bool
     # DIAG: requests answered this second
@@ -674,6 +681,8 @@ abstract live_app media_app
     # a frame over 20 ms, with stats on: the time of each phase in it
     # (ms), and what no phase holds (input, pacing, cleanup)
     func frame_trace []
+        # no screen: no GPU to count
+        if [ !vk ] return
         now : i64 [ epoch_micros[] ]
         cur : vec i64 [ 11 ]
         cur[ 0 ] = vk.ph_targets
@@ -1030,6 +1039,9 @@ abstract live_app media_app
                 return alive && !Au.quit_requested[]
         if [ text_mode ]
             render*[]
+            # its socket: how a host drives an app with no screen
+            ifdef [ unix ]
+                agent_pump[]
             Au.auto_free[]
             usleep[ 16000 ]
             return !Au.quit_requested[]
@@ -1126,8 +1138,10 @@ abstract live_app media_app
                 frame_req = false
                 hz  : i32 [ (frame_hz > 0) ? frame_hz : 60 ]
                 wait_start  : i64 [ epoch_micros[] ]
-                # out of view: a quarter second a frame (it still runs)
+                # out of view: a quarter second a frame (it still
+                # runs); animated: a refresh at most
                 lim : i64 [ (out_of_view) ? 250000
+                    : (win.anim_seen) ? 1000000 / i64[ hz ]
                     : 2000000 / i64[ hz ] ]
                 # the host asks this socket from its frame and waits:
                 # answered here, not a frame later
@@ -1136,8 +1150,7 @@ abstract live_app media_app
                     attach_pump[]
                     agent_pump[]
                     # out of view nothing hurries it; in view a request
-                    # is taken within a quarter millisecond, while they
-                    # come (the host idle asks none: 5 ms then)
+                    # is taken within a quarter ms (host idle: 5 ms)
                     idle : bool [ out_of_view
                         || epoch_micros[] - req_us > 100000 ]
                     if [ !frame_req ]
@@ -1588,6 +1601,13 @@ abstract live_app media_app
                         wn.panel_open = !wn.panel_open
                     wn.restyle    = true
                 # the host's language: every label in it
+                el [ t == i32[ HM.place ] ]
+                    wn.place_x = host_pa[]
+                    wn.place_y = host_pb[]
+                    wn.place_on = true
+                el [ t == i32[ HM.monitor ] ]
+                    wn.monitor_w = host_pa[]
+                    wn.monitor_h = host_pb[]
                 el [ t == i32[ HM.language ] ]
                     display_language = Language [ host_pa[] ]
                     wn.restyle = true
@@ -1995,6 +2015,15 @@ abstract live_app media_app
                     continue
                 # call <name> [args]: run an action func of the app,
                 # its arguments the rest of the line
+                # a public member's text, many lines: an empty line
+                # ends the answer (ask_block)
+                el [ cmd == 'get' && parts.count >= 2 ]
+                    gv : Au [ (aa) ? aa.get_property[ parts[1].chars ]
+                        : null ]
+                    gs : string [ (gv) ? string [ gv ] : '' ]
+                    agent_sock_reply[ (gs.count > 0) ? '{gs}\n\n'
+                        : '\n\n' ]
+                    continue
                 el [ cmd == 'call' && parts.count >= 2 ]
                     fm : Au_t [ (aa) ? find_member[ typeid[ aa ],
                             parts[1].chars,
@@ -6214,6 +6243,11 @@ Display Window
     func set_fullscreen [ on: bool ]
         if [ on == fs_active ]
             return
+        # hosted: the ide puts it on the screen
+        if [ hosted[] ]
+            host_post[ 0, i32[ HM.full ], (on) ? 1 : 0, 0, 0 ]
+            fs_active = on
+            return
         if [ on ]
             # remember windowed geometry
             platform_window_set_fullscreen[ pwin, true ]
@@ -6390,6 +6424,23 @@ Display Window
     # the frame each strength was last asked for
     mutable blur_at1            : i64 [ -1000 ]
     mutable blur_at2            : i64 [ -1000 ]
+    # hosted: where the host shows its picture (top left on the
+    # monitor) and that monitor's size, in pixels; place_on once told
+    public place_x              : i32
+    public place_y              : i32
+    public place_on             : bool
+    public monitor_w            : i32
+    public monitor_h            : i32
+
+    # the window's place on its monitor: x y its top left, w h the
+    # monitor's size, in pixels (hosted: as its host shows it)
+    public func on_monitor [] -> rect
+        if [ host_slot[] > 0 && place_on ]
+            return rect [ x: f32[ place_x ], y: f32[ place_y ],
+                          w: f32[ monitor_w ], h: f32[ monitor_h ] ]
+        m : rect screen_rect[]
+        p : vec2f window_screen_pos[]
+        return rect [ x: p.x - m.x, y: p.y - m.y, w: m.w, h: m.h ]
 
     # a moving backdrop: the blur asked a frame early, then the
     # elements over it drawn again with it (every 10th frame)

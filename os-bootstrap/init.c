@@ -928,7 +928,7 @@ static void bt_start(void) {
 
 #ifndef NOLIBC
 static void append_line(const char* path, const char* line) {
-    int fd = open(path, O_WRONLY | O_APPEND);
+    int fd = open(path, O_WRONLY | O_APPEND | O_CREAT, 0644);
     if (fd < 0) return;
     write(fd, line, strlen(line));
     close(fd);
@@ -950,6 +950,36 @@ static void dhcp_start(void) {
     char* d[] = { "/usr/sbin/dhcpcd", "--nobackground", "--quiet", NULL };
     spawn(d, env);
     fprintf(stderr, "orbiter-os init: started dhcpcd\n");
+}
+
+// ssh: how the desktop reaches this machine. Keys only, never a
+// password; its host keys made once; the fleet's key trusted when
+// the install put it there
+static void sshd_start(void) {
+    if (access("/usr/sbin/sshd", X_OK)) return;
+    if (!named_account("/etc/passwd", "sshd"))
+        append_line("/etc/passwd", "sshd:x:997:65534:sshd privsep:"
+            "/run/sshd:/usr/sbin/nologin\n");
+    mkdir("/etc/ssh", 0755);
+    mkdir("/run/sshd", 0755);
+    char* keys[] = { "/usr/bin/ssh-keygen", "-A", NULL };
+    run(keys);
+    if (access("/etc/ssh/sshd_config", F_OK)) {
+        append_line("/etc/ssh/sshd_config",
+            "PasswordAuthentication no\n"
+            "KbdInteractiveAuthentication no\n"
+            "PermitRootLogin prohibit-password\n"
+            "PubkeyAuthentication yes\n"
+            "AuthorizedKeysFile .ssh/authorized_keys\n"
+            "Subsystem sftp internal-sftp\n");
+        if (access("/etc/ssh/fleet_ca.pub", F_OK) == 0)
+            append_line("/etc/ssh/sshd_config",
+                "TrustedUserCAKeys /etc/ssh/fleet_ca.pub\n");
+    }
+    char* env[] = { "PATH=/usr/sbin:/usr/bin:/sbin:/bin", NULL };
+    char* d[] = { "/usr/sbin/sshd", "-D", "-e", NULL };
+    spawn(d, env);
+    fprintf(stderr, "orbiter-os init: started sshd\n");
 }
 
 // Wi-Fi: the system bus, then iwd on it (orbiter drives it);
@@ -993,6 +1023,7 @@ static void net_start(const char* init) {
     spawn(w, env);
     fprintf(stderr, "orbiter-os init: started the system bus and iwd\n");
     dhcp_start();
+    sshd_start();
 }
 
 // the session bus: apps' tray icons register with orbiter on it
@@ -1408,6 +1439,22 @@ int main(void) {
     // (both were orbiter's as pid 1; it runs as the user now)
     mkdir("/dev/pts", 0755);
     mount("devpts", "/dev/pts", "devpts", 0, "mode=620,ptmxmode=666");
+    // udev's links, which programs name (httpd logs to /dev/stderr)
+    symlink("/proc/self/fd", "/dev/fd");
+    symlink("/proc/self/fd/0", "/dev/stdin");
+    symlink("/proc/self/fd/1", "/dev/stdout");
+    symlink("/proc/self/fd/2", "/dev/stderr");
+#ifndef NOLIBC
+    // the computer's name, as the install wrote it
+    char nm[65] = { 0 };
+    int hf = open("/etc/hostname", O_RDONLY);
+    if (hf >= 0) {
+        ssize_t k = read(hf, nm, sizeof nm - 1);
+        close(hf);
+        while (k > 0 && (nm[k - 1] == '\n' || nm[k - 1] == ' ')) k--;
+        if (k > 0) sethostname(nm, k);
+    }
+#endif
     fbcon_bind(0);
     // after the switch: firmware loads from the folder
     // the kernel's own driver requests: our modprobe's place

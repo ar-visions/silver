@@ -1531,7 +1531,12 @@ static void init_as_pid1(void) {
     init_mount("devpts",   "/dev/pts");
     setenv("HOME", "/root", 1);  // the kernel hands init HOME=/
     setenv("XDG_RUNTIME_DIR", "/run", 1);
-    setenv("PATH", "/src/silver/install/bin:/usr/bin:/bin", 1);
+    // install/bin first, before the boot line's PATH
+    const char* given = getenv("PATH");
+    char path[4096];
+    snprintf(path, sizeof path, "/src/silver/install/bin:%s",
+        given ? given : "/usr/bin:/bin:/usr/sbin:/sbin");
+    setenv("PATH", path, 1);
     fprintf(stderr, "init: env HOME=%s LD_LIBRARY_PATH=%s\n",
         getenv("HOME"), getenv("LD_LIBRARY_PATH") ? getenv("LD_LIBRARY_PATH") : "(unset)");
     atexit(init_hold);
@@ -2049,6 +2054,16 @@ static int view_build(const char* home, const char* run,
     static const char bus[] = "/run/dbus/system_bus_socket";
     if (view_wants(view_app_name, "system_bus") && access(bus, F_OK) == 0)
         view_put(bus, bus, 1);
+    // cameras: the video devices, for a module that exports cameras
+    // (hyperspace's IR cameras)
+    if (view_wants(view_app_name, "cameras")) {
+        glob_t vg;
+        if (glob("/dev/video*", 0, NULL, &vg) == 0) {
+            for (size_t i = 0; i < vg.gl_pathc; i++)
+                view_put(vg.gl_pathv[i], vg.gl_pathv[i], 1);
+            globfree(&vg);
+        }
+    }
     // mms: mmsd-tng's session bus, and its store and outbox
     static const char sbus[] = "/run/dbus/session_bus_socket";
     static const char mms[] = "/var/lib/mmsd";

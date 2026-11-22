@@ -1,0 +1,40 @@
+extend hyperspace
+
+import <stdio.h>
+import <stdlib.h>
+
+# the records captured so far (a .agi each)
+func hs_record_count [] -> i32
+    n : i32 [ 0 ]
+    for [ f: path ] in hs_records[].ls[ null, false ]
+        if [ f.ext[] == 'agi' ] n += 1
+    return n
+
+# the model trained on the records, in the background; its words
+# go to train.log
+func hs_train []
+    root : path path.path_startup[]
+    script : string '{root}/hyperspace/train.py'
+    data : string '{hs_records[]}'
+    models : string '{hs_models[]}'
+    log_file : string '{hs_dir[]}/train.log'
+    run : command { setsid python3 "{script}"
+        --data "{data}" --out "{models}"
+        > "{log_file}" 2>&1 & }
+    run.exec[ false ]
+
+# hyperspace's drawer: its apps, the same module on a view
+MenuSource HyperspaceApps
+    func entries [] -> vec TrayEntry
+        return vec TrayEntry []
+
+    func launches [] -> vec string
+        return vec string [] [ 'record\t--view record',
+            'gaze\t--view record --into gaze',
+            'testbed\t--view testbed', 'training\t--view training',
+            'annotate\t--view annotate' ]
+
+expect func t_hs_apps [] -> bool
+    apps : HyperspaceApps []
+    ls : vec string apps.launches*[]
+    return ls.count == 5 && ls[ 0 ].starts_with[ 'record\t' ]

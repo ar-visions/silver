@@ -1,0 +1,76 @@
+# a machine's installed software, the same here and over ssh: the
+# machine's own orbiter lists it, a Machine reads that list
+extend machine
+
+# one installed app: its name, its section, what it is
+class Software
+    public name  : string [ '' ]
+    # the section it is listed under (games, developer ...)
+    public group : string [ '' ]
+    # app, service (switched on or off) or startup
+    public kind  : string [ 'app' ]
+    public on    : bool
+    # built on that machine (its program or library is there)
+    public built : bool
+
+# the list as text: a line an app, its words by tab
+func software_text [ list: vec Software ] -> string
+    out : string ''
+    for [ s: Software ] in list
+        on : string [ (s.on) ? 'on' : 'off' ]
+        bt : string [ (s.built) ? 'built' : 'source' ]
+        ln : string '{s.name}\t{s.group}\t{s.kind}\t{on}\t{bt}'
+        out = (out.count > 0) ? '{out}\n{ln}' : ln
+    return out
+
+# the list back from its text
+func software_read [ tx: string ] -> vec Software
+    out : vec Software []
+    if [ !tx ] return out
+    for [ ln: string ] in tx.split[ '\n' ]
+        ws : vec string ln.trim[].split[ '\t' ]
+        if [ ws.count < 5 ] continue
+        out.push[ Software [ name: ws[ 0 ], group: ws[ 1 ],
+            kind: ws[ 2 ], on: ws[ 3 ] == 'on',
+            built: ws[ 4 ] == 'built' ] ]
+    return out
+
+# a machine whose software is listed and set: this one (a host's
+# own subclass answers from its lists) or another over ssh
+class Machine
+    # the ssh host; '' is this machine
+    public host : string [ '' ]
+    # the last thing that went wrong, as the user reads it
+    public problem : string [ '' ]
+
+    func software [] -> vec Software
+        return remote_software[]
+
+    func set_service [ name: string, on: bool ] -> bool
+        return remote_set[ name, on ]
+
+    # one line to its orbiter's socket, the answer's lines
+    func ask [ line: string ] -> vec string
+        sk : '${{XDG_RUNTIME_DIR:-/run/user/$(id -u)}}'
+        sk = '{sk}/trinity-orbiter.sock'
+        sh : 'ssh -o BatchMode=yes -o ConnectTimeout=5 -- {host}'
+        rq : '{sh} \'printf "{line}\\n" | nc -U -q1 {sk}\' 2>&1'
+        return machine_lines[ rq ]
+
+    func remote_software [] -> vec Software
+        problem = ''
+        ls : vec string ask[ 'get software_list' ]
+        tx : string ''
+        for [ l: string ] in ls
+            if [ l.count > 0 ]
+                tx = (tx.count > 0) ? '{tx}\n{l}' : l
+        out : vec Software software_read[ tx ]
+        if [ out.count == 0 ]
+            problem = (tx.count > 0) ? '{host}: {tx}'
+                : 'No answer from orbiter on {host}.'
+        return out
+
+    func remote_set [ name: string, on: bool ] -> bool
+        w : string [ (on) ? 'on' : 'off' ]
+        ask[ 'app service {name} {w}' ]
+        return true

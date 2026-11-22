@@ -10,6 +10,15 @@ func orbiter.keys_up [] -> bool
 
 # a line from the agent through our socket: 'status <state> <text>'
 func orbiter.on_agent [ s: string ]
+    # another orbiter's switch: 'service <name> on|off'
+    if [ s && s.starts_with[ 'service ' ] ]
+        sw : vec string s.trim[].split[ ' ' ]
+        want : bool [ sw.count >= 3 && sw[ 2 ] == 'on' ]
+        if [ sw.count >= 3 && service_is_on[ sw[ 1 ] ] != want ]
+            service_toggle[ sw[ 1 ] ]
+        soft_at = 0
+        software_sync[]
+        return
     # a test's look at every window and instance: 'dump' (to the log)
     if [ s == 'dump' ]
         state_dump[]
@@ -764,6 +773,10 @@ func orbiter.on_press [ ev: Event ]
         open_in_pane[ path '{rec_path}', active_pane ]
         ev.no_default = true
         return
+    if [ ev.target.id == 'dev_connect' ]
+        device_connect[]
+        ev.no_default = true
+        return
     if [ ev.target.id && ev.target.id.starts_with[ 'svc_' ] ]
         service_toggle[ ev.target.id.mid[ 4,
             ev.target.id.count - 4 ] ]
@@ -1000,6 +1013,10 @@ func orbiter.on_press [ ev: Event ]
             desk_menu_at[ mt ]
             ev.no_default = true
             return
+        if [ mt.at == -3 ]
+            devices_open[ mt ]
+            ev.no_default = true
+            return
         # another window's menu: that window first, then its menu;
         # its title selects it alone, pressed again its menu
         if [ mt.pane >= 0 && mt.pane != active_pane ]
@@ -1090,6 +1107,7 @@ func orbiter.on_press [ ev: Event ]
         pinned : bool [ dpi.id && dpi.id.starts_with[ 'dock_' ] ]
         if [ pinned || (dpi.module && dpi.file && !dpi.program) ]
             dock_pop   = dpi
+            dock_find  = ''
             # beside the dock, level with the icon's top
             dock_pop_x = dock_w[] + 26.0
             dock_pop_y = dpi.win_pos.y - 14.0
@@ -1638,6 +1656,11 @@ func orbiter.on_char [ ev: Event ]
             filter_focus = 'login_pass'
             if [ ux ] ux.restyle = true
         return
+    # the dock's menu up: the words find in its drawer
+    if [ dock_pop && ev.key.text && ev.key.text.count > 0 ]
+        dock_find = '{(dock_find) ? dock_find : ''}{ev.key.text}'
+        force_update[]
+        return
     # the bar's title being typed: its field has the text
     if [ bar_typing ] return
     # a menu page's field (a drawer's form) keeps its own keys
@@ -1719,6 +1742,9 @@ func orbiter.on_char [ ev: Event ]
 
 func orbiter.on_key [ ev: Event ]
     if [ power_key[ ev ] ]
+        ev.no_default = true
+        return
+    if [ dock_pop_key[ ev ] ]
         ev.no_default = true
         return
     # the shown app's own keyboard is up: its keys are that app's
@@ -2404,6 +2430,7 @@ func orbiter.text_settings [] -> vec Prop
 
 func orbiter.on_frame [ w: Window ]
     open_pending[]
+    software_sync[]
     tab_hold_frame[]
     carry_frame[]
     if [ file_drag || card_drag ] w.will_animate = true

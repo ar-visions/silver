@@ -289,3 +289,5 @@ expect func t_time_words [] -> bool
 expect func t_zone_label [] -> bool
     lb : string zone_label[ 'Asia/Tokyo' ]
     return lb == 'Tokyo  UTC+9'
+
+import Software

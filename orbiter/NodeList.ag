@@ -795,6 +795,8 @@ Control AppsGrid
     public menu : bool
     # the orbiter menu's dashed outline, drawn once a size
     intern dash_pic : Canvas
+    # a service's, in its own colour
+    intern dash_svc : Canvas
     intern dash_sd  : f32
     intern dash_r   : f32
 
@@ -2181,7 +2183,8 @@ Control AppsGrid
         cv.restore[]
         # the outline drawn once (every card is one size), laid down
         if [ orb_on ]
-            dp : Canvas dash_picture[ cv, tile - 1.5, cr ]
+            sva : bool [ dorb && dae && dorb.is_service[ dae ] ]
+            dp : Canvas dash_picture[ cv, tile - 1.5, cr, sva ]
             ds : f32 [ ceil[ tile - 1.5 ] + 4.0 ]
             cv.draw_canvas[ dp, x + 0.75 - 2.0, y + 0.75 - 2.0, ds, ds ]
 
@@ -2211,26 +2214,33 @@ Control AppsGrid
 
     # the dashed outline as a picture, 2 px of room round it, made
     # again only for a new size
-    func dash_picture [ cv: Canvas, sd: f32, r: f32 ] -> Canvas
+    func dash_picture [ cv: Canvas, sd: f32, r: f32, svc: bool ]
+            -> Canvas
         sz : i32 [ i32[ ceil[ sd ] ] + 4 ]
-        if [ !dash_pic ]
+        if [ !dash_pic || !dash_svc ]
             dash_pic = Canvas [ vk: cv.vk, w: cv.w, width: sz,
                                 height: sz, load_existing: true,
                                 quantize: true ]
             dash_pic.update[]
+            dash_svc = Canvas [ vk: cv.vk, w: cv.w, width: sz,
+                                height: sz, load_existing: true,
+                                quantize: true ]
+            dash_svc.update[]
             dash_sd = -1.0
         if [ dash_sd != sd || dash_r != r ]
             dash_sd = sd
             dash_r  = r
-            dash_pic.resize[ sz, sz ]
-            dash_pic.fresh_state[]
-            dash_pic.clear_recorded[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
-            dash_round[ dash_pic, 2.0, 2.0, sd, r, 6.0, 4.0 ]
-        return dash_pic
+            for [ k: i32 0, k < 2, k += 1 ]
+                dc : Canvas [ (k == 0) ? dash_pic : dash_svc ]
+                dc.resize[ sz, sz ]
+                dc.fresh_state[]
+                dc.clear_recorded[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
+                dash_round[ dc, 2.0, 2.0, sd, r, 6.0, 4.0, k == 1 ]
+        return (svc) ? dash_svc : dash_pic
 
     # a dashed outline round a rounded square: dash, gap, as lines
     func dash_round [ cv: Canvas, x: f32, y: f32, sd: f32, r: f32,
-                      dash: f32, gap: f32 ]
+                      dash: f32, gap: f32, svc: bool ]
         per : f32 [ 4.0 * (sd - 2.0 * r) + 6.2831853 * r ]
         # whole dashes round it: the step made to fit
         n  : i32 [ max[ 4, i32[ round[ per / (dash + gap) ] ] ] ]
@@ -2238,7 +2248,8 @@ Control AppsGrid
         dl : f32 [ st * dash / (dash + gap) ]
         cv.save[]
         cv.fill_color[ rgba [ '#0000' ] ]
-        cv.stroke_color[ rgba [ '#b47cffcc' ] ]
+        # a service teal, the rest purple
+        cv.stroke_color[ rgba [ (svc) ? '#4fd8c8cc' : '#b47cffcc' ] ]
         cv.stroke_width[ 1.5 ]
         cv.stroke_offset[ 0.0 ]
         for [ i: i32 0, i < n, i += 1 ]

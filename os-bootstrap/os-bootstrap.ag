@@ -206,6 +206,28 @@ func bootstrap_here [] -> bool
 func tree_home [] -> string
     return '{silver_root[]}/orbiter-os'
 
+# an answers file's 'key: value' (its brackets and quotes kept)
+func answer_word [ f: string, key: string ] -> string
+    fp : path [ f ]
+    tx : string fp.load[ typeid[ string ], null ]
+    if [ !tx ] return ''
+    for [ ln: string ] in tx.split[ '\n' ]
+        t : string ln.trim[]
+        if [ t.starts_with[ '{key}:' ] ]
+            return t.mid[ key.count + 1, t.count - key.count - 1 ].trim[]
+    return ''
+
+# its 'key: [ a, b ]' as names
+func answer_list [ f: string, key: string ] -> vec string
+    out : vec string []
+    w : string answer_word[ f, key ]
+    for [ p: string ] in w.split[ ',' ]
+        n : string p.trim[]
+        while [ n.starts_with[ '[' ] ] n = n.mid[ 1, n.count - 1 ].trim[]
+        while [ n.ends_with[ ']' ] ] n = n.mid[ 0, n.count - 1 ].trim[]
+        if [ n.count > 0 ] out.push[ n ]
+    return out
+
 func drive_tree [] -> string
     return '{tree_home[]}/root'
 
@@ -585,6 +607,8 @@ element Bootstrap
     # an unattended install's answers (an InstallAnswers .agi) put
     # on the stick: it boots, installs itself, with no screen
     mutable stick_answers : string [ '' ]
+    # a server's tree carries these apps alone (null: every app)
+    mutable only_apps : vec string
     mutable drives_at  : i64
     intern  tid        : pthread_t
     # the page: '' the kernels, 'build' a new one's choices
@@ -2356,6 +2380,11 @@ element Bootstrap
             carry,
             (ans) ? 'cp {quoted[ stick_answers ]} ' +
                 '{work}/stage/boot/install-answers.agi' : 'true',
+            # this machine's public keys (never the private ones): the
+            # installed user trusts them, so we reach it by ssh
+            (ans) ? '(cat {quoted[ ssh_dir[] ]}/*.pub ' +
+                '> {work}/stage/boot/install-authorized_keys ' +
+                '2>/dev/null; true)' : 'true',
             'truncate -s {total}M {img}' ]
         fill : vec string [] [
             '{mt} {bin}/mformat {at} {fat} ::',
@@ -3868,6 +3897,11 @@ element Bootstrap
             scene : bool [ t.index_of[ '\nscenes:' ] >= 0 ]
             if [ !app && !scene ] continue
             stem : nm.mid[ 0, nm.count - 4 ]
+            # a server's tree: only the apps it was asked for
+            if [ only_apps ]
+                om : string [ (stem.starts_with[ 'silver-' ])
+                    ? stem.mid[ 7, stem.count - 7 ] : stem ]
+                if [ !only_apps.contains[ om ] ] continue
             # a module whose source is gone left a stale record
             srcf : first_line[ '{install}/build/{stem}.source' ].trim[]
             if [ srcf.count > 0 ]
@@ -3905,6 +3939,10 @@ element Bootstrap
                 for [ d: string ] in vec string [] [ 'textures', 'models' ]
                     add_file[ '{dir}/{d}' ]
             add_run_program[ export_word[ t, 'run' ] ]
+            # a daemon's program (its line's first word)
+            dl : export_word[ t, 'daemon' ]
+            sp : i32 [ i32[ dl.index_of[ ' ' ] ] ]
+            add_run_program[ (sp > 0) ? dl.mid[ 0, sp ] : dl ]
             n += 1
         # what the apps spawn: WebKit's helpers and the like
         add_programs[ '{install}/libexec' ]
@@ -4444,6 +4482,15 @@ element main : trinity
             return
         if [ image && image.count > 0 ]
             if [ answers ] b.stick_answers = answers
+            # a server (headless): its own tree, orbiter and the
+            # answers' services alone
+            hl : string [ (answers) ? answer_word[ answers, 'headless' ]
+                : '' ]
+            if [ hl == 'true' ]
+                b.only_apps = answer_list[ answers, 'services' ]
+                b.only_apps.push[ 'orbiter' ]
+                b.out_dir = path '{tree_home[]}/headless'
+                log 'os-bootstrap: a server: {b.only_apps.count} apps'
             # the tree brought up to this build first: the apps as
             # they are now (only newer files are copied)
             b.out_dir.make_dir[]

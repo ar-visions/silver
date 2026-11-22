@@ -554,7 +554,14 @@ func orbiter.setting_set [ name: string, v: string ]
     if [ rec_setting_set[ name, v ] ]
         if [ ux ] ux.restyle = true
         return
-    if [ name == 'scroll' ]        set_scroll = n
+    if [ name == 'device' ]
+        device_on = (v == 'this') ? '' : v
+        save_session[]
+        device_read[]
+        app_list = null
+        apps_gen += 1
+        log 'orbiter: device {(device_on.count > 0) ? device_on : "Local"}'
+    el [ name == 'scroll' ]        set_scroll = n
     el [ name == 'easing' ]        set_easing = v
     el [ name == 'delay' ]         set_delay = i32[ n ]
     el [ name == 'rate' ]          set_rate = i32[ n ]

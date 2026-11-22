@@ -68,6 +68,8 @@ class TrayEntry
 class MenuSource
     # what was wrong with the last pick ('' none): a page shows it
     public problem : string
+    # shift or ctrl / cmd held: hidden actions (remove) show
+    public reveal  : bool
 
     func entries [] -> vec TrayEntry
         return vec TrayEntry []
@@ -1761,5 +1763,134 @@ element TrayPanel
                 picks += 1
         pristine = false
         if [ ux ] ux.restyle = true
+
+# a field on a menu's page, in the menus' look
+TextInput PageField
+    style : CSS {
+        layers.body:
+            fill_color: #ffffff0a
+            radius: 8
+            stroke_width: 1
+            stroke_color: #ffffff18
+            near_border: true
+            near_inset: 2.0
+            near_inset_color: #c890ffaa
+        layers.face:
+            label_color: #ffffff60
+            label_size: 18
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
+            editable: true
+            label_align: 0.0 0.5
+            label_offset: 12.0 0.0
+        :focused
+            layers.body:
+                fill_color: #4d3dbc33
+                stroke_color: #806bff
+            layers.face:
+                label_color: #ffffff
+        :has_value
+            layers.face:
+                label_color: #ffffff
+    }
+
+PageField PageSecret
+    style : CSS {
+        layers.face:
+            secret: true
+    }
+
+# words on a menu's page, wrapped: a note, or what was wrong (red)
+element PageNote
+    label : string
+    public wrong : bool
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        cv : Canvas w.screen
+        fr : string 'fonts/BarlowCondensed-Regular.ttf'
+        cv.set_font[ shared_font[ cv, fr, label_px[ cv, 16.0 ] ] ]
+        cv.fill_color[ rgba [ (wrong) ? '#ff8a8a' : '#ffffff80' ] ]
+        cv.draw_text[ label, rect [ x: 0.0, y: 0.0, w: bounds.w,
+                                    h: bounds.h ],
+                      vec2f [ 0.0, 0.0 ], vec2f [ 0.0, 0.0 ],
+                      Overflow.wrap, null, false ]
+
+# an option on a menu's page: its name and a switch, a press flips
+# it; it is kept on the element while the page shows
+element PageCheck
+    label : string
+    public on    : bool
+    style : CSS {
+        layers.body:
+            fill_color: #0000
+            radius: 8
+            near_border: true
+        :hovered
+            layers.body:
+                fill_color: #ffffff10
+    }
+
+    func on_press [ ev: Event ]
+        on = !on
+        pristine = false
+        ev.no_default = true
+
+    # its value given (the page's own, as it opens)
+    public func set_on [ v: bool ]
+        on = v
+        pristine = false
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        cv : Canvas w.screen
+        un : f32 ux_unit[ w ]
+        bh : f32 bounds.h
+        fr : string 'fonts/BarlowCondensed-Regular.ttf'
+        cv.set_font[ shared_font[ cv, fr, label_px[ cv, 18.0 ] ] ]
+        cv.fill_color[ rgba [ '#e4e4ea' ] ]
+        cv.draw_text[ label, rect [ x: round[ 12.0 * un ], y: 0.0,
+                                    w: bounds.w, h: bh ],
+                      vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+                      Overflow.visible, null, false ]
+        sw : f32 [ round[ 40.0 * un ] ]
+        sh : f32 [ round[ 22.0 * un ] ]
+        sx : f32 [ bounds.w - sw - round[ 8.0 * un ] ]
+        sy : f32 [ (bh - sh) * 0.5 ]
+        r : f32 [ sh * 0.5 ]
+        cv.stroke_width[ 0.0 ]
+        cv.fill_color[ rgba [ (on) ? '#806bff' : '#ffffff20' ] ]
+        cv.rounded_rect[ sx, sy, sw, sh, r, r, r, r ]
+        cv.paint[]
+        kx : f32 [ (on) ? sx + sw - sh + 3.0 : sx + 3.0 ]
+        kr : f32 [ r - 3.0 ]
+        cv.fill_color[ rgba [ '#f4f2ff' ] ]
+        cv.rounded_rect[ kx, sy + 3.0, sh - 6.0, sh - 6.0,
+                         kr, kr, kr, kr ]
+        cv.paint[]
+
+# a button on a menu's page, the fields' look
+Button PageButton
+    style : CSS {
+        layers.body:
+            fill_color: #ffffff0a
+            radius: 8
+            stroke_width: 1
+            stroke_color: #ffffff18
+            near_border: true
+            near_inset: 2.0
+            near_inset_color: #c890ffaa
+        layers.face:
+            label_color: #e4e4ea
+            label_size: 18
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
+            label_align: 0.5 0.5
+        :hovered
+            layers.body:
+                fill_color: #ffffff14
+        :selected
+            layers.body:
+                fill_color: #4d3dbc80
+                stroke_color: #806bff
+    }
 
 import Portal

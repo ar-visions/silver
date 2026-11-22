@@ -1,0 +1,68 @@
+# apache: the Apache HTTP Server, built from its release; a service
+# orbiter runs in the background, off until switched on
+export 2.4.63
+export software ['developer']
+export platforms ['x64']
+# a service's view has silver's folder read only: its pid in its
+# own /tmp, its logs to its console (set in its conf at the build)
+export daemon ['httpd -DFOREGROUND']
+
+import pcre2/10.44 from https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.44/pcre2-10.44.tar.bz2
+    PATH={install}/bin:$PATH
+    -DBUILD_SHARED_LIBS=ON
+    -DPCRE2_BUILD_PCRE2GREP=OFF
+    -DPCRE2_BUILD_TESTS=OFF
+import expat/2.6.4 from https://github.com/libexpat/libexpat/releases/download/R_2_6_4/expat-2.6.4.tar.xz
+    PATH={install}/bin:$PATH
+    -DEXPAT_BUILD_DOCS=OFF
+    -DEXPAT_BUILD_EXAMPLES=OFF
+    -DEXPAT_BUILD_TESTS=OFF
+    -DEXPAT_BUILD_TOOLS=OFF
+# apr, apr-util and httpd each ship a CMakeLists for Windows alone:
+# their own configure here
+import apr/1.7.5 from https://archive.apache.org/dist/apr/apr-1.7.5.tar.bz2
+    > ./configure --prefix={install}
+    > make -j16 install
+import apr-util/1.6.3 from https://archive.apache.org/dist/apr/apr-util-1.6.3.tar.bz2
+    > ./configure --prefix={install} --with-apr={install} --with-expat={install}
+    > make -j16 install
+# its own place: conf, htdocs and logs together
+import httpd/2.4.63 from https://archive.apache.org/dist/httpd/httpd-2.4.63.tar.bz2
+    > ./configure --prefix={install}/lib/httpd --with-apr={install} --with-apr-util={install} --with-pcre={install}/bin/pcre2-config --enable-mods-shared=most
+    > make -j16 install
+
+import <stdlib.h>
+import <stdio.h>
+
+# at the build: install/bin/httpd, and its port off the root's 80
+# (a user's service): 8080
+export func install_apache []
+    ip : path.path_install[]
+    ins : string '{ip.absolute[]}'
+    hd : string '{ins}/lib/httpd'
+    ln : command { ln -sfn {hd}/bin/httpd {ins}/bin/httpd }
+    ln.exec[ false ]
+    cf : string '{hd}/conf/httpd.conf'
+    pt : command { sed -i "s/^Listen 80$/Listen 8080/" {cf} }
+    pt.exec[ false ]
+    # its own user: a system may have no daemon account
+    us : command {
+        sed -i -e 's/^User daemon$/User ${{USER}}/'
+            -e 's/^Group daemon$/Group ${{USER}}/' {cf}
+    }
+    us.exec[ false ]
+    # once: run as a service (pid in /tmp, logs to its console)
+    ours : command { grep -q '^# orbiter' {cf} }
+    if [ ours.exec[ false ] != 0 ]
+        add : string {
+            # orbiter: a service in its view
+            ServerName localhost
+            PidFile /tmp/httpd.pid
+            ErrorLog /dev/stderr
+            CustomLog /dev/stdout common
+        }
+        fh : handle fopen[ cf.chars, 'a' ]
+        if [ fh ]
+            fputs[ add.chars, fh ]
+            fclose[ fh ]
+    log 'apache: {hd}, port 8080'

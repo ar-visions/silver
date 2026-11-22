@@ -224,8 +224,10 @@ MenuSource CommuneMenus
             hv : string [ (here) ? 'on' : 'off' ]
             ff : string form_fields[ line_name[ ws ], k, ws[ 2 ], hv ]
             e.target = '{ff}#{form_note[]}#Save'
-            e.side = '×'
-            e.side_action = 'remove {k}'
+            # its switch at the right; shift or ctrl / cmd: its remove
+            e.side = (reveal) ? '×' : ((on) ? 'on' : 'off')
+            e.side_action = (reveal) ? 'remove {k}' : 'toggle {k}'
+            e.side_check = on && !reveal
             m.push[ e ]
         # a binding on with nothing listening: orbiter starts it
         if [ down && !asked ] tell[ 'service commune on' ]
@@ -316,13 +318,14 @@ MenuSource CommuneMenus
             if [ c < 48 || c > 57 ] return false
         return true
 
-    # a card each in commune's folder: the server's own client
+    # a card each in commune's folder: the server's own client; only
+    # those switched on (the rest are in its form)
     func launches [] -> vec string
         load[]
         out : vec string []
         for [ ln: string ] in items
             ws : vec string ln.split[ ' ' ]
-            if [ ws.count < 4 ] continue
+            if [ ws.count < 4 || !line_on[ ws ] ] continue
             out.push[ '{line_name[ ws ]}\t--entry {ws[ 0 ]}:{ws[ 1 ]}' ]
         return out
 

@@ -181,6 +181,16 @@ element orbiter : trinity # implements compiler
     intern [ StatePersist ] services_on : vec string
     # the startup programs turned off (on until then)
     intern [ StatePersist ] startup_off : vec string
+    # the device the menu's apps and services are for: a
+    # devices.agi entry's name or a host, '' Local; kept across a
+    # reload, never a start (a start is Local)
+    persist device_on : string
+    # this machine's software as text, for another orbiter's `get`
+    public software_list : string [ '' ]
+    intern soft_at : i64
+    # the picked device and its software as it last said
+    intern dev_machine : Machine
+    intern dev_soft : vec Software
     # the ones running, by module
     intern svc_views : map AppView [ string ]
     mutable home_back  : bool
@@ -529,6 +539,10 @@ element orbiter : trinity # implements compiler
     intern info_url      : string
     # the anonymous menu at the window's right edge (the task bar's)
     intern popup_right   : bool
+    # a popup under a bar name: its x (-1: the menu's own edge)
+    intern popup_x       : f32 [ -1.0 ]
+    # the devices menu's connect: why the last one failed
+    intern dev_problem   : string
     # the finder's global navigation, its left column: every host user
     # listed so far (kept with the session) and every checkout beside
     # this one
@@ -879,9 +893,15 @@ element orbiter : trinity # implements compiler
     # the drawer's height (px), and the app whose menus it holds
     intern cfg_h          : f32
     intern cfg_menu_of    : string
+    intern cfg_panel_of   : string
+    intern cfg_panel_src  : element
     intern dock_pop       : DockIcon
     intern dock_pop_x     : f32
     intern dock_pop_y     : f32
+    # its drawer's items as listed (a row's 'drawer n'), and the words
+    # typed to find among them
+    intern dock_drawer    : vec AppEntry
+    intern dock_find      : string
     # the menu's New instance: the dock press makes one, not reuses
     intern dock_fresh     : bool
     # its row pressed, done on the next frame (never inside the press)
@@ -1574,6 +1594,7 @@ element orbiter : trinity # implements compiler
     func app_info_els [] -> Elements
     func form_spec [ ae: AppEntry ] -> string
     func cfg_any [ ae: AppEntry ] -> bool
+    func cfg_panel [ ae: AppEntry ] -> element
     func shown_in_pane [ av: AppView ] -> bool
     func tray_raise [ av: AppView ]
     func win_app [ pi: i32 ] -> AppView
@@ -1677,10 +1698,25 @@ element orbiter : trinity # implements compiler
     func service_list [] -> vec AppEntry
 
     func service_is_on [ nm: string ] -> bool
+    func device_list [] -> vec string
+    func devices_open [ mt: MenuTop ]
+    func device_connect []
+    func device_try [ ad: string ] -> string
+    func device_why [ ad: string, ln: string ] -> string
     func startup_is_off [ nm: string ] -> bool
     func startup_view [ ae: AppEntry ] -> AppView
     func service_of [ nm: string ] -> AppEntry
     func is_startup [ ae: AppEntry ] -> bool
+    func is_daemon [ ae: AppEntry ] -> bool
+    func is_service [ ae: AppEntry ] -> bool
+    func headless_services []
+    func headless_start [ ae: AppEntry ]
+    func software_here [] -> vec Software
+    func software_sync []
+    func device_host [ nm: string ] -> string
+    func device_read []
+    func device_entries [] -> vec AppEntry
+    func device_service [ nm: string ]
 
     func service_start [ ae: AppEntry ]
 
@@ -2133,6 +2169,9 @@ element orbiter : trinity # implements compiler
     func plain_folder [ p: path ] -> bool
 
     func dock_icon_click [ di: DockIcon ]
+    func drawer_of [ ae: AppEntry ] -> vec AppEntry
+    func drawer_pick [ ae: AppEntry ]
+    func dock_pop_key [ ev: Event ] -> bool
     func dock_pop_items [] -> vec PopItem
     func dock_pop_pick [ act: string :: o: orbiter ] -> none
     func dock_pop_quit [ :: o: orbiter ] -> none
@@ -2844,6 +2883,7 @@ import Apps
 import Input
 import Frame
 import Settings
+import Machines
 import Find
 import Dock
 import Nav

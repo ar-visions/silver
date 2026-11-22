@@ -884,10 +884,108 @@ func orbiter.pin_insert [ key: string, at: i32 ]
 func orbiter.running_apps [] -> vec AppView
     return inst_reg[].running[]
 
-# a dock icon's menu: its running instances, New instance, Quit
+# an app's drawer, as its desktop folder shows it: a store's apps,
+# its menus' cards, an agent's sessions, or the files it opens (or
+# made)
+func orbiter.drawer_of [ ae: AppEntry ] -> vec AppEntry
+    out : vec AppEntry []
+    if [ !ae ] return out
+    if [ ae.store && ae.apps ]
+        for [ sa: AppEntry ] in ae.apps
+            out.push[ sa ]
+        return out
+    if [ ae.menus && ae.menus.count > 0 ]
+        fs : MenuSource fold_of[ ae.name ]
+        if [ fs ]
+            for [ ln: string ] in fs.launches*[]
+                tb : i32 [ i32[ ln.index_of[ '\t' ] ] ]
+                if [ tb <= 0 ] continue
+                out.push[ AppEntry [ name: ln.mid[ 0, tb ],
+                    file: ae.file, module: true, agi: ae.agi,
+                    group: ae.group, built: ae.built,
+                    args: ln.mid[ tb + 1, ln.count - tb - 1 ] ] ]
+        return out
+    if [ is_agent_app[ ae ] ] return agent_cards[ ae ]
+    if [ !ae.module || ae.opens ] return out
+    fl : vec string []
+    if [ ae.contains && ae.contains.count > 0 ]
+        for [ cp: path ] in contained[ ae ]
+            fl.push[ '{cp}' ]
+    el
+        fl = nav.files_ending[ opens_exts[ ae.name ] ]
+    for [ f: string ] in fl
+        fp : path '{f}'
+        out.push[ AppEntry [ name: fp.filename[], file: ae.file,
+            module: true, agi: ae.agi, group: ae.group,
+            built: ae.built, opens: fp ] ]
+    return out
+
+# a drawer item picked, as its card's press: a file opened in the
+# selected window, else its line or app run
+func orbiter.drawer_pick [ ae: AppEntry ]
+    if [ !ae ] return
+    if [ ae.opens ] open_in_pane[ ae.opens, active_pane ]
+    el apps_pick[ active_pane, ae ]
+
+# keys while the dock's menu is up: typed words find in its drawer,
+# backspace takes one back, enter opens the first found, escape
+# clears the words, then shuts it; true: the key was its
+func orbiter.dock_pop_key [ ev: Event ] -> bool
+    if [ !dock_pop ] return false
+    if [ !dock_find ] dock_find = ''
+    ks : i32 [ ev.key.unicode ]
+    if [ ev.key.state != 1 ] return ks == 259 || ks == 257 || ks == 256
+    if [ ks == 259 ]
+        if [ dock_find.count > 0 ]
+            dock_find = dock_find.mid[ 0, dock_find.count - 1 ]
+        force_update[]
+        return true
+    if [ ks == 257 ]
+        if [ dock_find.count > 0 && dock_drawer
+             && dock_drawer.count > 0 ]
+            dock_act = 'drawer 0'
+            force_update[]
+        return true
+    if [ ks == 256 ]
+        if [ dock_find.count > 0 ] dock_find = ''
+        el dock_pop = null
+        force_update[]
+        return true
+    return false
+
+# a dock icon's menu: its drawer (the first DOCK_DRAWER, or those
+# the typed words find), its running instances, New instance, Quit
+DOCK_DRAWER : i32 [ 12 ]
+
 func orbiter.dock_pop_items [] -> vec PopItem
     out : vec PopItem []
+    dock_drawer = vec AppEntry []
     if [ !dock_pop ] return out
+    if [ !dock_find ] dock_find = ''
+    if [ dock_find.count > 0 ]
+        out.push[ PopItem [ icon: 'magnify',
+                            label: 'find: {dock_find}', note: true ] ]
+    ae : AppEntry null
+    want : string [ (dock_pop.file) ? '{dock_pop.file}' : '' ]
+    for [ e_: AppEntry ] in app_entries[]
+        if [ e_.file && want.count > 0 && '{e_.file}' == want ]
+            ae = e_
+    words : string dock_find.lcase[]
+    more : i32 [ 0 ]
+    for [ it: AppEntry ] in drawer_of[ ae ]
+        if [ words.count > 0
+             && it.name.lcase[].index_of[ words ] < 0 ] continue
+        if [ dock_drawer.count >= DOCK_DRAWER ]
+            more += 1
+            continue
+        out.push[ PopItem [ icon: (it.opens) ? 'files' : 'play',
+            label: it.name, act: 'drawer {dock_drawer.count}' ] ]
+        dock_drawer.push[ it ]
+    if [ more > 0 ]
+        out.push[ PopItem [ label: '{more} more: type to find',
+                            note: true ] ]
+    el [ words.count > 0 && dock_drawer.count == 0 ]
+        out.push[ PopItem [ label: 'none found', note: true ] ]
     pinned : bool [ dock_pop.id && dock_pop.id.starts_with[ 'dock_' ] ]
     if [ !dock_pop.module || !dock_pop.file || dock_pop.program ]
         if [ pinned ]
@@ -991,7 +1089,11 @@ func orbiter.dock_pop_do []
     if [ !di || !act ]
         dock_pop = null
         return
-    if [ act.starts_with[ 'show ' ] ]
+    if [ act.starts_with[ 'drawer ' ] ]
+        k : i32 [ i32[ act.mid[ 7, act.count - 7 ].integer_value[] ] ]
+        if [ dock_drawer && k < dock_drawer.count ]
+            drawer_pick[ dock_drawer[ k ] ]
+    el [ act.starts_with[ 'show ' ] ]
         show_own[ i32[ act.mid[ 5, act.count - 5 ].integer_value[] ] ]
     el [ act == 'new' ]
         dock_fresh = true
@@ -1022,8 +1124,10 @@ func orbiter.dock_pop_do []
         for [ v: AppView ] in inst_reg[].live_app[ di.file ]
             close_task[ v ]
     dock_pop = null
+    dock_find = ''
 
 # an escape in it
 func orbiter.dock_pop_quit [ :: o: orbiter ] -> none
     o.dock_pop = null
+    o.dock_find = ''
     o.force_update[]

@@ -926,9 +926,34 @@ func orbiter.form_spec [ ae: AppEntry ] -> string
     lp.props = kept
     return Au.string_agi[ lp ]
 
-# an app has a config drawer: its own form (the menus it exports)
+# an app has a drawer for its service, panel or menus
 func orbiter.cfg_any [ ae: AppEntry ] -> bool
-    return ae && ae.module && ae.menus && ae.menus.count > 0
+    if [ is_service[ ae ] ] return true
+    return ae && ae.module
+        && ((ae.menus && ae.menus.count > 0)
+            || (ae.panel && ae.panel.count > 0))
+
+# the app configuration panel exported by its module
+func orbiter.cfg_panel [ ae: AppEntry ] -> element
+    if [ !ae || !ae.panel || ae.panel.count == 0 ] return null
+    if [ cfg_panel_src && cfg_panel_of == ae.name ]
+        return cfg_panel_src
+    module_load[ 'silver-{ae.name}', ae.panel ]
+    kind : Au_t Au.find_type[ ae.panel.chars, null ]
+    if [ !kind ]
+        log 'orbiter: no class {ae.panel} in {ae.name}'
+        return null
+    made : Au.new_object[ kind, null, null, true, __FILE__,
+                          __LINE__, __SEQUENCE__ ]
+    cfg_panel_src = cast element [ made ]
+    cfg_panel_of = ae.name
+    return cfg_panel_src
+
+# an app's service is switched on or off in its form
+func orbiter.is_service [ ae: AppEntry ] -> bool
+    return ae && ((ae.serves && ae.serves.count > 0)
+        || (ae.startup && ae.startup.count > 0)
+        || (ae.daemon && ae.daemon.count > 0))
 
 # the orbiter menu's drawer: the app's own menus (its tabs, its
 # rows, a row's page) as the bar shows them; none without them.
@@ -937,12 +962,39 @@ func orbiter.cfg_els [ ae: AppEntry ] -> Elements
     t : Elements []
     un : f32 unit_px[]
     cfg_ae = ae
+    # a service: its switch first, over its own settings
+    sv : f32 [ 0.0 ]
+    if [ is_service[ ae ] ]
+        on : bool service_is_on[ ae.name ]
+        ch : f32 [ round[ 1.1 * un ] ]
+        st : string [ (on) ? 'on' : 'off' ]
+        t['svc_{ae.name}'] = RoundTab [
+            buttons: vec string [] [ 'svc_{ae.name}' ],
+            icon_ids: vec string [] [ '_text' ],
+            labels: vec string [] [ 'service   {st}' ],
+            label_font: 'fonts/BarlowCondensed-Regular.ttf',
+            label_px: 0.5 * ch, manual: true,
+            sel_mask: (on) ? 1 : 0,
+            seg_radius: ch * 0.5, use_spacing: false,
+            rest_fill: rgba [ '#00000026' ],
+            area: Region { l0.6 t0.4 w10 h1.1 } ]
+        sv = 1.5
+    panel : element cfg_panel[ ae ]
+    ph : f32 [ 0.0 ]
+    if [ panel ]
+        ph = 20.0
+        panel.area = Region [ 'l0 t{sv} w24 h{ph}' ]
+        t['cfg_panel'] = panel
     fs : MenuSource null
     if [ ae.menus && ae.menus.count > 0 ] fs = fold_of[ ae.name ]
+    # menus that only name the drawer's apps: no rows here
+    if [ fs && fs.entries*[].count == 0 ] fs = null
     if [ !fs ]
-        cfg_h = 0.0
+        cfg_h = (sv + ph > 0.0)
+            ? round[ un * (sv + ph + 0.4) ] : 0.0
         return t
-    # a new drawer: its menus read, the first tab
+    # a new drawer: its menus read, the first tab; read again each
+    # time after (a switch, a held key shows at once)
     if [ cfg_menu_of != ae.name ]
         cfg_menu_of = ae.name
         menu_items = fold_items[ fs ]
@@ -951,6 +1003,8 @@ func orbiter.cfg_els [ ae: AppEntry ] -> Elements
         for [ i: i32 0, i < menu_items.count, i += 1 ]
             if [ menu_top < 0 && menu_items[ i ].depth == 0 ]
                 menu_top = i
+    el [ menu_page != 'fold' ]
+        menu_items = fold_items[ fs ]
     tabs : vec string []
     ids  : vec string []
     sel  : i32 [ 0 ]
@@ -960,14 +1014,15 @@ func orbiter.cfg_els [ ae: AppEntry ] -> Elements
         tabs.push[ menu_items[ i ].label ]
         ids.push[ 'ctab_{i}' ]
     # one menu: its rows alone, no tabs
-    tp : f32 [ (tabs.count > 1) ? 1.8 : 0.4 ]
+    tp : f32 [ sv + ph + ((tabs.count > 1) ? 1.8 : 0.4) ]
     if [ tabs.count > 1 ]
         t['cfg_tabs'] = AltTab [ buttons: ids, labels: tabs,
             icon_ids: vec string [] [], manual: true,
             label_font: 'fonts/BarlowCondensed-Regular.ttf',
             seg_radius: 0.0, use_spacing: false, sel_mask: sel,
             rest_fill: rgba [ '#0000' ],
-            area: Region [ 'l0.6 t0.4 w{4.5 * f32[ tabs.count ]} h1.1' ] ]
+            area: Region [ 'l0.6 t{sv + ph + 0.4} '
+                + 'w{4.5 * f32[ tabs.count ]} h1.1' ] ]
     # the tab's rows (a page over them when a row has one)
     rows : f32 [ 0.0 ]
     for [ i: i32 menu_top + 1, i < menu_items.count, i += 1 ]
@@ -1165,7 +1220,8 @@ func orbiter.run_startup []
     # the services as the user last left them
     if [ services_on ]
         for [ ae: AppEntry ] in app_entries[]
-            if [ ae.serves && ae.serves.count > 0
+            if [ ((ae.serves && ae.serves.count > 0)
+                  || is_daemon[ ae ])
                  && service_is_on[ ae.name ] ] service_start[ ae ]
 
 # a startup program turned off, by its module or its export's
@@ -1180,10 +1236,11 @@ func orbiter.startup_is_off [ nm: string ] -> bool
 
 # a startup program's background instance, running
 func orbiter.startup_view [ ae: AppEntry ] -> AppView
-    if [ !instances || !ae.startup ] return null
+    ln : string [ (is_daemon[ ae ]) ? ae.daemon : ae.startup ]
+    if [ !instances || !ln || ln.count == 0 ] return null
     for [ v: AppView ] in instances
         if [ v.background && !v.ended && v.module_args
-             && v.module_args.index_of[ ae.startup ] >= 0 ] return v
+             && v.module_args.index_of[ ln ] >= 0 ] return v
     return null
 
 # the modules that offer a service (export serves)
@@ -1191,7 +1248,8 @@ func orbiter.service_list [] -> vec AppEntry
     out : vec AppEntry []
     for [ ae: AppEntry ] in app_entries[]
         if [ (ae.serves && ae.serves.count > 0)
-             || (ae.startup && ae.startup.count > 0) ] out.push[ ae ]
+             || (ae.startup && ae.startup.count > 0)
+             || (ae.daemon && ae.daemon.count > 0) ] out.push[ ae ]
     return out
 
 # a service's entry by name
@@ -1200,6 +1258,28 @@ func orbiter.service_of [ nm: string ] -> AppEntry
         if [ ae.name == nm ] return ae
     return null
 
+# a machine with no screen draws nothing, so nothing hosts a
+# console: each daemon switched on runs as a child of orbiter,
+# its output into install/tmp/<name>.log
+func orbiter.headless_services []
+    for [ ae: AppEntry ] in service_list[]
+        if [ is_daemon[ ae ] && service_is_on[ ae.name ] ]
+            headless_start[ ae ]
+    software_sync[]
+
+func orbiter.headless_start [ ae: AppEntry ]
+    bin : string '{install_root[]}/bin'
+    lg : string '{install_root[]}/tmp/{ae.name}.log'
+    ln : string ae.daemon
+    c : command [ 'PATH={bin}:$PATH {ln} > {lg} 2>&1 &' ]
+    c.exec[ false ]
+    log 'orbiter: started {ae.name} ({ln})'
+
+# a program run as a service, off until switched on
+func orbiter.is_daemon [ ae: AppEntry ] -> bool
+    return ae && (!ae.serves || ae.serves.count == 0)
+        && ae.daemon && ae.daemon.count > 0
+
 # a program run at every start (no serves of its own)
 func orbiter.is_startup [ ae: AppEntry ] -> bool
     return ae && (!ae.serves || ae.serves.count == 0)
@@ -1207,6 +1287,8 @@ func orbiter.is_startup [ ae: AppEntry ] -> bool
 
 # the user left it on; a startup program is on until turned off
 func orbiter.service_is_on [ nm: string ] -> bool
+    rs : AppEntry service_of[ nm ]
+    if [ rs && rs.remote ] return rs.remote_on
     if [ is_startup[ service_of[ nm ] ] ] return !startup_is_off[ nm ]
     if [ !services_on ] return false
     for [ s_: string ] in services_on
@@ -1215,9 +1297,13 @@ func orbiter.service_is_on [ nm: string ] -> bool
 
 # its instance running in no pane, with its service's args
 func orbiter.service_start [ ae: AppEntry ]
-    if [ is_startup[ ae ] ]
+    if [ text_mode && is_daemon[ ae ] ]
+        headless_start[ ae ]
+        return
+    if [ is_startup[ ae ] || is_daemon[ ae ] ]
+        ln : string [ (is_daemon[ ae ]) ? ae.daemon : ae.startup ]
         if [ !startup_view[ ae ] ]
-            run_background[ ae.startup, path '{ae.file}/{ae.name}.ag' ]
+            run_background[ ln, path '{ae.file}/{ae.name}.ag' ]
         return
     if [ !svc_views ] svc_views = map AppView [ string ] []
     if [ svc_views.contains[ ae.name ] ]
@@ -1238,7 +1324,14 @@ func orbiter.service_start [ ae: AppEntry ]
 
 func orbiter.service_stop [ nm: string ]
     sa : AppEntry service_of[ nm ]
-    if [ is_startup[ sa ] ]
+    # no screen: the program itself, by its name
+    if [ text_mode && is_daemon[ sa ] ]
+        pn : string sa.daemon.split[ ' ' ][ 0 ]
+        k : command [ 'pkill -x {pn}' ]
+        k.exec[ false ]
+        log 'orbiter: {nm} stopped'
+        return
+    if [ is_startup[ sa ] || is_daemon[ sa ] ]
         sv : AppView startup_view[ sa ]
         if [ sv ] close_task[ sv ]
         log 'orbiter: {nm} stopped'
@@ -1252,6 +1345,9 @@ func orbiter.service_stop [ nm: string ]
 
 # a switch pressed: on or off, kept as the user leaves it
 func orbiter.service_toggle [ nm: string ]
+    if [ device_on && device_on.count > 0 ]
+        device_service[ nm ]
+        return
     keep : vec string []
     on : bool service_is_on[ nm ]
     if [ is_startup[ service_of[ nm ] ] ]
@@ -1958,6 +2054,9 @@ func orbiter.all_log [] -> ConsoleSession
 # (export software ['games']), its folder in silver's own
 func orbiter.app_entries [] -> vec AppEntry
     if [ app_list ] return app_list
+    if [ device_on && device_on.count > 0 ]
+        app_list = device_entries[]
+        return app_list
     app_list = vec AppEntry []
     root : path path.path_startup[]
     ex : path '{install_root[]}/export'
@@ -2017,9 +2116,12 @@ func orbiter.app_entries [] -> vec AppEntry
             ae.lib = module_lib[ 'silver-{mn}' ]
         ae.menus = (msrc) ? source_word[ msrc, 'export menus' ]
             : ''
+        ae.panel = (msrc) ? source_word[ msrc, 'export panels' ]
+            : ''
         ae.widget = agi_word[ tx, 'widget' ]
         ae.serves = agi_word[ tx, 'serves' ]
         ae.startup = source_word[ tx, 'startup:' ]
+        ae.daemon = source_word[ tx, 'daemon:' ]
         ae.service = agi_word[ tx, 'service' ]
         ae.chords = agi_word[ tx, 'chords' ]
         ae.contains = agi_word[ tx, 'contains' ]
@@ -2046,6 +2148,8 @@ func orbiter.app_entries [] -> vec AppEntry
         oe.widget = source_word[ src, 'export widget' ]
         oe.serves = source_word[ src, 'export serves' ]
         oe.startup = source_word[ src, 'export startup' ]
+        oe.daemon = source_word[ src, 'export daemon' ]
+        oe.panel = source_word[ src, 'export panels' ]
         oe.service = source_word[ src, 'export service' ]
         oe.chords = source_word[ src, 'export chords' ]
         oe.contains = source_word[ src, 'export contains' ]
@@ -2073,9 +2177,11 @@ func orbiter.app_entries [] -> vec AppEntry
             fe.built = null
             fe.lib = module_lib[ 'silver-{fn}' ]
         fe.menus = source_word[ src, 'export menus' ]
+        fe.panel = source_word[ src, 'export panels' ]
         fe.widget = source_word[ src, 'export widget' ]
         fe.serves = source_word[ src, 'export serves' ]
         fe.startup = source_word[ src, 'export startup' ]
+        fe.daemon = source_word[ src, 'export daemon' ]
         fe.host = source_word[ src, 'export host' ]
         fe.service = source_word[ src, 'export service' ]
         app_list.push[ fe ]
@@ -2106,6 +2212,11 @@ func orbiter.can_pull [ ae: AppEntry ] -> bool
         && '{ae.file}'.index_of[ '/stores/' ] < 0
 
 func orbiter.built_now [ ae: AppEntry ] -> bool
+    if [ ae && ae.remote ] return ae.remote_built
+    # a daemon: its own program (apache's httpd)
+    if [ is_daemon[ ae ] ]
+        dp : path '{install_root[]}/bin/{ae.daemon.split[ ' ' ][ 0 ]}'
+        return dp.exists[]
     if [ ae.built ] return ae.built.exists[]
     return !ae.lib || ae.lib.exists[]
 
@@ -2139,9 +2250,27 @@ func orbiter.app_delete [ ae: AppEntry ]
     if [ ux ] ux.restyle = true
 
 # a module hosted with its arguments, a new instance in pane pi
+# a window owns its app: started (or the one running so) and shown
+# in the window, whether an editor is there or not
 func orbiter.launch_args [ pi: i32, mod: string, args: string ]
-    ed : Editor pane_at[ (pi >= 0) ? pi : active_pane ]
-    if [ ed ] ed.host_module[ mod, null, args ]
+    at : i32 [ (pi >= 0) ? pi : active_pane ]
+    root : path path.path_startup[]
+    ms : path '{root}/{mod}/{mod}.ag'
+    fs_ : path '{root}/featured/{mod}/{mod}.ag'
+    if [ !ms.exists[] && fs_.exists[] ] ms = fs_
+    wt : string [ (args) ? args : '' ]
+    fr : bool [ inst_fresh ]
+    inst_fresh = false
+    nv : AppView inst_reg[].want[ ms, null, wt, fr ]
+    if [ inst_reg[].made ]
+        nv.viewer = true
+        nv.module_args = args
+        nv.host_hz = (ux) ? ux.refresh_hz[] : 60
+        inst_made[ nv ]
+        nv.start[]
+    el
+        log 'instance {nv.iid}: {mod} running, shown'
+    pane_show_app[ at, nv ]
 
 # a line's first quoted word in source: "export software
 # ['games']" gives games; '' when the line is not there
@@ -2621,6 +2750,117 @@ func orbiter.import_count_of [ nm: string ] -> i32
              && ln.index_of[ ' from ' ] > 0 ]
             n += 1
     return n
+
+# the devices orbiter connects to: devices.agi's entries, by name
+# then its ssh host ('name host' each), as silver -d reads them
+func orbiter.device_list [] -> vec string
+    out : vec string []
+    f : path '{path.path_startup[]}/devices.agi'
+    tx : string f.load[ typeid[ string ], null ]
+    if [ !tx ] return out
+    nm : string ''
+    host : string ''
+    for [ ln: string ] in tx.split[ '\n' ]
+        if [ ln.count == 0 || ln.starts_with[ '#' ] ] continue
+        # an entry starts at the margin: 'vm: Device'
+        if [ !ln.starts_with[ '\t' ] && !ln.starts_with[ ' ' ] ]
+            if [ nm.count > 0 ] out.push[ '{nm} {host}' ]
+            nm = ''
+            host = ''
+            c : i32 [ ln.index_of[ ':' ] ]
+            if [ c > 0 && ln.index_of[ 'Device' ] > c ]
+                nm = ln.mid[ 0, c ].trim[]
+            continue
+        t : string ln.trim[]
+        if [ t.starts_with[ 'host:' ] ]
+            host = t.mid[ 5, t.count - 5 ].trim[]
+    if [ nm.count > 0 ] out.push[ '{nm} {host}' ]
+    return out
+
+# the bar's devices: this machine, then each devices.agi entry,
+# the screen's one checked; a pick makes the orbiter menu its
+func orbiter.devices_open [ mt: MenuTop ]
+    # again: it shuts
+    if [ drawer_open && menu_kind == 'popup' && popup_for == 'device' ]
+        drawer_shut[]
+        return
+    rows : vec string [] [ 'Local' ]
+    vals : vec string [] [ 'this' ]
+    for [ d: string ] in device_list[]
+        sp : i32 [ d.index_of[ ' ' ] ]
+        nm : string d.mid[ 0, sp ]
+        rows.push[ '{nm}   {d.mid[ sp + 1, d.count - sp - 1 ]}' ]
+        vals.push[ nm ]
+    # connected to by its address, not one of the file's
+    if [ device_on && device_on.count > 0 && !vals.contains[ device_on ] ]
+        rows.push[ device_on ]
+        vals.push[ device_on ]
+    dev_problem = ''
+    popup[ 'devices', 'device', rows, vals ]
+    # the screen's device: its row lit
+    for [ i: i32 1, i < popup_items.count, i += 1 ]
+        v : string popup_items[ i ].target
+        on : bool [ (device_on && device_on.count > 0)
+            ? v == device_on : v == 'this' ]
+        if [ on ] menu_lit = i
+    popup_x = world_rect[ mt ].x
+
+# ssh to the host, the answer's last line ('ok' when it answered)
+func orbiter.device_try [ ad: string ] -> string
+    sh : 'ssh -o BatchMode=yes -o ConnectTimeout=5'
+    q : command [ '{sh} -- {ad} echo ok 2>&1' ]
+    fh : handle q.stream[]
+    if [ !fh ] return 'ssh did not start'
+    last : string ''
+    b : local i8 [ 1024 ]
+    while [ fgets[ @b[0], 1024, fh ] ]
+        l : string [ @b[0] ]
+        if [ l.trim[].count > 0 ] last = l.trim[]
+    pclose[ fh ]
+    return last
+
+# ssh's word for a failure, as the user reads it
+func orbiter.device_why [ ad: string, ln: string ] -> string
+    if [ ln.index_of[ 'Could not resolve hostname' ] >= 0 ]
+        return 'No host named {ad}: the name did not resolve.'
+    if [ ln.index_of[ 'No route to host' ] >= 0
+         || ln.index_of[ 'Network is unreachable' ] >= 0 ]
+        return '{ad} is unreachable: no route to it.'
+    if [ ln.index_of[ 'Connection refused' ] >= 0 ]
+        return '{ad} is up, but nothing answers ssh there.'
+    if [ ln.index_of[ 'timed out' ] >= 0 ]
+        return 'No answer from {ad}: timed out.'
+    if [ ln.index_of[ 'Permission denied' ] >= 0 ]
+        return '{ad} answered, but did not accept our key.'
+    if [ ln.index_of[ 'Host key verification failed' ] >= 0 ]
+        return '{ad} answered with a key we do not trust.'
+    return '{ad}: {ln}'
+
+# the typed host connected to: it answers ssh (no prompt, 5 s),
+# then it is the screen's device; else the menu says why not
+func orbiter.device_connect []
+    f : element find_el[ a, 'dev_addr' ]
+    ad : string [ (f && f.edit) ? f.edit.trim[] : '' ]
+    if [ ad.count == 0 ]
+        dev_problem = 'Type a host: its name, or an IPv4 or IPv6 address.'
+        if [ ux ] ux.restyle = true
+        return
+    # ssh's own last word says what went wrong
+    ln : string device_try[ ad ]
+    if [ ln != 'ok' ]
+        dev_problem = device_why[ ad, ln ]
+        log 'orbiter: device {ad}: {ln}'
+        if [ ux ] ux.restyle = true
+        return
+    dev_problem = ''
+    device_on = ad
+    save_session[]
+    device_read[]
+    app_list = null
+    apps_gen += 1
+    log 'orbiter: device {ad} connected'
+    drawer_shut[]
+    if [ ux ] ux.restyle = true
 
 # each service a switch: on, it runs from every start, until off
 func orbiter.services_body [] -> Elements

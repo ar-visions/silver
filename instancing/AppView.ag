@@ -160,6 +160,9 @@ class AppView
     # host before service, which tells the app once
     public  unseen     : bool
     intern  told_seen  : bool [ true ]
+    # the app asked for the whole screen (HM.full): its window shows
+    # it on the monitor
+    public  want_full  : bool
     mutable pic_h      : i32
     # the frame the app showed as its window switched to orbiter: the
     # pip until the instance runs and its own frames arrive
@@ -281,6 +284,8 @@ class AppView
             # the request from here), and types the take back
             el [ t == i32[ HM.dictate ] ]
                 dict_req = host_pa[]
+            el [ t == i32[ HM.full ] ]
+                want_full = host_pa[] != 0
             # the app's picture shape: a pip is sized to it
             el [ t == i32[ HM.aspect ] ]
                 pic_w = host_pa[]
@@ -821,6 +826,7 @@ class AppView
     func draw_frame [ cv: Canvas, bounds: rect ]
         # its next picture wakes the host's next frame
         host_watch[ slot ]
+        tell_place[ cv, bounds ]
         ft : front[]
         # the new size not drawn yet: the old picture at its own size
         if [ !ft && was_tex && have_frame ]
@@ -935,6 +941,32 @@ class AppView
     # times a second at most): compiling, testing, linking
     intern step_ms  : i64
     intern step_txt : string
+    # the place on the monitor last told to the app (HM.place)
+    intern told_x   : i32 [ -1 ]
+    intern told_y   : i32 [ -1 ]
+    intern told_w   : i32
+    intern told_h   : i32
+
+    # the app told where its picture sits on the monitor, in pixels:
+    # this window's place, plus where it draws the picture
+    func tell_place [ cv: Canvas, bounds: rect ]
+        if [ slot < 0 ] return
+        sc : f32 [ cv.transform_scale[] ]
+        if [ sc <= 0.0 ] sc = 1.0
+        m : rect screen_rect[]
+        p : vec2f window_screen_pos[]
+        x : i32 [ i32[ p.x - m.x + cv.transform_tx[] + bounds.x * sc ] ]
+        y : i32 [ i32[ p.y - m.y + cv.transform_ty[] + bounds.y * sc ] ]
+        mw : i32 [ i32[ m.w ] ]
+        mh : i32 [ i32[ m.h ] ]
+        if [ mw != told_w || mh != told_h ]
+            told_w = mw
+            told_h = mh
+            host_post2[ slot, 1, i32[ HM.monitor ], mw, mh, 0 ]
+        if [ x != told_x || y != told_y ]
+            told_x = x
+            told_y = y
+            host_post2[ slot, 1, i32[ HM.place ], x, y, 0 ]
 
     func building [] -> bool
         return slot >= 0 && host_app_state[ slot ] == 1
