@@ -12,10 +12,12 @@ MenuSource HyperspaceApps
         return vec string [] [ 'record\t--view record',
             'gaze\t--view record --into gaze',
             'edges\t--view record --into gaze --route edges',
+            'negatives\t--view record --into negatives --route negatives',
             'testbed\t--view testbed', 'training\t--view training',
-            'annotate\t--view annotate' ]
+            'annotate\t--view annotate',
+            'recordings\t--view recordings' ]
 
 expect func t_hs_apps [] -> bool
     apps : HyperspaceApps []
     ls : vec string apps.launches*[]
-    return ls.count == 6 && ls[ 0 ].starts_with[ 'record\t' ]
+    return ls.count == 8 && ls[ 0 ].starts_with[ 'record\t' ]

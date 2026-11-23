@@ -21,6 +21,7 @@ import Menus
 import Panel
 import Eyes
 import Jobs
+import Recordings
 
 # the app's storage, one folder for the app and its panel: in its
 # view (a hosted slot) its own home's; drawn by orbiter (the panel),
@@ -35,6 +36,25 @@ ROUNDS : i32 [ 4 ]
 # once round them at one speed in this many ms
 EDGE_IN : f32 [ 0.02 ]
 EDGE_MS : i64 [ 120000 ]
+# negatives: each prompt held this long, captured from this far in
+# (time to act it out), every prompt this many times in all
+NEG_MS : i64 [ 8000 ]
+NEG_SETTLE_MS : i64 [ 1500 ]
+NEG_ROUNDS : i32 [ 2 ]
+
+# negatives: each one's label (kept as the capture's gesture) and
+# its prompt
+func hs_neg_keys [] -> vec string
+    return vec string [] [ 'hand_left', 'hand_right', 'hand_both',
+        'hair', 'shut', 'away', 'chin' ]
+
+func hs_neg_says [] -> vec string
+    return vec string [] [ 'cover your left eye with your hand',
+        'cover your right eye with your hand',
+        'cover both eyes with your hands',
+        'let your hair fall over your eyes',
+        'close your eyes', 'look away from the screen',
+        'rest your chin on your hand, look at the screen' ]
 
 func hs_dir [] -> path
     d : path path.path_storage[ 'hyperspace' ]
@@ -74,7 +94,8 @@ element hyperspace : trinity
     public [ Launch ] view : string [ 'testbed' ]
     # record's folder: records (the eye nets' data) or gaze
     public [ Launch ] into : string [ 'records' ]
-    # record's dot: grid (over the screen) or edges (round its sides)
+    # record's dot: grid (over the screen), edges (round its sides)
+    # or negatives (prompts, no dot)
     public [ Launch ] route : string [ 'grid' ]
     # orbiter's socket (it runs the training jobs for this app)
     public [ Launch ] opener : string
@@ -114,6 +135,12 @@ element hyperspace : trinity
     intern ann_done : i32
     # testbed: the gaze from both cameras
     intern hub : GazeHub
+    # recordings: the list as last read (again after a delete), and
+    # the trash's captures
+    intern recs : vec HsSession
+    intern trash_n : i64
+    # a click arrives twice: a delete takes the first alone
+    intern del_ms : i64
     # a fixed dot for checking the testbed's placement: the monitor's
     # -0.5..0.5, shown until aim_until (ms)
     intern aim_x : f32
@@ -317,7 +344,8 @@ element hyperspace : trinity
         points = vec f32 []
         seed : i64 epoch_millis[]
         if [ route == 'edges' ] edge_points[]
-        for [ rd: i32 0, rd < ROUNDS && route != 'edges', rd += 1 ]
+        if [ route == 'negatives' ] neg_points[ seed ]
+        for [ rd: i32 0, rd < ROUNDS && route == 'grid', rd += 1 ]
             seed = (seed * 1103515245 + 12345) % 2147483648
             nx : f32 [ f32[ seed % 61 ] / 1000.0 - 0.03 ]
             seed = (seed * 1103515245 + 12345) % 2147483648
@@ -342,6 +370,24 @@ element hyperspace : trinity
         session = epoch_millis[]
         rec_ids = vec string []
         left_us = epoch_micros[]
+
+    # negatives: a stop a prompt, each round in a new order; a stop's
+    # x the prompt's number
+    func neg_points [ start: i64 ]
+        seed : i64 start
+        n : i32 [ i32[ hs_neg_keys[].count ] ]
+        for [ rd: i32 0, rd < NEG_ROUNDS, rd += 1 ]
+            order : vec i32 []
+            for [ i: i32 0, i < n, i += 1 ] order += i
+            for [ i: i32 n - 1, i > 0, i -= 1 ]
+                seed = (seed * 1103515245 + 12345) % 2147483648
+                j : i32 [ i32[ seed % i64[ i + 1 ] ] ]
+                t : i32 order[ i ]
+                order[ i ] = order[ j ]
+                order[ j ] = t
+            for [ v: i32 ] in order
+                points += f32[ v ]
+                points += 0.0
 
     # edges: one stop for the run's count; the dot's place is by time
     func edge_points []
@@ -383,11 +429,19 @@ element hyperspace : trinity
             shot_at = cam.camera.taken
             d : vec2f dot_at[]
             take_at[ d.x, d.y, 0 ]
+        el [ route == 'negatives' ]
+            # every lit frame once the prompt has been acted out
+            if [ cam && cam.camera && !pending && el_ms >= NEG_SETTLE_MS
+                 && cam.camera.taken != shot_at ]
+                shot_at = cam.camera.taken
+                take_at[ -1.0, -1.0, 0 ]
+                pending[ 3 ] = hs_neg_keys[][ i32[ points[ at * 2 ] ] ]
         el [ into != 'gaze' && el_ms >= mv && !pending
              && el_ms < mv + 100 ]
             ask_capture[ 600 ]
         # edges: one run round the sides, at its end the last stop
         done : bool [ (route == 'edges') ? el_ms >= EDGE_MS
+                      : (route == 'negatives') ? el_ms >= NEG_MS
                       : el_ms >= mv + 1100 ]
         if [ done ]
             at += 1
@@ -468,6 +522,28 @@ element hyperspace : trinity
         # annotate and training need none
         rn : i32 [ (points) ? i32[ points.count ] / 2 : 0 ]
         done : bool [ cancelled || (rn > 0 && at >= rn) ]
+        # recordings: a row each, newest first; ctrl / cmd shows every
+        # row's Delete, shift the hovered row's
+        if [ view == 'recordings' ]
+            if [ !recs ]
+                recs = hs_sessions[]
+                trash_n = hs_trash_count[]
+            all : bool [ ux && ux.cmd ]
+            y : f32 [ 3.0 ]
+            for [ i: i32 0, i < i32[ recs.count ], i += 1 ]
+                was : cast element [ (elements) ? elements[ 'rec_{i}' ]
+                                     : null ]
+                e[ 'rec_{i}' ] = RecRow [ s: recs[ i ],
+                    area: Region [ 'l1 t{y} r8 h1.3' ] ]
+                if [ all || (ux && ux.shift && was && was.hovered) ]
+                    e[ 'del_{i}' ] = RecDelete [ label: 'Delete',
+                        area: Region [ 'r1 t{y} w6 h1.3' ] ]
+                y += 1.5
+            if [ trash_n > 0 && (all || (ux && ux.shift)) ]
+                e[ 'trash_empty' ] = RecDelete [
+                    label: 'Empty trash ({trash_n} captures)',
+                    area: Region [ 'l1 t{y + 0.5} w12 h1.3' ] ]
+            return e
         # training: a button a job, Stop, and the last job's words
         if [ view == 'training' ]
             x : f32 [ 1.0 ]
@@ -514,12 +590,34 @@ element hyperspace : trinity
         if [ view == 'testbed' ]
             gaze_draw[ w, cv ]
             return
+        if [ view == 'recordings' ]
+            cv.fill_color[ rgba [ '#050508' ] ]
+            cv.rect_to[ 0.0, 0.0, bounds.w, bounds.h ]
+            cv.paint[]
+            n : i64 [ (recs) ? recs.count : 0 ]
+            hs_text[ cv, '{n} recordings     hold ctrl / cmd to delete '
+                + '(into the trash; empty it after)',
+                20.0, 16.0, bounds.w - 40.0, 24.0, 17.0, '#ffffff80' ]
+            return
         if [ view == 'record' ]
             cv.fill_color[ rgba [ '#050508' ] ]
             cv.rect_to[ 0.0, 0.0, bounds.w, bounds.h ]
             cv.paint[]
             n : i32 [ (points) ? i32[ points.count ] / 2 : 0 ]
-            if [ at < n ]
+            if [ at < n && route == 'negatives' ]
+                # the prompt, large; the time left on it as a bar
+                say : string hs_neg_says[][ i32[ points[ at * 2 ] ] ]
+                hs_text[ cv, say, bounds.w * 0.15, bounds.h * 0.42,
+                    bounds.w * 0.7, 60.0, 40.0, '#ffffffd0' ]
+                gone : f32 [ f32[ (epoch_micros[] - left_us) / 1000 ]
+                             / f32[ NEG_MS ] ]
+                cv.fill_color[ rgba [ '#806bff' ] ]
+                cv.rect_to[ bounds.w * 0.15, bounds.h * 0.42 + 70.0,
+                    bounds.w * 0.7 * min[ gone, 1.0 ], 4.0 ]
+                cv.paint[]
+                hs_text[ cv, 'negatives   {at + 1} / {n}',
+                    20.0, 16.0, 600.0, 24.0, 17.0, '#ffffff80' ]
+            el [ at < n ]
                 # a 3 x 3 pixel dot on whole pixels, a slight edge
                 # a pixel round it
                 d : vec2f dot_at[]
@@ -613,6 +711,22 @@ element hyperspace : trinity
     public func on_click [ ev: Event ]
         item : cast element [ ev.origin ]
         if [ !item || !item.id ] return
+        if [ item.id.starts_with[ 'del_' ]
+             || item.id == 'trash_empty' ]
+            if [ epoch_millis[] - del_ms < 300 ] return
+            del_ms = epoch_millis[]
+        if [ item.id.starts_with[ 'del_' ] && recs ]
+            i : i32 [ item.id.mid[ 4, item.id.count - 4 ].integer_value[] ]
+            if [ i >= 0 && i < i32[ recs.count ] ]
+                hs_session_trash[ recs[ i ] ]
+            recs = null
+            if [ ux ] ux.restyle = true
+            return
+        if [ item.id == 'trash_empty' ]
+            hs_trash_empty[]
+            recs = null
+            if [ ux ] ux.restyle = true
+            return
         if [ item.id == 'job_stop' ]
             jl : string hs_job_last[]
             if [ jl.count > 0 ] hs_job_stop[ jl, opener ]
