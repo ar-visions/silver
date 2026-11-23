@@ -1,0 +1,44 @@
+export 0.1.0
+
+import trinity
+import ai
+import <stdlib.h>
+
+# hyperspace's eye training in silver (ai/HyperTrain.ag): find, then
+# target, then the eye stage, as train_eyes.py trains them; the
+# three .hsn files the app reads written to the run's folder
+element hytrain : trinity
+    public epochs  : i64 [ 40 ]
+    public size    : i64 [ 20000 ]
+    public batch   : i64 [ 128 ]
+    public share   : f64 [ 1.0 ]
+    public threads : i64 [ 16 ]
+    # stop after this many epochs of the schedule (0: all)
+    public stop    : i64 [ 0 ]
+    public out     : string
+    # silver's own copy of the faces ('' the cache's silver folder)
+    public store   : string
+    # a folder of pytorch's .pt nets: score them, train nothing
+    public judge   : string
+    intern disp    : Display
+
+    func init []
+        # a build mid-run must not swap out a training run
+        au_live_set_reload[ 0 ]
+        home : cstr [ getenv[ 'HOME' ] ]
+        cache : string '{string[ home ]}/.cache/hyperspace'
+        dest : string [ (out && out.count > 0) ? out
+                        : '{cache}/runs/silver-eyes' ]
+        dev : vk_context []
+        Au.hold[ dev ]
+        disp = Display [ vk: dev, backbuffer: true, width: 64,
+                         height: 64 ]
+        Au.hold[ disp ]
+        a : HyArgs [ epochs: epochs, size: size, batch: batch,
+                     share: share, threads: threads, stop: stop, cache: cache,
+                     store: (store && store.count > 0) ? store
+                            : '{cache}/silver', out: dest ]
+        ok : bool [ (judge && judge.count > 0)
+                    ? hy_score_torch[ a, dev, judge ]
+                    : hy_train_eyes[ a, dev ] ]
+        exit[ (ok) ? 0 : 1 ]

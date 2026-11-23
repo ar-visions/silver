@@ -1,0 +1,479 @@
+extend ai
+
+# hyperspace's eye training in silver, as train_eyes.py trains: find,
+# then target, then the eye stage, each from a fresh start; every
+# epoch scored on the faces never trained on and on his own frames;
+# the best epoch's weights kept and written as the app reads them
+
+HY_LR      : f64 [ 0.02 ]
+HY_FACES   : i64 [ 100000 ]
+
+class HyArgs
+    public epochs  : i64 [ 40 ]
+    public size    : i64 [ 20000 ]
+    public batch   : i64 [ 128 ]
+    public share   : f64 [ 1.0 ]
+    public threads : i64 [ 16 ]
+    # stop after this many epochs of the schedule (0 all): a check
+    public stop    : i64 [ 0 ]
+    # FaceSynthetics, the banks' sources and his frames
+    public cache   : string
+    # silver's own copy of the faces, and the run's output
+    public store   : string
+    public out     : string
+
+# everything a training reads: the faces (FaceSynthetics' first
+# share, then his marked frames), their rows, the pose bins, the
+# banks, his frames kept to test on
+class HySet
+    public n      : i64
+    public frames : vec u8
+    public pts    : vec f32
+    public bins   : HyBins
+    public bk     : HyBanks
+    public own    : vec HyMarked
+
+# a run of faces read on a worker thread into lists made by the
+# main one
+class HyReadJob
+    public root   : string
+    public from   : i64
+    public count  : i64
+    public frames : vec u8
+    public rows   : vec f32
+    public poses  : vec f32
+    public bad    : i64
+
+func hy_read_run [ arg: object ]
+    j : HyReadJob [ arg ]
+    for [ k: i64 0, k < j.count, k += 1 ]
+        # each face's decoding let go before the next
+        mk : i32 [ Au.auto_mark[] ]
+        hy_read_one[ j, k ]
+        Au.auto_free_to[ mk ]
+
+func hy_read_one [ j: HyReadJob, k: i64 ]
+    fs : i64 [ HY_FRAME * HY_FRAME ]
+    stem : string '{j.root}/{hy_six[ j.from + k ]}'
+    pic : path '{stem}.png'
+    marks : path '{stem}_ldmks.txt'
+    fc : HyFace hy_decode[ pic, marks ]
+    if [ !fc.valid ]
+        j.bad += 1
+        return
+    memcpy[ @j.frames[ k * fs ], @fc.frame[ 0 ], fs ]
+    for [ c: i64 0, c < HY_ROW, c += 1 ]
+        j.rows[ k * HY_ROW + c ] = fc.row[ c ]
+    j.poses[ k * 2 ] = fc.pose[ 0 ]
+    j.poses[ k * 2 + 1 ] = fc.pose[ 1 ]
+
+func hy_write_bytes [ to: string, v: vec u8, n: i64 ] -> bool
+    fp : @FILE [ fopen[ to.chars, 'wb' ] ]
+    if [ !fp ] return false
+    fwrite[ @v[ 0 ], 1, n, fp ]
+    fclose[ fp ]
+    return true
+
+func hy_write_floats [ to: string, v: vec f32 ] -> bool
+    fp : @FILE [ fopen[ to.chars, 'wb' ] ]
+    if [ !fp ] return false
+    fwrite[ @v[ 0 ], 4, v.count, fp ]
+    fclose[ fp ]
+    return true
+
+# a file's first n bytes into v from byte at
+func hy_read_into [ from: string, v: vec u8, at: i64, n: i64 ] -> bool
+    fp : @FILE [ fopen[ from.chars, 'rb' ] ]
+    if [ !fp ] return false
+    got : i64 [ i64[ fread[ @v[ at ], 1, n, fp ] ] ]
+    fclose[ fp ]
+    return got == n
+
+# the first n faces (with room for `room` frames more), from
+# silver's own copy when it holds them, else read from
+# FaceSynthetics' files on threads and kept
+func hy_faces [ a: HyArgs, n: i64, room: i64, set: HySet ] -> bool
+    fs : i64 [ HY_FRAME * HY_FRAME ]
+    sd : path a.store
+    if [ !sd.exists[] ] sd.make_dir[]
+    nf : path '{a.store}/faces.n'
+    had : string nf.load[ typeid[ string ], null ]
+    kept : i64 [ (had) ? i64[ had.trim[].real_value[] ] : 0 ]
+    if [ kept >= n ]
+        set.frames = vec u8 [ (n + room) * fs ]
+        if [ !hy_read_into[ '{a.store}/faces.u8', set.frames, 0,
+                            n * fs ] ] return false
+        all : vec f32 grad_gold[ a.store, 'faces-rows' ]
+        set.pts = vec f32 []
+        for [ i: i64 0, i < n * HY_ROW, i += 1 ]
+            set.pts.push[ all[ i ] ]
+        log 'faces: {n} of the {kept} kept in {a.store}'
+        return true
+    root : string '{a.cache}/facesynth/dataset_100000'
+    log 'faces: reading {n} from {root} on {a.threads} threads'
+    t0 : i64 [ Au.epoch_millis[] ]
+    jobs : vec Au []
+    mine : vec HyReadJob []
+    each : i64 [ (n + a.threads - 1) / a.threads ]
+    for [ from: i64 0, from < n, from += each ]
+        m : i64 [ min[ each, n - from ] ]
+        j : HyReadJob [ root: root, from: from, count: m,
+                        frames: vec u8 [ m * fs ],
+                        rows: vec f32 [ m * HY_ROW ],
+                        poses: vec f32 [ m * 2 ] ]
+        jobs.push[ j ]
+        mine.push[ j ]
+    f : lambda [ arg: object ]
+        hy_read_run[ arg ]
+    t : async [ work_fn: f, work: jobs ]
+    t.sync[ null ]
+    set.frames = vec u8 [ (n + room) * fs ]
+    set.pts = vec f32 [ n * HY_ROW ]
+    poses : vec f32 [ n * 2 ]
+    bad : i64 [ 0 ]
+    for [ j: HyReadJob ] in mine
+        memcpy[ @set.frames[ j.from * fs ], @j.frames[ 0 ],
+                j.count * fs ]
+        for [ i: i64 0, i < j.count * HY_ROW, i += 1 ]
+            set.pts[ j.from * HY_ROW + i ] = j.rows[ i ]
+        for [ i: i64 0, i < j.count * 2, i += 1 ]
+            poses[ j.from * 2 + i ] = j.poses[ i ]
+        bad += j.bad
+    log 'faces: {n} read in {Au.epoch_millis[] - t0} ms, {bad} unreadable'
+    hy_write_bytes[ '{a.store}/faces.u8', set.frames, n * fs ]
+    hy_write_floats[ '{a.store}/faces-rows.f32', set.pts ]
+    hy_write_floats[ '{a.store}/faces-pose.f32', poses ]
+    nf.save[ '{n}\n', null ]
+    return bad == 0
+
+# the set: faces, his marked frames (a bin of their own), the bins,
+# the banks
+func hy_load_set [ a: HyArgs ] -> HySet
+    set : HySet []
+    n : i64 [ max[ i64[ f64[ HY_FACES ] * a.share ], 1 ] ]
+    inst : string '{path.path_install[]}'
+    ann : string '{inst}/home/hyperspace/.local/state/hyperspace'
+    marked : vec HyMarked hy_own_marked[ a.cache, ann ]
+    set.own = vec HyMarked []
+    train : vec HyMarked []
+    for [ i: i64 0, i < marked.count, i += 1 ]
+        m : HyMarked marked[ i ]
+        if [ m.name.index_of[ '/' ] < 0 || i % 5 == 0 ]
+            set.own.push[ m ]
+            continue
+        train.push[ m ]
+    rows : HyOwnRows hy_own_rows[ train ]
+    if [ !hy_faces[ a, n, rows.n, set ] ] return null
+    pose : vec f32 grad_gold[ a.store, 'faces-pose' ]
+    set.bins = hy_bins[ pose, n ]
+    fs : i64 [ HY_FRAME * HY_FRAME ]
+    if [ rows.n > 0 ]
+        memcpy[ @set.frames[ n * fs ], @rows.frames[ 0 ], rows.n * fs ]
+    for [ v: f32 ] in rows.rows
+        set.pts.push[ v ]
+    hy_add_own[ set.bins, n, rows.n ]
+    set.n = n + rows.n
+    t0 : i64 [ Au.epoch_millis[] ]
+    hp : path '{a.cache}/hanco/tester.zip'
+    set.bk = hy_hand_bank[ hp, 128 ]
+    hair : HyBanks hy_hair_bank[ '{a.cache}/facesynth/dataset_100000',
+                                 128, 3000 ]
+    set.bk.hair = hair.hair
+    set.bk.hairm = hair.hairm
+    set.bk.eyes = hair.eyes
+    set.bk.own = hy_own_bank[ a.cache, 'my', 128, false ]
+    set.bk.myhair = hy_own_bank[ a.cache, 'myhair', 128, true ]
+    log '{n} faces in {set.bins.train.count - 1} pose bins, {rows.n} of his frames to train on, {set.own.count} to test on; banks: {set.bk.count[ set.bk.hands ]} hands, {set.bk.count[ set.bk.hair ]} hairs, {set.bk.count[ set.bk.own ]} and {set.bk.count[ set.bk.myhair ]} of his frames, in {Au.epoch_millis[] - t0} ms'
+    return set
+
+# a number with 3 (else 5) digits after its point
+func hy_num [ v: f64, digits: i32 ] -> string
+    b : local i8 [ 48 ]
+    if [ digits == 3 ] snprintf[ @b[ 0 ], 48, "%.3f", v ]
+    if [ digits != 3 ] snprintf[ @b[ 0 ], 48, "%.5f", v ]
+    return string [ @b[ 0 ] ]
+
+# a word padded on the left to `w`
+func hy_pad [ t: string, w: i64 ] -> string
+    out : string t
+    while [ out.count < w ]
+        out = ' {out}'
+    return out
+
+# a word padded on the right to `w`
+func hy_pad_right [ t: string, w: i64 ] -> string
+    out : string t
+    while [ out.count < w ]
+        out = '{out} '
+    return out
+
+# each output's name: find's three, target's points and its gap, the
+# eye stage's corner and pupil
+func hy_labels [ kind: i64 ] -> vec string
+    if [ kind == 0 ] return vec string [] [ 'x', 'y', 'gap' ]
+    if [ kind == 1 ]
+        return vec string [] [ 'corner L x', 'corner L y', 'corner R x',
+            'corner R y', 'pupil L x', 'pupil L y', 'pupil R x',
+            'pupil R y', 'gap', 'seen' ]
+    return vec string [] [ 'corner x', 'corner y', 'pupil x',
+                           'pupil y' ]
+
+# one net being trained and the ones before it (for his frames'
+# score): find, target, the eye stage
+class HyNets
+    public kind   : i64
+    public find   : GFindNet
+    public target : GStageNet
+    public eye    : GStageNet
+
+    func net [] -> GNet
+        if [ kind == 0 ] return find
+        if [ kind == 1 ] return target
+        return eye
+
+    # the outputs a picture for a batch of pictures (the eval pass)
+    func outputs [ x: vec f32, b: i64, s: i64 ] -> vec f32
+        g : GNet net[]
+        g.begin_step[]
+        t : GTensor g.gd.temp[ vec i64 [] [ b, 1, s, s ] ]
+        g.gd.upload[ t, x ]
+        if [ kind == 0 ]
+            o : GFindOut find.forward[ t ]
+            pt : vec f32 find.gd.download[ o.pt ]
+            gap : vec f32 find.gd.download[ o.gap ]
+            out : vec f32 [ b * 3 ]
+            for [ k: i64 0, k < b, k += 1 ]
+                out[ k * 3 ] = pt[ k * 2 ]
+                out[ k * 3 + 1 ] = pt[ k * 2 + 1 ]
+                out[ k * 3 + 2 ] = gap[ k ]
+            return out
+        st : GStageNet [ (kind == 1) ? target : eye ]
+        return st.gd.download[ st.forward[ t, false ] ]
+
+    # one training step on a batch: its loss
+    func step [ hb: HyBatch, lr: f64, b1: f64 ] -> f64
+        g : GNet net[]
+        g.begin_step[]
+        t : GTensor g.gd.temp[ vec i64 [] [ hb.n, 1, hb.s, hb.s ] ]
+        g.gd.upload[ t, hb.x ]
+        parts : vec GTensor []
+        wts : vec f32 []
+        if [ kind == 0 ]
+            parts = find.losses[ find.forward[ t ], hb.y, 0.5 ]
+            wts = vec f32 [] [ 1.0, 0.1, 0.5 ]
+        el
+            st : GStageNet [ (kind == 1) ? target : eye ]
+            y : GTensor st.gd.temp[ vec i64 [] [ hb.n, hb.wide ] ]
+            st.gd.upload[ y, hb.y ]
+            o : GTensor st.forward[ t, true ]
+            parts = vec GTensor [] [ st.loss[ o, y ] ]
+            wts = vec f32 [] [ 1.0 ]
+        g.gd.backward_all[ parts, wts ]
+        tot : f64 [ 0.0 ]
+        for [ i: i64 0, i < parts.count, i += 1 ]
+            got : vec f32 g.gd.download[ parts[ i ] ]
+            tot += f64[ got[ 0 ] ] * f64[ wts[ i ] ]
+        g.adamw_step[ f32[ lr ], f32[ b1 ], 0.01, 0.0 ]
+        return tot
+
+# each output's mean error on the faces never trained on, as a share
+# of the outer corners' distance; the same pictures every time
+func hy_measure [ nets: HyNets, set: HySet, a: HyArgs ] -> vec f64
+    dr : HyDraws [ state: 11 ]
+    k : i64 nets.kind
+    wide : i64 [ (k == 0) ? 3 : (k == 1) ? 10 : 4 ]
+    sums : vec f64 [ wide ]
+    many : i64 [ 0 ]
+    for [ g: HyGroup ] in set.bins.test
+        for [ from: i64 0, from < g.idx.count, from += 256 ]
+            take : vec i64 []
+            last : i64 [ min[ from + 256, g.idx.count ] ]
+            for [ i: i64 from, i < last, i += 1 ]
+                take.push[ g.idx[ i ] ]
+            hb : HyBatch hy_batch[ k, set.frames, set.pts, take, false,
+                                   set.bk, dr, a.threads ]
+            out : vec f32 nets.outputs[ hb.x, hb.n, hb.s ]
+            for [ r: i64 0, r < hb.n, r += 1 ]
+                for [ c: i64 0, c < wide, c += 1 ]
+                    d : f64 [ fabs[ f64[ out[ r * wide + c ] ]
+                                    - f64[ hb.y[ r * wide + c ] ] ] ]
+                    if [ k == 0 ] d = d / f64[ hb.y[ r * 3 + 2 ] ]
+                    if [ k == 1 ] d = d * HY_SPAN
+                    if [ k == 2 ] d = d * HY_EYE_SPAN
+                    sums[ c ] += d
+                many += 1
+    for [ c: i64 0, c < wide, c += 1 ]
+        sums[ c ] = sums[ c ] / f64[ max[ many, 1 ] ]
+    # target's tenth number is the seen flag: never scored
+    if [ k == 1 ] sums.pop[]
+    return sums
+
+# his frames through the chain as far as this net: each output's
+# mean miss as a share of his marked corner gap
+func hy_own_score [ nets: HyNets, set: HySet ] -> vec f64
+    ch : HyChain [ find: nets.find, target: nets.target,
+                   eye: nets.eye ]
+    shares : vec f64 []
+    count : i64 [ 0 ]
+    for [ m: HyMarked ] in set.own
+        w : i64 m.pic.w
+        if [ m.pic.h != w ] continue
+        f : vec f32 hy_chain_frames[ m.pic.bytes, 1, w ]
+        t : vec f64 m.pts
+        gap : f64 hypot[ t[ 2 ] - t[ 0 ], t[ 3 ] - t[ 1 ] ]
+        found : vec f32 hy_chain_find[ ch, f, 1, w ]
+        d : vec f64 []
+        if [ nets.kind == 0 ]
+            d.push[ fabs[ f64[ found[ 0 ] ] * f64[ w ]
+                          - (t[ 0 ] + t[ 2 ]) / 2.0 ] ]
+            d.push[ fabs[ f64[ found[ 1 ] ] * f64[ w ]
+                          - (t[ 1 ] + t[ 3 ]) / 2.0 ] ]
+            d.push[ fabs[ f64[ found[ 2 ] ] * f64[ w ] - gap ] ]
+        el
+            p : vec f64 hy_chain_pair[ ch, f, 1, w, found ]
+            if [ nets.kind == 2 ] p = hy_run_eyes[ ch, f, 1, w, p ]
+            for [ c: i64 0, c < 8, c += 1 ]
+                d.push[ fabs[ p[ c ] - t[ c ] ] ]
+            sc : f64 hypot[ p[ 2 ] - p[ 0 ], p[ 3 ] - p[ 1 ] ]
+            d.push[ fabs[ sc - gap ] ]
+        if [ shares.count == 0 ]
+            for [ v: f64 ] in d
+                shares.push[ 0.0 ]
+        for [ c: i64 0, c < d.count, c += 1 ]
+            shares[ c ] += d[ c ] / gap
+        count += 1
+    for [ c: i64 0, c < shares.count, c += 1 ]
+        shares[ c ] = shares[ c ] / f64[ max[ count, 1 ] ]
+    if [ nets.kind != 2 || shares.count < 8 ] return shares
+    # the eye stage's rows: both eyes' corners and pupils together
+    return vec f64 [] [ (shares[ 0 ] + shares[ 2 ]) / 2.0,
+                        (shares[ 1 ] + shares[ 3 ]) / 2.0,
+                        (shares[ 4 ] + shares[ 6 ]) / 2.0,
+                        (shares[ 5 ] + shares[ 7 ]) / 2.0 ]
+
+# a weight or running statistic read back (the best epoch's)
+class HyKept
+    public name : string
+    public v    : vec f32
+
+func hy_snapshot [ g: GNet ] -> vec HyKept
+    out : vec HyKept []
+    for [ nm: string ] in g.learns
+        out.push[ HyKept [ name: nm, v: g.gd.download[ g.ps[ nm ] ] ] ]
+    for [ nm: string ] in g.stats
+        out.push[ HyKept [ name: nm, v: g.gd.download[ g.ps[ nm ] ] ] ]
+    return out
+
+func hy_restore [ g: GNet, kept: vec HyKept ]
+    for [ k: HyKept ] in kept
+        g.gd.upload[ g.ps[ k.name ], k.v ]
+
+# one net trained: AdamW at the one-cycle rate, batches made on
+# threads, an eval table each epoch; the best epoch's weights kept
+func hy_fit [ nets: HyNets, set: HySet, a: HyArgs, name: string ]
+        -> f64
+    g : GNet nets.net[]
+    g.gd.record = true
+    dr : HyDraws [ state: 7 ]
+    per : i64 [ (hy_one_pass[ set.bins.train, 1, a.size, dr ].count
+                 + a.batch - 1) / a.batch ]
+    total : i64 [ i64[ a.epochs ] * per ]
+    labels : vec string hy_labels[ nets.kind ]
+    tested : i64 [ 0 ]
+    for [ gr: HyGroup ] in set.bins.test
+        tested += gr.idx.count
+    best : f64 [ -1.0 ]
+    kept : vec HyKept []
+    step : i64 [ 0 ]
+    runs : i64 [ (a.stop > 0) ? min[ a.stop, a.epochs ] : a.epochs ]
+    for [ ep: i64 0, ep < runs, ep += 1 ]
+        t0 : i64 [ Au.epoch_millis[] ]
+        order : vec i64 hy_one_pass[ set.bins.train, 1, a.size, dr ]
+        lost : f64 [ 0.0 ]
+        steps : i64 [ 0 ]
+        for [ k: i64 0, k < per, k += 1 ]
+            take : vec i64 []
+            last : i64 [ min[ (k + 1) * a.batch, order.count ] ]
+            for [ i: i64 k * a.batch, i < last, i += 1 ]
+                take.push[ order[ i ] ]
+            if [ take.count == 0 ] continue
+            hb : HyBatch hy_batch[ nets.kind, set.frames, set.pts, take,
+                                   true, set.bk, dr, a.threads ]
+            sc : vec f64 one_cycle[ step, total, HY_LR ]
+            lost += nets.step[ hb, sc[ 0 ], sc[ 1 ] ]
+            steps += 1
+            step += 1
+        err : vec f64 hy_measure[ nets, set, a ]
+        mine : vec f64 hy_own_score[ nets, set ]
+        log '{name} {ep + 1}/{a.epochs}   train loss {hy_num[ lost / f64[ max[ steps, 1 ] ], 5 ]}   ({(Au.epoch_millis[] - t0) / 1000} s)'
+        log '  eval error, share of the corner gap  {hy_pad[ 'synthetic', 10 ]} {hy_pad[ 'user', 10 ]}'
+        log '  {hy_pad_right[ '(never trained on)', 36 ]} {hy_pad[ '{tested}', 10 ]} {hy_pad[ '{set.own.count}', 10 ]}'
+        score : f64 [ 0.0 ]
+        for [ c: i64 0, c < err.count, c += 1 ]
+            u : string '-'
+            if [ c < mine.count ] u = hy_num[ mine[ c ], 3 ]
+            log '  {hy_pad_right[ labels[ c ], 36 ]} {hy_pad[ hy_num[ err[ c ], 3 ], 10 ]} {hy_pad[ u, 10 ]}'
+            score += err[ c ]
+        score = score / f64[ max[ err.count, 1 ] ]
+        if [ best < 0.0 || score < best ]
+            best = score
+            kept = hy_snapshot[ g ]
+    hy_restore[ g, kept ]
+    return best
+
+# the whole training: find, target, the eye stage; their .hsn files
+# and a summary in the run's folder
+func hy_train_eyes [ a: HyArgs, vk: vk_context ] -> bool
+    set : HySet hy_load_set[ a ]
+    if [ !set ] return false
+    od : path a.out
+    if [ !od.exists[] ] od.make_dir[]
+    fn : GFindNet [ vk: vk, work_mb: 6144, scratch_mb: 2048 ]
+    fn.fresh[]
+    tn : GStageNet [ vk: vk, work_mb: 2048, scratch_mb: 1024 ]
+    tn.fresh_stages[ HY_SIDE, 10, 5 ]
+    en : GStageNet [ vk: vk, work_mb: 2048, scratch_mb: 1024 ]
+    en.fresh_stages[ HY_EYE, 4, 5 ]
+    if [ !fn.valid || !tn.valid || !en.valid ] return false
+    nets : HyNets [ kind: 0, find: fn ]
+    fe : f64 hy_fit[ nets, set, a, 'find' ]
+    nets.kind = 1
+    nets.target = tn
+    te : f64 hy_fit[ nets, set, a, 'target' ]
+    nets.kind = 2
+    nets.eye = en
+    ee : f64 hy_fit[ nets, set, a, 'eye' ]
+    ff : path '{a.out}/find.hsn'
+    tf : path '{a.out}/target.hsn'
+    ef : path '{a.out}/eye.hsn'
+    fn.write_find[ ff ]
+    tn.write_stages[ tf, i32[ HY_SIDE ], 10 ]
+    en.write_stages[ ef, i32[ HY_EYE ], 4 ]
+    bf : path '{a.out}/base.txt'
+    bf.save[ 'FaceSynthetics in silver, {set.n} faces, {a.epochs} epochs of {a.size} pictures\nmean error over the outputs, share of the corner gap:\nfind {fe}\ntarget {te}\neye {ee}\n', null ]
+    log 'base: find {fe}, target {te}, eye {ee}; written to {a.out}'
+    return true
+
+# pytorch's trained nets (find.pt, target.pt, eye.pt in dir) scored
+# by silver's own eval: the same tables hy_fit prints
+func hy_score_torch [ a: HyArgs, vk: vk_context, dir: string ] -> bool
+    set : HySet hy_load_set[ a ]
+    if [ !set ] return false
+    fn : GFindNet [ vk: vk, work_mb: 6144, scratch_mb: 2048 ]
+    fn.load[ path '{dir}/find.pt', false ]
+    tn : GStageNet [ vk: vk, work_mb: 2048, scratch_mb: 1024 ]
+    tn.load[ path '{dir}/target.pt', false ]
+    en : GStageNet [ vk: vk, work_mb: 2048, scratch_mb: 1024 ]
+    en.load[ path '{dir}/eye.pt', false ]
+    nets : HyNets [ kind: 0, find: fn, target: tn, eye: en ]
+    for [ k: i64 0, k < 3, k += 1 ]
+        nets.kind = k
+        err : vec f64 hy_measure[ nets, set, a ]
+        mine : vec f64 hy_own_score[ nets, set ]
+        labels : vec string hy_labels[ k ]
+        log 'judged {dir}: kind {k}'
+        for [ c: i64 0, c < err.count, c += 1 ]
+            u : string '-'
+            if [ c < mine.count ] u = hy_num[ mine[ c ], 3 ]
+            log '  {hy_pad_right[ labels[ c ], 36 ]} {hy_pad[ hy_num[ err[ c ], 3 ], 10 ]} {hy_pad[ u, 10 ]}'
+    return true

@@ -640,8 +640,11 @@ typedef struct {
     pthread_cond_t  wake;
     unsigned char*  frame;
     int             w, h, fresh, quit;
+    // the frame the last answer came from
+    unsigned char*  shown;
+    int             shown_cap;
     float           out[11];
-    int             done;
+    int             done, gdone;
     float           ms;
     // for gaze: this answer's clips, numbers and its check
     float           clips[3 * HS_CLIP * HS_CLIP], aux[HS_NAUX];
@@ -676,6 +679,22 @@ static void* hs_work(void* arg)
         struct timespec a, b;
         clock_gettime(CLOCK_MONOTONIC, &a);
         int ok = hs_run(k->find, k->target, k->eye, mine, w, h, o);
+        clock_gettime(CLOCK_MONOTONIC, &b);
+        // the points first: the app draws them before the gaze work
+        pthread_mutex_lock(&k->lock);
+        if (ok) {
+            if (k->shown_cap < w * h) {
+                free(k->shown);
+                k->shown = malloc(w * h);
+                k->shown_cap = w * h;
+            }
+            memcpy(k->shown, mine, w * h);
+            memcpy(k->out, o, sizeof(o));
+            k->done++;
+            k->ms = (b.tv_sec - a.tv_sec) * 1e3f
+                  + (b.tv_nsec - a.tv_nsec) / 1e6f;
+        }
+        pthread_mutex_unlock(&k->lock);
         // the gaze clips, the check (the eye stage rerun on its
         // own answer)
         float clips[3 * HS_CLIP * HS_CLIP], aux[HS_NAUX];
@@ -696,16 +715,12 @@ static void* hs_work(void* arg)
             free(pic);
             free(img);
         }
-        clock_gettime(CLOCK_MONOTONIC, &b);
         pthread_mutex_lock(&k->lock);
         if (ok) {
             memcpy(k->clips, clips, sizeof(clips));
             memcpy(k->aux, aux, sizeof(aux));
             k->sound = sound;
-            memcpy(k->out, o, sizeof(o));
-            k->done++;
-            k->ms = (b.tv_sec - a.tv_sec) * 1e3f
-                  + (b.tv_nsec - a.tv_nsec) / 1e6f;
+            k->gdone++;
         }
         pthread_mutex_unlock(&k->lock);
     }
@@ -768,14 +783,18 @@ HS_API void hs_worker_put(void* worker, const unsigned char* grey,
     pthread_mutex_unlock(&k->lock);
 }
 
-// the last answer (hs_run's 11 numbers); how many frames it has
-// answered so far, 0 none yet. ms: the last frame's time
-HS_API int hs_worker_get(void* worker, float* out, float* ms)
+// the last answer (hs_run's 11 numbers) and the frame it came from
+// (grey: w x h bytes, or NULL); how many frames it has answered so
+// far, 0 none yet. ms: the last frame's time
+HS_API int hs_worker_get(void* worker, float* out, float* ms,
+                         unsigned char* grey, int w, int h)
 {
     hs_worker* k = worker;
     if (!k) return 0;
     pthread_mutex_lock(&k->lock);
     memcpy(out, k->out, sizeof(k->out));
+    if (grey && k->shown && k->shown_cap >= w * h)
+        memcpy(grey, k->shown, w * h);
     int n = k->done;
     if (ms) *ms = k->ms;
     pthread_mutex_unlock(&k->lock);
@@ -793,24 +812,27 @@ HS_API int hs_worker_gaze(void* worker, float* clips, float* aux,
     memcpy(clips, k->clips, sizeof(k->clips));
     memcpy(aux, k->aux, sizeof(k->aux));
     *sound = k->sound;
-    int n = k->done;
+    int n = k->gdone;
     pthread_mutex_unlock(&k->lock);
     return n;
 }
 
-// the gaze net (train_gaze.py's GazeNet): 'HSG1', 32, 2, then for
-// the eye encoder and the face encoder six convs (batch norm
-// folded) and their dense layer; the head's layer norm and two
-// dense layers
-#define HS_GAZE_MAGIC 0x31475348
+// the gaze net (train_gaze.py's GazeNet): 'HSG4', the encoders'
+// first conv kernel, the cameras it reads (1 or 2) and the first of
+// them; then for the eye encoder and the face encoder six convs
+// (batch norm folded) and their dense layer; the head's layer norm
+// and two dense layers. Held as those three numbers, then the floats
+#define HS_GAZE_MAGIC 0x34475348
 #define HS_GAZE_IN (6 * 64 + 2 * HS_NAUX + 2)
 
 HS_API void* hs_gaze_load(const char* path)
 {
     FILE* f = fopen(path, "rb");
     if (!f) return NULL;
-    int head[3];
-    if (fread(head, 4, 3, f) != 3 || head[0] != HS_GAZE_MAGIC) {
+    int head[4];
+    if (fread(head, 4, 4, f) != 4 || head[0] != HS_GAZE_MAGIC
+        || head[2] < 1 || head[2] > 2 || head[3] < 0
+        || head[3] + head[2] > 2) {
         fclose(f);
         return NULL;
     }
@@ -818,8 +840,9 @@ HS_API void* hs_gaze_load(const char* path)
     fseek(f, 0, SEEK_END);
     long count = (ftell(f) - at) / 4;
     fseek(f, at, SEEK_SET);
-    float* data = malloc(count * 4);
-    if (fread(data, 4, count, f) != (size_t)count) {
+    float* data = malloc((count + 3) * 4);
+    for (int i = 0; i < 3; i++) data[i] = (float)head[1 + i];
+    if (fread(data + 3, 4, count, f) != (size_t)count) {
         free(data);
         data = NULL;
     }
@@ -827,11 +850,21 @@ HS_API void* hs_gaze_load(const char* path)
     return data;
 }
 
+// whether the gaze net reads camera c (0 or 1)
+HS_API int hs_gaze_uses(void* net, int c)
+{
+    const float* nf = net;
+    if (!nf) return 0;
+    int n = (int)nf[1], first = (int)nf[2];
+    return c >= first && c < first + n;
+}
+
 HS_API void hs_gaze_free(void* net) { free(net); }
 
 // one encoder on one clip: three stages of two 3x3 convs and ReLU,
 // a 2x2 max pool each, then the dense layer to 64 numbers
-static void hs_gaze_enc(hs_take* t, const float* clip, float* out)
+static void hs_gaze_enc(hs_take* t, const float* clip, int fk,
+                        float* out)
 {
     int    m = HS_CLIP * HS_CLIP, h = HS_CLIP, o;
     double sum = 0, sq = 0;
@@ -847,9 +880,10 @@ static void hs_gaze_enc(hs_take* t, const float* clip, float* out)
     for (int s = 0; s < 3; s++) {
         for (int k = 0; k < 2; k++) {
             int          cout = widths[s];
-            const float* w = hs_next(t, (size_t)cout * cin * 9);
+            int          ks = (s + k) ? 3 : fk;
+            const float* w = hs_next(t, (size_t)cout * cin * ks * ks);
             const float* b = hs_next(t, cout);
-            float*       y = hs_fconv(x, cin, h, w, b, cout, 3, 1, &o);
+            float*       y = hs_fconv(x, cin, h, w, b, cout, ks, 1, &o);
             for (size_t i = 0; i < (size_t)cout * h * h; i++)
                 if (y[i] < 0) y[i] = 0;
             free(x);
@@ -884,43 +918,51 @@ HS_API int hs_gaze_run(void* net, const float* clips0,
     float  in[HS_GAZE_IN];
     int    cc = HS_CLIP * HS_CLIP;
     const float* cl[2] = { clips0, clips1 };
-    hs_take t = { net };
-    // the eye encoder on four eyes, then the face one on two faces:
-    // each reads its weights again from the start of its part
+    const float* ax[2] = { aux0, aux1 };
+    int          sd[2] = { sound0, sound1 };
+    const float* nf = net;
+    int fk = (int)nf[0], n = (int)nf[1], first = (int)nf[2];
+    int wide = 3 * n * 64 + n * HS_NAUX + n;
+    hs_take t = { nf + 3 };
+    // the eye encoder on each camera's two eyes, then the face one
+    // on each face: each reads its weights again from its start
     hs_take eyes = t, faces;
-    for (int k = 0; k < 4; k++) {
+    for (int k = 0; k < 2 * n; k++) {
         eyes = t;
-        hs_gaze_enc(&eyes, cl[k / 2] + (k % 2) * cc, in + 64 * k);
+        hs_gaze_enc(&eyes, cl[first + k / 2] + (k % 2) * cc, fk,
+                    in + 64 * k);
     }
-    for (int k = 0; k < 2; k++) {
+    for (int k = 0; k < n; k++) {
         faces = eyes;
-        hs_gaze_enc(&faces, cl[k] + 2 * cc, in + 256 + 64 * k);
+        hs_gaze_enc(&faces, cl[first + k] + 2 * cc, fk,
+                    in + 128 * n + 64 * k);
     }
     t = faces;
-    memcpy(in + 384, aux0, HS_NAUX * 4);
-    memcpy(in + 384 + HS_NAUX, aux1, HS_NAUX * 4);
-    in[HS_GAZE_IN - 2] = (float)sound0;
-    in[HS_GAZE_IN - 1] = (float)sound1;
+    for (int k = 0; k < n; k++) {
+        memcpy(in + 192 * n + HS_NAUX * k, ax[first + k],
+               HS_NAUX * 4);
+        in[192 * n + HS_NAUX * n + k] = (float)sd[first + k];
+    }
     // layer norm, eps 1e-5
-    const float* lg = hs_next(&t, HS_GAZE_IN);
-    const float* lb = hs_next(&t, HS_GAZE_IN);
+    const float* lg = hs_next(&t, wide);
+    const float* lb = hs_next(&t, wide);
     double mean = 0, var = 0;
-    for (int i = 0; i < HS_GAZE_IN; i++) mean += in[i];
-    mean /= HS_GAZE_IN;
-    for (int i = 0; i < HS_GAZE_IN; i++)
+    for (int i = 0; i < wide; i++) mean += in[i];
+    mean /= wide;
+    for (int i = 0; i < wide; i++)
         var += (in[i] - mean) * (in[i] - mean);
-    float inv = (float)(1.0 / sqrt(var / HS_GAZE_IN + 1e-5));
-    for (int i = 0; i < HS_GAZE_IN; i++)
+    float inv = (float)(1.0 / sqrt(var / wide + 1e-5));
+    for (int i = 0; i < wide; i++)
         in[i] = (float)(in[i] - mean) * inv * lg[i] + lb[i];
-    const float* w1 = hs_next(&t, 256 * HS_GAZE_IN);
+    const float* w1 = hs_next(&t, 256 * wide);
     const float* b1 = hs_next(&t, 256);
     const float* w2 = hs_next(&t, 2 * 256);
     const float* b2 = hs_next(&t, 2);
     float hid[256];
     for (int q = 0; q < 256; q++) {
         float v = b1[q];
-        for (int i = 0; i < HS_GAZE_IN; i++)
-            v += w1[q * HS_GAZE_IN + i] * in[i];
+        for (int i = 0; i < wide; i++)
+            v += w1[q * wide + i] * in[i];
         hid[q] = v > 0 ? v : 0;
     }
     for (int q = 0; q < 2; q++) {
@@ -944,5 +986,6 @@ HS_API void hs_worker_free(void* worker)
     hs_net_free(k->target);
     hs_net_free(k->eye);
     free(k->frame);
+    free(k->shown);
     free(k);
 }

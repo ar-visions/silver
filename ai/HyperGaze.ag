@@ -1,0 +1,634 @@
+extend ai
+
+# gaze's training clips, as train_gaze.py cuts them: each camera's
+# two eyes (the right mirrored) and its upper face, from the eye
+# chain's points; stored WIDE times larger so training can shift,
+# size and turn a window inside them
+
+HY_CLIP      : i64 [ 32 ]
+HY_EYE_CLIP  : i64 [ 32 ]
+HY_WIDE      : f64 [ 1.5 ]
+HY_NAUX      : i64 [ 18 ]
+HY_GZ_SPAN   : f64 [ 0.4166666666666667 ]
+HY_EYE_IN    : f64 [ 0.17 ]
+HY_FACE_SPAN : f64 [ 1.15 ]
+HY_FACE_DROP : f64 [ 0.1 ]
+
+# bilinear at a pixel place of a w x h picture, zero past the edge
+func hy_bilinear_wh [ v: vec f32, base: i64, w: i64, h: i64, ix: f64,
+                      iy: f64 ] -> f64
+    x0 : f64 [ floor[ ix ] ]
+    y0 : f64 [ floor[ iy ] ]
+    wx : f64 [ ix - x0 ]
+    wy : f64 [ iy - y0 ]
+    sum : f64 [ 0.0 ]
+    for [ c: i64 0, c < 4, c += 1 ]
+        cx : i64 [ i64[ x0 ] + (c & 1) ]
+        cy : i64 [ i64[ y0 ] + (c >> 1) ]
+        if [ cx < 0 || cy < 0 || cx >= w || cy >= h ] continue
+        k : f64 [ ((c & 1) ? wx : 1.0 - wx)
+                  * ((c >> 1) ? wy : 1.0 - wy) ]
+        sum += k * f64[ v[ base + cy * w + cx ] ]
+    return sum
+
+# a size x size clip of a w x h frame at (cx, cy) px, side px wide,
+# turned ang; mirrored left to right when asked
+func hy_clip [ f: vec f32, base: i64, w: i64, h: i64, cx: f64,
+               cy: f64, side: f64, ang: f64, mirror: bool,
+               size: i64 ] -> vec f32
+    c : f64 [ cos[ ang ] ]
+    s : f64 [ sin[ ang ] ]
+    out : vec f32 [ size * size ]
+    for [ i: i64 0, i < size, i += 1 ]
+        my : f64 [ (2.0 * f64[ i ] + 1.0) / f64[ size ] - 1.0 ]
+        for [ j: i64 0, j < size, j += 1 ]
+            mx : f64 [ (2.0 * f64[ j ] + 1.0) / f64[ size ] - 1.0 ]
+            ax : f64 [ side / f64[ w ] ]
+            ay : f64 [ side / f64[ h ] ]
+            gx : f64 [ ax * c * mx - ax * s * my
+                       + cx / f64[ w ] * 2.0 - 1.0 ]
+            gy : f64 [ ay * s * mx + ay * c * my
+                       + cy / f64[ h ] * 2.0 - 1.0 ]
+            ix : f64 [ ((gx + 1.0) * f64[ w ] - 1.0) / 2.0 ]
+            iy : f64 [ ((gy + 1.0) * f64[ h ] - 1.0) / 2.0 ]
+            to : i64 [ (mirror) ? size - 1 - j : j ]
+            out[ i * size + to ] = hy_bilinear_wh[ f, base, w, h, ix,
+                                                   iy ]
+    return out
+
+# every capture's clips cut once, as bytes: eyes [n, 4] (camera 1's
+# left, right, then camera 2's), faces [n, 2], and 38 numbers (each
+# camera's 18: pupils, outer corners, the gap, each clip's box; then
+# each camera's sound flag)
+class HyClipBank
+    public n     : i64
+    public es    : i64
+    public fs    : i64
+    public eyes  : vec u8
+    public faces : vec u8
+    public nums  : vec f32
+
+func hy_byte [ v: f64 ] -> u8
+    return u8[ i64[ rint[ v * 255.0 ] ] ]
+
+# frames [n, 2 cameras, h, w] bytes; pts [n, 2, 8] px (left outer
+# corner, right, left pupil, right); sound [n, 2]
+func hy_clip_bank [ frames: vec u8, pts: vec f32, sound: vec f32,
+                    n: i64, w: i64, h: i64 ] -> HyClipBank
+    es : i64 [ i64[ rint[ f64[ HY_EYE_CLIP ] * HY_WIDE ] ] ]
+    fs : i64 [ i64[ rint[ f64[ HY_CLIP ] * HY_WIDE ] ] ]
+    bk : HyClipBank [ n: n, es: es, fs: fs ]
+    bk.eyes = vec u8 [ n * 4 * es * es ]
+    bk.faces = vec u8 [ n * 2 * fs * fs ]
+    bk.nums = vec f32 [ n * 38 ]
+    for [ k: i64 0, k < n, k += 1 ]
+        for [ cam: i64 0, cam < 2, cam += 1 ]
+            g : vec f32 [ w * h ]
+            fb : i64 [ (k * 2 + cam) * w * h ]
+            for [ i: i64 0, i < w * h, i += 1 ]
+                g[ i ] = f32[ frames[ fb + i ] ] / 255.0
+            p : vec f64 [ 8 ]
+            for [ c: i64 0, c < 8, c += 1 ]
+                p[ c ] = pts[ (k * 2 + cam) * 8 + c ]
+            dx : f64 [ p[ 2 ] - p[ 0 ] ]
+            dy : f64 [ p[ 3 ] - p[ 1 ] ]
+            sc : f64 [ fmax[ sqrt[ dx * dx + dy * dy ], 1.0 ] ]
+            ang : f64 [ atan2[ dy, dx ] ]
+            num : vec f64 []
+            for [ c: i64 0, c < 8, c += 1 ]
+                ord : vec i64 [] [ 4, 5, 6, 7, 0, 1, 2, 3 ]
+                wide : f64 [ f64[ (c % 2 == 0) ? w : h ] ]
+                num.push[ p[ ord[ c ] ] / wide - 0.5 ]
+            num.push[ sc / f64[ w ] ]
+            for [ e: i64 0, e < 2, e += 1 ]
+                way : f64 [ (e == 0) ? 1.0 : -1.0 ]
+                ex : f64 [ p[ e * 2 ] + way * dx * HY_EYE_IN ]
+                ey : f64 [ p[ e * 2 + 1 ] + way * dy * HY_EYE_IN ]
+                side : f64 [ sc * HY_GZ_SPAN * HY_WIDE ]
+                clip : vec f32 hy_clip[ g, 0, w, h, ex, ey, side, ang,
+                                        e == 1, es ]
+                at : i64 [ ((k * 4) + cam * 2 + e) * es * es ]
+                for [ i: i64 0, i < es * es, i += 1 ]
+                    bk.eyes[ at + i ] = hy_byte[ f64[ clip[ i ] ] ]
+                num.push[ ex / f64[ w ] - 0.5 ]
+                num.push[ ey / f64[ h ] - 0.5 ]
+                num.push[ side / f64[ w ] ]
+            mx : f64 [ (p[ 0 ] + p[ 2 ]) / 2.0 - dy * HY_FACE_DROP ]
+            my : f64 [ (p[ 1 ] + p[ 3 ]) / 2.0 + dx * HY_FACE_DROP ]
+            side : f64 [ sc * HY_FACE_SPAN * HY_WIDE ]
+            clip : vec f32 hy_clip[ g, 0, w, h, mx, my, side, ang,
+                                    false, fs ]
+            at : i64 [ (k * 2 + cam) * fs * fs ]
+            for [ i: i64 0, i < fs * fs, i += 1 ]
+                bk.faces[ at + i ] = hy_byte[ f64[ clip[ i ] ] ]
+            num.push[ mx / f64[ w ] - 0.5 ]
+            num.push[ my / f64[ h ] - 0.5 ]
+            num.push[ side / f64[ w ] ]
+            for [ c: i64 0, c < HY_NAUX, c += 1 ]
+                bk.nums[ k * 38 + cam * HY_NAUX + c ] = num[ c ]
+            bk.nums[ k * 38 + 36 + cam ] = sound[ k * 2 + cam ]
+    return bk
+
+# windows of stored clips and their numbers moved with them
+class HyClips
+    public x    : vec f32
+    public nums : vec f32
+
+# a size x size window of each stored clip: the middle 1 / WIDE, or
+# (training) shifted, turned and sized a little; each clip's box in
+# the numbers moved with its window. slots: (camera, which), which
+# 0 the left eye, 1 the right (mirrored), 2 the face
+func hy_gaze_window [ c: vec f32, b: i64, n: i64, src: i64,
+                      size: i64, jitter: bool, slots: vec i64,
+                      nums: vec f32, dr: HyDraws ] -> HyClips
+    grow : vec f64 [ b * n ]
+    turn : vec f64 [ b * n ]
+    tx : vec f64 [ b * n ]
+    ty : vec f64 [ b * n ]
+    if [ jitter ]
+        grow = dr.uniform[ b * n, -0.08, 0.08 ]
+        turn = dr.uniform[ b * n, -0.08, 0.08 ]
+        tx = dr.uniform[ b * n, -0.06, 0.06 ]
+        ty = dr.uniform[ b * n, -0.06, 0.06 ]
+    r : HyClips [ x: vec f32 [ b * n * size * size ],
+                  nums: vec f32 [ nums.count ] ]
+    for [ i: i64 0, i < nums.count, i += 1 ]
+        r.nums[ i ] = nums[ i ]
+    for [ k: i64 0, k < b * n, k += 1 ]
+        sf : f64 [ (1.0 + grow[ k ]) / HY_WIDE ]
+        co : f64 [ cos[ turn[ k ] ] ]
+        si : f64 [ sin[ turn[ k ] ] ]
+        t : vec f64 [] [ sf * co, -sf * si, tx[ k ], sf * si, sf * co,
+                         ty[ k ] ]
+        got : vec f32 hy_affine[ c, k * src * src, src, t, size ]
+        for [ i: i64 0, i < size * size, i += 1 ]
+            r.x[ k * size * size + i ] = got[ i ]
+    for [ k: i64 0, k < b, k += 1 ]
+        for [ j: i64 0, j < n, j += 1 ]
+            cam : i64 slots[ j * 2 ]
+            which : i64 slots[ j * 2 + 1 ]
+            at : i64 [ k * 38 + cam * HY_NAUX + 9 + 3 * which ]
+            side : f64 [ f64[ r.nums[ at + 2 ] ] ]
+            way : f64 [ (which == 1) ? -1.0 : 1.0 ]
+            s : f64 [ (1.0 + grow[ k * n + j ]) / HY_WIDE ]
+            r.nums[ at ] = f64[ r.nums[ at ] ]
+                + way * tx[ k * n + j ] / 2.0 * side
+            r.nums[ at + 1 ] = f64[ r.nums[ at + 1 ] ]
+                + ty[ k * n + j ] / 2.0 * side
+            r.nums[ at + 2 ] = side * s
+    return r
+
+# a batch from the clip bank: 4 eye clips, 2 face clips, 38 numbers
+class HyGazeBatch
+    public b     : i64
+    public eyes  : vec f32
+    public faces : vec f32
+    public nums  : vec f32
+
+func hy_gaze_batch [ bk: HyClipBank, idx: vec i64, jitter: bool,
+                     dr: HyDraws ] -> HyGazeBatch
+    b : i64 idx.count
+    ee : i64 [ 4 * bk.es * bk.es ]
+    ff : i64 [ 2 * bk.fs * bk.fs ]
+    eyes : vec f32 [ b * ee ]
+    faces : vec f32 [ b * ff ]
+    nums : vec f32 [ b * 38 ]
+    for [ k: i64 0, k < b, k += 1 ]
+        at : i64 idx[ k ]
+        for [ i: i64 0, i < ee, i += 1 ]
+            eyes[ k * ee + i ] = f32[ bk.eyes[ at * ee + i ] ] / 255.0
+        for [ i: i64 0, i < ff, i += 1 ]
+            faces[ k * ff + i ] = f32[ bk.faces[ at * ff + i ] ] / 255.0
+        for [ i: i64 0, i < 38, i += 1 ]
+            nums[ k * 38 + i ] = bk.nums[ at * 38 + i ]
+    eye_slots : vec i64 [] [ 0, 0, 0, 1, 1, 0, 1, 1 ]
+    face_slots : vec i64 [] [ 0, 2, 1, 2 ]
+    e : HyClips hy_gaze_window[ eyes, b, 4, bk.es, HY_EYE_CLIP, jitter,
+                                eye_slots, nums, dr ]
+    f : HyClips hy_gaze_window[ faces, b, 2, bk.fs, HY_CLIP, jitter,
+                                face_slots, e.nums, dr ]
+    return HyGazeBatch [ b: b, eyes: e.x, faces: f.x, nums: f.nums ]
+
+# brightness, contrast and noise, every clip its own
+func hy_shake [ c: vec f32, b: i64, n: i64, s: i64, dr: HyDraws ]
+        -> vec f32
+    ss : i64 [ s * s ]
+    gain : vec f64 dr.uniform[ b * n, 0.8, 1.2 ]
+    lift : vec f64 dr.uniform[ b * n, 0.85, 1.15 ]
+    grain : vec f64 dr.normal[ b * n * ss ]
+    level : vec f64 dr.uniform[ b * n, 0.0, 0.02 ]
+    out : vec f32 [ b * n * ss ]
+    for [ k: i64 0, k < b * n, k += 1 ]
+        mid : f64 [ 0.0 ]
+        for [ i: i64 0, i < ss, i += 1 ]
+            mid += f64[ c[ k * ss + i ] ]
+        mid = mid / f64[ ss ]
+        for [ i: i64 0, i < ss, i += 1 ]
+            at : i64 [ k * ss + i ]
+            v : f64 [ (f64[ c[ at ] ] - mid) * gain[ k ]
+                      + mid * lift[ k ] + grain[ at ] * level[ k ] ]
+            out[ at ] = hy_clamp[ v, 0.0, 1.0 ]
+    return out
+
+func hy_vec_bytes [ v: vec u8 ] -> vec f32
+    out : vec f32 [ v.count ]
+    for [ i: i64 0, i < v.count, i += 1 ]
+        out[ i ] = f32[ v[ i ] ]
+    return out
+
+# the eye chain the app runs, on the three trained nets: find on the
+# whole frame at HY_FIND, target on find's square at HY_SIDE, then the
+# eye stage on each eye cut by those points
+class HyChain
+    public vk     : vk_context
+    public find   : GFindNet
+    public target : GStageNet
+    public eye    : GStageNet
+    public valid  : bool
+    # a folder of python's answers to check each step against
+    public check  : string
+
+    func load [ run: string ] -> bool
+        find = GFindNet [ vk: vk ]
+        target = GStageNet [ vk: vk ]
+        eye = GStageNet [ vk: vk ]
+        fp : path '{run}/find.pt'
+        tp : path '{run}/target.pt'
+        ep : path '{run}/eye.pt'
+        valid = find.load[ fp, false ] && target.load[ tp, false ]
+            && eye.load[ ep, false ]
+        return valid
+
+    # pictures [n, 1, s, s] through a stage net, 64 at a time: its
+    # outputs
+    func stage_run [ net: GStageNet, x: vec f32, n: i64, s: i64 ]
+            -> vec f32
+        out : vec f32 []
+        for [ from: i64 0, from < n, from += 64 ]
+            m : i64 [ min[ 64, n - from ] ]
+            part : vec f32 [ m * s * s ]
+            for [ i: i64 0, i < m * s * s, i += 1 ]
+                part[ i ] = x[ from * s * s + i ]
+            net.begin_step[]
+            t : GTensor net.gd.temp[ vec i64 [] [ m, 1, s, s ] ]
+            net.gd.upload[ t, part ]
+            for [ v: f32 ] in net.gd.download[ net.forward[ t, false ] ]
+                out.push[ v ]
+        return out
+
+    # find's x, y, gap for each picture, 8 at a time
+    func find_run [ x: vec f32, n: i64 ] -> vec f32
+        cells : i64 [ HY_FIND * HY_FIND ]
+        out : vec f32 [ n * 3 ]
+        for [ from: i64 0, from < n, from += 8 ]
+            m : i64 [ min[ 8, n - from ] ]
+            part : vec f32 [ m * cells ]
+            for [ i: i64 0, i < m * cells, i += 1 ]
+                part[ i ] = x[ from * cells + i ]
+            find.begin_step[]
+            t : GTensor find.gd.temp[ vec i64 [] [ m, 1, HY_FIND,
+                                                   HY_FIND ] ]
+            find.gd.upload[ t, part ]
+            o : GFindOut find.forward[ t ]
+            pt : vec f32 find.gd.download[ o.pt ]
+            gap : vec f32 find.gd.download[ o.gap ]
+            for [ k: i64 0, k < m, k += 1 ]
+                out[ (from + k) * 3 ] = pt[ k * 2 ]
+                out[ (from + k) * 3 + 1 ] = pt[ k * 2 + 1 ]
+                out[ (from + k) * 3 + 2 ] = gap[ k ]
+        return out
+
+# a w x w picture's mean over each output cell's share of it
+# (interpolate, mode area)
+func hy_area [ f: vec f32, base: i64, w: i64, out: i64 ] -> vec f32
+    r : vec f32 [ out * out ]
+    for [ i: i64 0, i < out, i += 1 ]
+        y0 : i64 [ (i * w) / out ]
+        y1 : i64 [ ((i + 1) * w + out - 1) / out ]
+        for [ j: i64 0, j < out, j += 1 ]
+            x0 : i64 [ (j * w) / out ]
+            x1 : i64 [ ((j + 1) * w + out - 1) / out ]
+            sum : f64 [ 0.0 ]
+            for [ y: i64 y0, y < y1, y += 1 ]
+                for [ x: i64 x0, x < x1, x += 1 ]
+                    sum += f64[ f[ base + y * w + x ] ]
+            r[ i * out + j ] = sum / f64[ (y1 - y0) * (x1 - x0) ]
+    return r
+
+# the eye stage on points (px of w x w frames): each eye cut out by
+# them, refined, put back in the frame's pixels
+func hy_run_eyes [ ch: HyChain, f: vec f32, n: i64, w: i64,
+                   p: vec f64 ] -> vec f64
+    cut : i64 [ HY_EYE * HY_EYE ]
+    crops : vec f32 [ 2 * n * cut ]
+    out : vec f64 [ n * 8 ]
+    keep : vec f64 [ n * 5 ]
+    for [ k: i64 0, k < n, k += 1 ]
+        q : vec f64 [ 8 ]
+        for [ c: i64 0, c < 8, c += 1 ]
+            q[ c ] = p[ k * 8 + c ] / f64[ w ]
+            out[ k * 8 + c ] = q[ c ]
+        line : f64 [ atan2[ q[ 3 ] - q[ 1 ], q[ 2 ] - q[ 0 ] ] ]
+        sc : f64 [ fmax[ hypot[ q[ 2 ] - q[ 0 ], q[ 3 ] - q[ 1 ] ],
+                         1.0e-3 ] ]
+        side : f64 [ sc * HY_EYE_SPAN ]
+        c : f64 [ cos[ line ] ]
+        s : f64 [ sin[ line ] ]
+        keep[ k * 5 ] = side
+        keep[ k * 5 + 1 ] = c
+        keep[ k * 5 + 2 ] = s
+        for [ e: i64 0, e < 2, e += 1 ]
+            cx : f64 [ (q[ e * 2 ] + q[ 4 + e * 2 ]) / 2.0 ]
+            cy : f64 [ (q[ e * 2 + 1 ] + q[ 5 + e * 2 ]) / 2.0 ]
+            keep[ k * 5 + 3 + e ] = cx
+            t : vec f64 [] [ f32[ side * c ], f32[ -side * s ],
+                             f32[ cx * 2.0 - 1.0 ], f32[ side * s ],
+                             f32[ side * c ], f32[ cy * 2.0 - 1.0 ] ]
+            got : vec f32 hy_affine[ f, k * w * w, w, t, HY_EYE ]
+            at : i64 [ (e * n + k) * cut ]
+            for [ i: i64 0, i < HY_EYE, i += 1 ]
+                for [ j: i64 0, j < HY_EYE, j += 1 ]
+                    from : i64 [ (e == 1) ? HY_EYE - 1 - j : j ]
+                    crops[ at + i * HY_EYE + j ] = got[ i * HY_EYE
+                        + from ]
+    r : vec f32 ch.stage_run[ ch.eye, crops, 2 * n, HY_EYE ]
+    for [ k: i64 0, k < n, k += 1 ]
+        side : f64 keep[ k * 5 ]
+        c : f64 keep[ k * 5 + 1 ]
+        s : f64 keep[ k * 5 + 2 ]
+        for [ e: i64 0, e < 2, e += 1 ]
+            cx : f64 keep[ k * 5 + 3 + e ]
+            cy : f64 [ (f64[ out[ k * 8 + e * 2 + 1 ] ]
+                        + f64[ out[ k * 8 + 5 + e * 2 ] ]) / 2.0 ]
+            ro : i64 [ (e * n + k) * 4 ]
+            for [ j: i64 0, j < 4, j += 2 ]
+                slot : i64 [ (j == 0) ? e * 2 : 4 + e * 2 ]
+                u : f64 [ f64[ r[ ro + j ] ] ]
+                if [ e == 1 ] u = 1.0 - u
+                du : f64 [ (u - 0.5) * side ]
+                dv : f64 [ (f64[ r[ ro + j + 1 ] ] - 0.5) * side ]
+                keep_x : f64 [ cx + c * du - s * dv ]
+                keep_y : f64 [ cy + s * du + c * dv ]
+                out[ k * 8 + slot ] = keep_x
+                out[ k * 8 + slot + 1 ] = keep_y
+    for [ i: i64 0, i < n * 8, i += 1 ]
+        out[ i ] = out[ i ] * f64[ w ]
+    return out
+
+# a camera's answer judged on its own: 0 sound, 1 a bad shape (the
+# gap off, a pupil outside its corner, the face over 40 degrees off
+# level), 2 unstable (the eye stage again moves a point)
+func hy_judge [ p: vec f64, again: vec f64, at: i64, w: f64 ] -> i64
+    dx : f64 [ p[ at + 2 ] - p[ at ] ]
+    dy : f64 [ p[ at + 3 ] - p[ at + 1 ] ]
+    sc : f64 [ hypot[ dx, dy ] ]
+    if [ sc < 0.06 * w || sc > 0.6 * w ] return 1
+    ux : f64 [ dx / sc ]
+    uy : f64 [ dy / sc ]
+    la : f64 [ ((p[ at + 4 ] - p[ at ]) * ux
+                + (p[ at + 5 ] - p[ at + 1 ]) * uy) / sc ]
+    ra : f64 [ ((p[ at + 6 ] - p[ at + 2 ]) * ux
+                + (p[ at + 7 ] - p[ at + 3 ]) * uy) / sc ]
+    lb : f64 [ ((p[ at + 4 ] - p[ at ]) * -uy
+                + (p[ at + 5 ] - p[ at + 1 ]) * ux) / sc ]
+    rb : f64 [ ((p[ at + 6 ] - p[ at + 2 ]) * -uy
+                + (p[ at + 7 ] - p[ at + 3 ]) * ux) / sc ]
+    if [ !(la > 0.08 && la < 0.45 && ra > -0.45 && ra < -0.08) ]
+        return 1
+    if [ fabs[ lb ] > 0.15 || fabs[ rb ] > 0.15 || fabs[ uy ] > 0.64 ]
+        return 1
+    most : f64 [ 0.0 ]
+    for [ c: i64 0, c < 8, c += 1 ]
+        most = fmax[ most, fabs[ again[ at + c ] - p[ at + c ] ] ]
+    if [ most > 0.06 * sc ] return 2
+    return 0
+
+# the chain's points on each frame (w x w bytes) and each one's
+# judgement
+class HyChainOut
+    public pts   : vec f64
+    public marks : vec i64
+
+# frames (w x w bytes) as 0 .. 1
+func hy_chain_frames [ frames: vec u8, n: i64, w: i64 ] -> vec f32
+    f : vec f32 [ n * w * w ]
+    for [ i: i64 0, i < n * w * w, i += 1 ]
+        f[ i ] = f32[ frames[ i ] ] / 255.0
+    return f
+
+# find on each whole frame at HY_FIND: x, y, gap in its shares
+func hy_chain_find [ ch: HyChain, f: vec f32, n: i64, w: i64 ]
+        -> vec f32
+    small : vec f32 [ n * HY_FIND * HY_FIND ]
+    for [ k: i64 0, k < n, k += 1 ]
+        a : vec f32 hy_area[ f, k * w * w, w, HY_FIND ]
+        for [ i: i64 0, i < a.count, i += 1 ]
+            small[ k * HY_FIND * HY_FIND + i ] = a[ i ]
+    return ch.find_run[ small, n ]
+
+# target on find's square: the four points in the frame's pixels
+func hy_chain_pair [ ch: HyChain, f: vec f32, n: i64, w: i64,
+                     found: vec f32 ] -> vec f64
+    side : i64 [ HY_SIDE * HY_SIDE ]
+    crops : vec f32 [ n * side ]
+    for [ k: i64 0, k < n, k += 1 ]
+        cx : f64 [ f64[ found[ k * 3 ] ] ]
+        cy : f64 [ f64[ found[ k * 3 + 1 ] ] ]
+        s : f64 [ f64[ found[ k * 3 + 2 ] ] * HY_SPAN ]
+        t : vec f64 [] [ f32[ s ], 0.0, f32[ cx * 2.0 - 1.0 ], 0.0,
+                         f32[ s ], f32[ cy * 2.0 - 1.0 ] ]
+        got : vec f32 hy_affine[ f, k * w * w, w, t, HY_SIDE ]
+        for [ i: i64 0, i < side, i += 1 ]
+            crops[ k * side + i ] = got[ i ]
+    tg : vec f32 ch.stage_run[ ch.target, crops, n, HY_SIDE ]
+    p : vec f64 [ n * 8 ]
+    for [ k: i64 0, k < n, k += 1 ]
+        cx : f64 [ f64[ found[ k * 3 ] ] ]
+        cy : f64 [ f64[ found[ k * 3 + 1 ] ] ]
+        s : f64 [ f64[ found[ k * 3 + 2 ] ] * HY_SPAN ]
+        for [ c: i64 0, c < 8, c += 1 ]
+            mid : f64 [ (c % 2 == 0) ? cx : cy ]
+            p[ k * 8 + c ] = (mid + (f64[ tg[ k * 10 + c ] ] - 0.5) * s)
+                * f64[ w ]
+    if [ ch.check ]
+        fw : f64 grad_worst[ found, grad_gold[ ch.check, 'gz_find' ] ]
+        pg : vec f32 grad_gold[ ch.check, 'gz_pair' ]
+        pw : f64 [ 0.0 ]
+        for [ i: i64 0, i < pg.count, i += 1 ]
+            pw = fmax[ pw, fabs[ p[ i ] - f64[ pg[ i ] ] ] ]
+        log 'chain: find worst {fw}, target points worst {pw} px'
+        want : vec f32 grad_gold[ ch.check, 'gz_crops' ]
+        hy_diff[ 'chain crops', crops, want ]
+        tw : f64 grad_worst[ tg, grad_gold[ ch.check, 'gz_tout' ] ]
+        log 'chain: target outputs worst {tw}'
+    return p
+
+func hy_chain_run [ ch: HyChain, frames: vec u8, n: i64, w: i64 ]
+        -> HyChainOut
+    f : vec f32 hy_chain_frames[ frames, n, w ]
+    found : vec f32 hy_chain_find[ ch, f, n, w ]
+    p : vec f64 hy_chain_pair[ ch, f, n, w, found ]
+    first : vec f64 hy_run_eyes[ ch, f, n, w, p ]
+    again : vec f64 hy_run_eyes[ ch, f, n, w, first ]
+    r : HyChainOut [ pts: first, marks: vec i64 [ n ] ]
+    for [ k: i64 0, k < n, k += 1 ]
+        r.marks[ k ] = hy_judge[ first, again, k * 8, f64[ w ] ]
+    return r
+
+# gaze's clips against train_gaze.py's, the same draws
+expect func t_hyper_gaze_data [] -> bool
+    ge : cstr [ getenv[ 'HYPER_DATA' ] ]
+    if [ !ge ] return true
+    dir : string [ ge ]
+    dr : HyDraws []
+    if [ !dr.load_as[ dir, 'gz_draws' ] ] return false
+    sf : path '{dir}/gz_size.txt'
+    st : string sf.load[ typeid[ string ], null ]
+    ws : vec string st.trim[].split[ ' ' ]
+    n : i64 [ i64[ ws[ 0 ].real_value[] ] ]
+    h : i64 [ i64[ ws[ 1 ].real_value[] ] ]
+    w : i64 [ i64[ ws[ 2 ].real_value[] ] ]
+    marks : vec f32 grad_gold[ dir, 'gz_marks' ]
+    vk : vk_context []
+    Au.hold[ vk ]
+    disp : Display [ vk: vk, backbuffer: true, width: 64, height: 64 ]
+    Au.hold[ disp ]
+    ch : HyChain [ vk: vk, check: dir ]
+    home : cstr [ getenv[ 'HOME' ] ]
+    if [ !ch.load[ '{string[ home ]}/.cache/hyperspace/runs/eyes' ] ]
+        log 'no trained eye chain'
+        return false
+    cr : HyChainOut hy_chain_run[ ch, hy_bytes[ dir, 'gz_frames.u8' ],
+                                  n * 2, w ]
+    want : vec f32 grad_gold[ dir, 'gz_pts' ]
+    cw : f64 [ 0.0 ]
+    for [ i: i64 0, i < want.count, i += 1 ]
+        cw = fmax[ cw, fabs[ cr.pts[ i ] - f64[ want[ i ] ] ] ]
+    md : i64 [ 0 ]
+    for [ i: i64 0, i < marks.count, i += 1 ]
+        if [ f64[ cr.marks[ i ] ] != f64[ marks[ i ] ] ] md += 1
+    log 'chain: points worst {cw} px, {md} of {marks.count} judgements differ'
+    chain_ok : bool [ true ]
+    # the nets written as the app reads them, against export_eyes.py
+    ft : path '{dir}/find.hsn.silver'
+    tt : path '{dir}/target.hsn.silver'
+    et : path '{dir}/eye.hsn.silver'
+    ch.find.write_find[ ft ]
+    ch.target.write_stages[ tt, 64, 10 ]
+    ch.eye.write_stages[ et, 64, 4 ]
+    for [ nm: string ] in vec string [] [ 'find', 'target', 'eye' ]
+        mine : vec u8 hy_bytes[ dir, '{nm}.hsn.silver' ]
+        theirs : vec u8 hy_bytes[ dir, '{nm}.hsn' ]
+        mf : vec f32 [ mine.count / 4 ]
+        tf : vec f32 [ theirs.count / 4 ]
+        if [ mf.count > 0 ] memcpy[ @mf[ 0 ], @mine[ 0 ], mf.count * 4 ]
+        if [ tf.count > 0 ]
+            memcpy[ @tf[ 0 ], @theirs[ 0 ], tf.count * 4 ]
+        hw : f64 hyper_gap[ mf, tf ]
+        log '{nm}.hsn: {mf.count} floats, python {tf.count}, worst {hw} of the largest'
+        if [ hw > 1.0e-6 ] chain_ok = false
+    # target alone on python's own crops: the net itself
+    theirs : vec f32 grad_gold[ dir, 'gz_crops' ]
+    their : vec f32 ch.stage_run[ ch.target, theirs, n * 2, HY_SIDE ]
+    ow : f64 grad_worst[ their, grad_gold[ dir, 'gz_tout' ] ]
+    log 'chain: target on python crops worst {ow}'
+    if [ cw >= 0.05 || md != 0 || ow >= 1.0e-5 ] chain_ok = false
+    sound : vec f32 [ marks.count ]
+    for [ i: i64 0, i < marks.count, i += 1 ]
+        sound[ i ] = (marks[ i ] == 0.0) ? 1.0 : 0.0
+    bk : HyClipBank hy_clip_bank[ hy_bytes[ dir, 'gz_frames.u8' ],
+                                  grad_gold[ dir, 'gz_pts' ], sound, n,
+                                  w, h ]
+    ok : bool [ true ]
+    eb : vec f32 grad_gold[ dir, 'gz_bank0' ]
+    fb : vec f32 grad_gold[ dir, 'gz_bank1' ]
+    if [ hy_diff[ 'bank eyes', hy_vec_bytes[ bk.eyes ], eb ] > 1.0 ]
+        ok = false
+    if [ hy_diff[ 'bank faces', hy_vec_bytes[ bk.faces ], fb ] > 1.0 ]
+        ok = false
+    nw : f64 grad_worst[ bk.nums, grad_gold[ dir, 'gz_bank2' ] ]
+    log 'bank numbers worst {nw}'
+    if [ nw > 1.0e-5 ] ok = false
+    take : vec i64 [] [ 3, 0, 7, 7, 15, 22, 11, 5 ]
+    g : HyGazeBatch hy_gaze_batch[ bk, take, true, dr ]
+    if [ hy_diff[ 'eyes', g.eyes, grad_gold[ dir, 'gz_eyes' ] ]
+         > 1.0e-3 ] ok = false
+    if [ hy_diff[ 'faces', g.faces, grad_gold[ dir, 'gz_faces' ] ]
+         > 1.0e-3 ] ok = false
+    aw : f64 grad_worst[ g.nums, grad_gold[ dir, 'gz_aux' ] ]
+    log 'numbers worst {aw}'
+    if [ aw > 1.0e-5 ] ok = false
+    se : vec f32 hy_shake[ g.eyes, 8, 4, HY_EYE_CLIP, dr ]
+    sfc : vec f32 hy_shake[ g.faces, 8, 2, HY_CLIP, dr ]
+    if [ hy_diff[ 'shaken eyes', se, grad_gold[ dir, 'gz_se' ] ]
+         > 1.0e-3 ] ok = false
+    if [ hy_diff[ 'shaken faces', sfc, grad_gold[ dir, 'gz_sf' ] ]
+         > 1.0e-3 ] ok = false
+    p : HyGazeBatch hy_gaze_batch[ bk, take, false, dr ]
+    if [ hy_diff[ 'plain eyes', p.eyes,
+                  grad_gold[ dir, 'gz_plain_eyes' ] ] > 1.0e-3 ]
+        ok = false
+    pw : f64 grad_worst[ p.nums, grad_gold[ dir, 'gz_plain_aux' ] ]
+    log 'plain numbers worst {pw}'
+    if [ pw > 1.0e-5 || dr.bad ] ok = false
+    log 'gaze draws: {dr.next} of {dr.counts.count} taken'
+    return ok && chain_ok
+
+# the banks laid over faces, made here, against train_eyes.py's:
+# HanCo's hands (its jpegs by our own decoder), hair cut from
+# FaceSynthetics, his own frames
+func hy_bank_gap [ tag: string, got: vec f32, want: vec u8 ] -> f64
+    w : vec f32 [ want.count ]
+    for [ i: i64 0, i < want.count, i += 1 ]
+        w[ i ] = f32[ want[ i ] ] / 255.0
+    return hy_diff[ tag, got, w ]
+
+func hy_mean_gap [ got: vec f32, want: vec u8 ] -> f64
+    if [ got.count != want.count || got.count == 0 ] return 1.0e30
+    sum : f64 [ 0.0 ]
+    for [ i: i64 0, i < got.count, i += 1 ]
+        sum += fabs[ f64[ got[ i ] ] - f64[ want[ i ] ] / 255.0 ]
+    return sum / f64[ got.count ]
+
+expect func t_hyper_banks [] -> bool
+    ge : cstr [ getenv[ 'HYPER_DATA' ] ]
+    if [ !ge ] return true
+    dir : string [ ge ]
+    home : cstr [ getenv[ 'HOME' ] ]
+    cache : string '{string[ home ]}/.cache/hyperspace'
+    ok : bool [ true ]
+    hp : path '{cache}/hanco/tester.zip'
+    hands : HyBanks hy_hand_bank[ hp, 128 ]
+    hz : HyZip []
+    hzp : path '{cache}/hands-128.npz'
+    hz.open[ hzp ]
+    hw : f64 hy_bank_gap[ 'hands', hands.hands, hy_npy[ hz, 'hands' ] ]
+    mw : f64 hy_bank_gap[ 'hand masks', hands.hmasks,
+                          hy_npy[ hz, 'masks' ] ]
+    root : string '{cache}/facesynth/dataset_100000'
+    hair : HyBanks hy_hair_bank[ root, 128, 3000 ]
+    rz : HyZip []
+    rzp : path '{cache}/hair-128.npz'
+    rz.open[ rzp ]
+    aw : f64 hy_bank_gap[ 'hair', hair.hair, hy_npy[ rz, 'hair' ] ]
+    hm : vec u8 hy_npy[ rz, 'masks' ]
+    am : f64 hy_bank_gap[ 'hair masks', hair.hairm, hm ]
+    ey : vec u8 hy_npy[ rz, 'eyes' ]
+    ef : vec f32 [ ey.count / 4 ]
+    if [ ef.count > 0 ] memcpy[ @ef[ 0 ], @ey[ 0 ], ey.count ]
+    ew : f64 grad_worst[ hair.eyes, ef ]
+    log 'hair eyes worst {ew}'
+    own : vec f32 hy_own_bank[ cache, 'my', 128, false ]
+    ob : vec u8 hy_bytes[ dir, 'own_full.u8' ]
+    ow : f64 hy_bank_gap[ 'his frames', own, ob ]
+    mine : vec f32 hy_own_bank[ cache, 'myhair', 128, true ]
+    yw : f64 hy_bank_gap[ 'his hair', mine,
+                          hy_bytes[ dir, 'myhair_full.u8' ] ]
+    if [ aw > 1.0e-6 || am > 1.0e-6 || ew > 1.0e-6 ] ok = false
+    if [ ow > 1.0e-6 || yw > 1.0e-6 ] ok = false
+    # img's jpeg decoder takes chroma by nearest sample, libjpeg's
+    # blends: colour edges differ, so the hands hold their mean
+    hm_mean : f64 hy_mean_gap[ hands.hands, hy_npy[ hz, 'hands' ] ]
+    log 'hands: mean {hm_mean} (worst {hw}), masks worst {mw}'
+    if [ hm_mean > 1.0 / 255.0 || mw > 2.0 / 255.0 ] ok = false
+    return ok

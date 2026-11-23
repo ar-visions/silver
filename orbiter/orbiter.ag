@@ -1296,6 +1296,10 @@ element orbiter : trinity # implements compiler
     func arg_word [ s: string ] -> string
 
     func sys_reply [ who: string, ln: string ]
+    func job_line [ mod: string, jn: string ] -> string
+    func job_dir [ mod: string ] -> path
+    func job_start [ mod: string, jn: string ]
+    func job_stop [ mod: string, jn: string ]
 
     public func file_drop [ f: path ]
 

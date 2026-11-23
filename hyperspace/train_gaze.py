@@ -21,11 +21,23 @@ STATE = '/src/silver/install/home/hyperspace/.local/state/hyperspace'
 # outer corner gap
 CLIP = 32
 EYE_CLIP = 32
+# the clip encoders' first conv kernel (5 sees an edge, as find's)
+FIRST_K = 5
 # the stored clips: this many times the span and the size (48 x 48),
 # so training can shift and turn a 32 x 32 window inside them
 WIDE = 1.5
 # each capture's cameras judged sound (1) or not, set once loaded
 SOUND = None
+# the cameras the net reads (--camera: one of them)
+CAMS = [0, 1]
+# each capture's cameras' spots on the screen, in its -0.5..0.5 (y
+# down) [n, 2, 2], set once loaded
+SPOT = None
+# an adult's outer eye corners apart, metres: a slew's pixels
+EYE_GAP = 0.09
+# a camera's 18 numbers: pupils, corners, the three boxes; x, y
+X_COLS = (0, 2, 4, 6, 9, 12, 15)
+Y_COLS = (1, 3, 5, 7, 10, 13, 16)
 # a camera's numbers: pupils, outer corners, the gap, three boxes
 NAUX = 18
 EYE_SPAN = 1.25 / 3
@@ -77,6 +89,7 @@ def judge(p, again, w):
 def records(run, dev):
     find, target, eye = nets(run, dev)
     frames, points, dots, sess, marks = [], [], [], [], []
+    spots = []
     kv = {}
     for f in sorted(glob.glob(os.path.join(STATE, 'gaze', '*.agi'))):
         stem = f[:-4]
@@ -106,6 +119,13 @@ def records(run, dev):
         dots.append([float(kv['target_x']) - 0.5,
                      float(kv['target_y']) - 0.5])
         sess.append(kv.get('session', '0'))
+        # each camera's spot: metres from the screen's middle (y up)
+        # over the screen's size
+        sw = float(kv['screen_width_m'])
+        sh = float(kv['screen_height_m'])
+        spots.append([[float(kv[f'camera_x_m{c}']) / sw,
+                       -float(kv[f'camera_y_m{c}']) / sh]
+                      for c in (0, 1)])
     if not frames:
         sys.exit('no gaze captures: run hyperspace\'s gaze entry')
     marks = np.asarray(marks)
@@ -115,7 +135,8 @@ def records(run, dev):
               f'{(m == 1).mean():.0%} bad shape, '
               f'{(m == 2).mean():.0%} unstable', flush=True)
     return (np.stack(frames), np.stack(points),
-            np.asarray(dots, np.float32), np.asarray(sess), kv, marks)
+            np.asarray(dots, np.float32), np.asarray(sess), kv, marks,
+            np.asarray(spots, np.float32))
 
 
 # clips from frames [b, 1, h, w] at centres (px), sides (px) and
@@ -190,25 +211,27 @@ def camera_clips(frames, p, jitter, sound, wide=1.0):
 # each clip to 64 numbers (the four eyes one encoder, the faces
 # another), then those, both cameras' numbers and flags to the dot
 class GazeNet(nn.Module):
-    def __init__(self):
+    def __init__(self, cams):
         super().__init__()
+        self.cams = list(cams)
+        n = len(self.cams)
 
         def enc():
-            return nn.Sequential(*stage(1, 16), *stage(16, 32),
+            return nn.Sequential(*stage(1, 16, FIRST_K), *stage(16, 32),
                                  *stage(32, 64), nn.Flatten(),
                                  nn.Linear(64 * 4 * 4, 64))
         self.eye = enc()
         self.face = enc()
         # its input scaled first: unscaled, the first step blew it up
-        width = 6 * 64 + 2 * NAUX + 2
+        width = 3 * n * 64 + n * NAUX + n
         self.head = nn.Sequential(
             nn.LayerNorm(width), nn.Linear(width, 256), nn.ReLU(),
             nn.Dropout(0.2), nn.Linear(256, 2))
 
     def forward(self, eyes, faces, aux):
-        b = eyes.shape[0]
-        e = eyes.reshape(b * 4, 1, EYE_CLIP, EYE_CLIP)
-        fa = faces.reshape(b * 2, 1, CLIP, CLIP)
+        b, n = eyes.shape[0], len(self.cams)
+        e = eyes.reshape(b * 2 * n, 1, EYE_CLIP, EYE_CLIP)
+        fa = faces.reshape(b * n, 1, CLIP, CLIP)
         e = self.eye(normalize(e)).view(b, -1)
         fa = self.face(normalize(fa)).view(b, -1)
         return self.head(torch.cat([e, fa, aux], 1))
@@ -274,20 +297,68 @@ EYE_SLOTS = [(0, 0), (0, 1), (1, 0), (1, 1)]
 FACE_SLOTS = [(0, 2), (1, 2)]
 
 
-# a batch from the clip bank: 4 eye clips, 2 face clips, 38 numbers
+# the numbers' columns of the cameras read: each one's 18, then
+# each one's seen flag
+def aux_cols():
+    return ([c * NAUX + i for c in CAMS for i in range(NAUX)]
+            + [2 * NAUX + c for c in CAMS])
+
+
+# a batch from the clip bank: per camera read, 2 eye clips, a face
+# clip, 18 numbers and its seen flag
 def batch(bank, idx, jitter):
     eyes = bank[0][idx].float() / 255
     faces = bank[1][idx].float() / 255
     nums = bank[2][idx].clone()
     eyes = window(eyes, EYE_CLIP, jitter, EYE_SLOTS, nums)
     faces = window(faces, CLIP, jitter, FACE_SLOTS, nums)
-    return eyes, faces, nums
+    ei = [2 * c + k for c in CAMS for k in (0, 1)]
+    return eyes[:, ei], faces[:, CAMS], nums[:, aux_cols()]
+
+
+# the head moved by up to reach metres across and up or down, the
+# eyes seen the same: every point on each camera moved by that
+# camera's own pixels (its corner gap over EYE_GAP). Where the eyes
+# look on the screen is the eye's look to the camera and its
+# distance, not the head's place, so the dot stays
+def slew(aux, reach):
+    if reach <= 0:
+        return aux
+    b = aux.shape[0]
+    dx = torch.empty(b, device=aux.device).uniform_(-reach, reach)
+    dy = torch.empty(b, device=aux.device).uniform_(-reach, reach)
+    out = aux.clone()
+    for j in range(len(CAMS)):
+        at = j * NAUX
+        px = aux[:, at + 8] / EYE_GAP
+        for c in X_COLS:
+            out[:, at + c] = aux[:, at + c] + dx * px
+        for c in Y_COLS:
+            out[:, at + c] = aux[:, at + c] + dy * px
+    return out
+
+
+# the head slid along the camera's line of sight by a factor k (up
+# to reach either way), the eyes seen the same: the gaze point moves
+# k times as far from the camera's spot; every number the camera
+# gives (points from the frame's middle, the gap, the boxes) shrinks
+# by 1 / k. One camera only: two would see the move differently
+def depth(aux, dots, take, reach):
+    if reach <= 0 or len(CAMS) != 1:
+        return aux, dots
+    b = aux.shape[0]
+    k = torch.exp(torch.empty(b, device=aux.device)
+                  .uniform_(-np.log1p(reach), np.log1p(reach)))
+    out = aux.clone()
+    out[:, :NAUX] = aux[:, :NAUX] / k[:, None]
+    spot = SPOT[take, CAMS[0]]
+    return out, spot + k[:, None] * (dots - spot)
 
 
 # every 1000 steps the errors, the best test step's net kept
 def fit(bank, dots, tr, args, dev, err, te=None):
     torch.manual_seed(5)
-    net = GazeNet().to(dev)
+    net = GazeNet(CAMS).to(dev)
     opt = torch.optim.AdamW(net.parameters(), lr=3e-4,
                             weight_decay=1e-2)
     ease = torch.optim.lr_scheduler.CosineAnnealingLR(opt, args.steps)
@@ -299,8 +370,9 @@ def fit(bank, dots, tr, args, dev, err, te=None):
         net.train()
         take = idx[torch.randint(len(idx), (64,), device=dev)]
         eyes, faces, aux = batch(bank, take, True)
-        out = net(shake(eyes), shake(faces), aux)
-        loss = F.smooth_l1_loss(out, dots[take], beta=0.02)
+        aux, goal = depth(aux, dots[take], take, args.depth)
+        out = net(shake(eyes), shake(faces), slew(aux, args.slew))
+        loss = F.smooth_l1_loss(out, goal, beta=0.02)
         opt.zero_grad()
         loss.backward()
         nn.utils.clip_grad_norm_(net.parameters(), 1.0)
@@ -400,10 +472,23 @@ def main():
     p.add_argument('--steps', type=int, default=30000)
     # trained and tested on the same n captures: the pipeline's check
     p.add_argument('--fit', type=int, default=0)
+    p.add_argument('--across', action='store_true')
+    # 1 or 2: that camera alone (mounts.agi's order)
+    p.add_argument('--camera', type=int, default=0)
+    # the head's slew in training, metres each way, across and up
+    # or down (0 none)
+    p.add_argument('--slew', type=float, default=0.1)
+    # the head's distance in training: up to this share nearer or
+    # farther (one camera only; 0 none)
+    p.add_argument('--depth', type=float, default=0.15)
     a = p.parse_args()
     dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    global SOUND
-    fr, pt, dots, sess, kv, marks = records(a.run, dev)
+    global SOUND, CAMS
+    if a.camera:
+        CAMS = [a.camera - 1]
+    fr, pt, dots, sess, kv, marks, spots = records(a.run, dev)
+    global SPOT
+    SPOT = torch.tensor(spots, device=dev)
     SOUND = torch.tensor((marks == 0).astype(np.float32), device=dev)
     rejected_sheet(fr, pt, marks)
     runs = sorted(set(sess), key=lambda s: -(sess == s).sum())
@@ -414,7 +499,7 @@ def main():
     bank = clip_bank(fr, pt, dev)
     dt = torch.tensor(dots, device=dev)
     seen_all = bank[2][:, -2:]
-    feats = bank[2].cpu().numpy()
+    feats = bank[2][:, aux_cols()].cpu().numpy()
     print(f'camera seen: camera 1 '
           f'{seen_all[:, 0].mean().item():.0%}, camera 2 '
           f'{seen_all[:, 1].mean().item():.0%}', flush=True)
@@ -431,13 +516,15 @@ def main():
               'trained and tested on them')
         fit(bank, dt, some, a, dev, err, some)
         return
-    # one training: on the biggest run, checked on the others (one
-    # run alone: on every 5th 7-second piece)
-    te = sess != runs[0]
-    if len(runs) == 1:
-        # 7-second pieces (one dot move each, 15 frames a second),
-        # every 5th never trained on: spread over the whole session
-        te = (np.arange(len(fr)) // 105) % 5 == 4
+    # 7-second pieces (one dot move each, 15 frames a second) of
+    # each run, every 5th never trained on; --across: train on the
+    # biggest run, check on the others
+    te = np.zeros(len(fr), bool)
+    for s in runs:
+        at = np.nonzero(sess == s)[0]
+        te[at] = (np.arange(len(at)) // 105) % 5 == 4
+    if a.across and len(runs) > 1:
+        te = sess != runs[0]
     tr = ~te
     print(f'training on {tr.sum()} captures, never trained on '
           f'{te.sum()}: {a.steps} steps of 64, a line every 1000',

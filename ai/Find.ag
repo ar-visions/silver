@@ -1,0 +1,160 @@
+extend ai
+
+# hyperspace's find on the gpu: its network (residual blocks under
+# group norm and SiLU, an upsampling path back to half size, a heat
+# map whose softmax-weighted place is the point, a gap from the
+# picture's and the point's features), from a trained find.pt
+class GFind
+    public vk   : vk_context
+    public src  : path
+    public gd   : Grad
+    public ps   : map GTensor [ string ]
+    public side : i64 [ 64 ]
+    public valid : bool
+
+    func init []
+        if [ !gd ] gd = Grad [ vk: vk, keep_mb: 64, work_mb: 512 ]
+        ps = map GTensor [ string ] []
+        ck : pth [ src: src ]
+        if [ !ck.valid || !gd.valid ] return
+        for [ i: i32 0, i < ck.count[], i += 1 ]
+            nm : string ck.name_at[ i ]
+            ps[ nm ] = gd.param_of[ ck.tensor_named[ nm ] ]
+        valid = ps.contains[ 'heat.weight' ]
+            && ps.contains[ 'stem.0.weight' ]
+
+    func p [ nm: string ] -> GTensor
+        return (ps.contains[ nm ]) ? ps[ nm ] : null
+
+    # [b, c, h, w] seen as [b, c, h*w] (the element-wise ops' form)
+    func flat [ x: GTensor ] -> GTensor
+        return gd.view[ x, vec i64 [] [ x.dims[ 0 ], x.dims[ 1 ],
+                                        x.dims[ 2 ] * x.dims[ 3 ] ] ]
+
+    func back4 [ x: GTensor, h: i64 ] -> GTensor
+        return gd.view[ x, vec i64 [] [ x.dims[ 0 ], x.dims[ 1 ], h,
+                                        x.dims[ 2 ] / h ] ]
+
+    # a residual block: conv, norm, SiLU, conv, norm, plus the input
+    # (or its strided 1x1 conv), SiLU
+    func block [ x: GTensor, nm: string, st: i32 ] -> GTensor
+        a : GTensor gd.conv2d_st[ x, p[ '{nm}.body.0.weight' ], null,
+                                  st, 1, 1 ]
+        a = gd.silu[ gd.gnorm[ a, p[ '{nm}.body.1.weight' ],
+                               p[ '{nm}.body.1.bias' ], 8 ] ]
+        c : GTensor gd.conv2d_st[ a, p[ '{nm}.body.3.weight' ], null, 1,
+                                  1, 1 ]
+        c = gd.gnorm[ c, p[ '{nm}.body.4.weight' ],
+                      p[ '{nm}.body.4.bias' ], 8 ]
+        sw : GTensor p[ '{nm}.skip.weight' ]
+        s : GTensor [ (sw) ? gd.conv2d_st[ x, sw, null, st, 0, 0 ] : x ]
+        h : i64 [ c.dims[ 2 ] ]
+        return back4[ gd.silu[ gd.add[ flat[ c ], flat[ s ] ] ], h ]
+
+    # frames [b, side, side], 0 .. 1: each its x, y (shares of the
+    # frame) and the outer corners' distance, three a frame
+    func run [ frames: vec f32, nb: i64 ] -> vec f32
+        n : i64 [ side * side ]
+        # each frame made mean 0, deviation 1, as training did
+        v : vec f32 [ nb * n ]
+        for [ b: i64 0, b < nb, b += 1 ]
+            s1 : f64 [ 0.0 ]
+            for [ i: i64 0, i < n, i += 1 ]
+                s1 += f64[ frames[ b * n + i ] ]
+            m : f64 [ s1 / f64[ n ] ]
+            s2 : f64 [ 0.0 ]
+            for [ i: i64 0, i < n, i += 1 ]
+                d : f64 [ f64[ frames[ b * n + i ] ] - m ]
+                s2 += d * d
+            dev : f64 [ sqrt[ s2 / f64[ n - 1 ] ] ]
+            if [ dev < 1.0e-4 ] dev = 1.0e-4
+            for [ i: i64 0, i < n, i += 1 ]
+                v[ b * n + i ] = f32[ (f64[ frames[ b * n + i ] ] - m)
+                                      / dev ]
+        gd.reset_work[]
+        x : GTensor gd.temp[ vec i64 [] [ nb, 1, side, side ] ]
+        gd.upload[ x, v ]
+        st : GTensor gd.conv2d_st[ x, p[ 'stem.0.weight' ], null, 1, 2,
+                                   2 ]
+        st = gd.silu[ gd.gnorm[ st, p[ 'stem.1.weight' ],
+                                p[ 'stem.1.bias' ], 8 ] ]
+        full : GTensor block[ st, 'full', 1 ]
+        half : GTensor block[ block[ full, 'at_half.0', 2 ],
+                              'at_half.1', 1 ]
+        quarter : GTensor block[ block[ half, 'at_quarter.0', 2 ],
+                                 'at_quarter.1', 1 ]
+        eighth : GTensor block[ block[ quarter, 'at_eighth.0', 2 ],
+                                'at_eighth.1', 1 ]
+        up : GTensor gd.up2[ gd.conv2d_st[ eighth,
+            p[ 'to_quarter.weight' ], p[ 'to_quarter.bias' ], 1, 0,
+            0 ] ]
+        hq : i64 [ quarter.dims[ 2 ] ]
+        up = block[ back4[ gd.add[ flat[ up ], flat[ quarter ] ], hq ],
+                    'refine_quarter', 1 ]
+        up = gd.up2[ gd.conv2d_st[ up, p[ 'to_half.weight' ],
+                                   p[ 'to_half.bias' ], 1, 0, 0 ] ]
+        hh : i64 [ half.dims[ 2 ] ]
+        feat : GTensor block[ back4[ gd.add[ flat[ up ], flat[ half ] ],
+                                     hh ], 'refine_half', 1 ]
+        heat : GTensor gd.conv2d_st[ feat, p[ 'heat.weight' ],
+                                     p[ 'heat.bias' ], 1, 0, 0 ]
+        cells : i64 [ hh * hh ]
+        prob : GTensor gd.soft_t[ gd.view[ heat, vec i64 [] [ nb,
+            cells ] ], p[ 'log_temp' ] ]
+        # the point: each cell's weight times its middle's place
+        grid : vec f32 [ nb * cells * 2 ]
+        for [ b: i64 0, b < nb, b += 1 ]
+            for [ i: i64 0, i < cells, i += 1 ]
+                at : i64 [ (b * cells + i) * 2 ]
+                grid[ at ] = (f32[ i % hh ] + 0.5) / f32[ hh ]
+                grid[ at + 1 ] = (f32[ i / hh ] + 0.5) / f32[ hh ]
+        gt : GTensor gd.temp[ vec i64 [] [ nb, cells, 2 ] ]
+        gd.upload[ gt, grid ]
+        row : GTensor gd.view[ prob, vec i64 [] [ nb, 1, cells ] ]
+        pt : GTensor gd.bmm[ row, gt ]
+        # the gap: the picture's mean features beside the point's own
+        nc : i64 [ feat.dims[ 1 ] ]
+        fm : GTensor gd.view[ feat, vec i64 [] [ nb, nc, cells ] ]
+        col : GTensor gd.view[ prob, vec i64 [] [ nb, cells, 1 ] ]
+        loc : GTensor gd.bmm[ fm, col ]
+        ne : i64 [ eighth.dims[ 1 ] ]
+        ea : i64 [ eighth.dims[ 2 ] * eighth.dims[ 3 ] ]
+        em : GTensor gd.view[ eighth, vec i64 [] [ nb * ne, ea ] ]
+        sc : GTensor gd.row_mean[ em, nb * ne ]
+        both : GTensor gd.join[ gd.view[ sc, vec i64 [] [ nb, ne, 1 ] ],
+                                loc ]
+        bv : GTensor gd.view[ both, vec i64 [] [ nb, ne + nc ] ]
+        hid : GTensor gd.silu[ gd.linear[ bv, p[ 'gap.0.weight' ],
+                                          p[ 'gap.0.bias' ] ] ]
+        gap : GTensor gd.sigmoid[ gd.linear[ hid, p[ 'gap.2.weight' ],
+                                             p[ 'gap.2.bias' ] ] ]
+        pv : vec f32 gd.download[ pt ]
+        gv : vec f32 gd.download[ gap ]
+        out : vec f32 [ nb * 3 ]
+        for [ b: i64 0, b < nb, b += 1 ]
+            out[ b * 3 ] = pv[ b * 2 ]
+            out[ b * 3 + 1 ] = pv[ b * 2 + 1 ]
+            out[ b * 3 + 2 ] = gv[ b ]
+        return out
+
+# hyperspace's trained find on frames against pytorch's answers
+# (find_gold.py <dir> <find.pt> writes fd_in, fd_out, fd.path)
+expect func t_find_net [] -> bool
+    ge : cstr [ getenv[ 'GRAD_GOLD' ] ]
+    if [ !ge ] return true
+    dir : string [ ge ]
+    inp : vec f32 grad_gold[ dir, 'fd_in' ]
+    if [ inp.count == 0 ] return true
+    pf : path '{dir}/fd.path'
+    pt : string pf.load[ typeid[ string ], null ]
+    vk : vk_context []
+    Au.hold[ vk ]
+    disp : Display [ vk: vk, backbuffer: true, width: 64, height: 64 ]
+    Au.hold[ disp ]
+    fd : GFind [ vk: vk, src: path [ pt.trim[] ] ]
+    if [ !fd.valid ] return false
+    nb : i64 [ inp.count / (fd.side * fd.side) ]
+    got : vec f32 fd.run[ inp, nb ]
+    w : f64 grad_worst[ got, grad_gold[ dir, 'fd_out' ] ]
+    log 'find net on {nb} frames: worst gap to pytorch {w}'
+    return w < 0.0001

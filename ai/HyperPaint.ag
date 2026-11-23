@@ -1,0 +1,1292 @@
+extend ai
+
+# a crop's painting, as train_eyes.py's: another face's hair, the
+# canvas round the eyes, closed lids, the IR cameras' look, things
+# over the face, the lamp's burns, the dark round it
+
+HY_CANVAS : f64 [ 0.8 ]
+HY_BLOW   : f64 [ 0.8 ]
+HY_ROUGH  : f64 [ 0.5 ]
+HY_PI     : f64 [ 3.141592653589793 ]
+
+# the pictures laid over faces, each square, 0 .. 1: real hands and
+# their masks, hair cut from other faces (each with its eye middle
+# and sc), his own camera frames, his hair frames
+class HyBanks
+    public side    : i64
+    public hands   : vec f32
+    public hmasks  : vec f32
+    public hair    : vec f32
+    public hairm   : vec f32
+    public eyes    : vec f32
+    public own     : vec f32
+    public myhair  : vec f32
+
+    func count [ v: vec f32 ] -> i64
+        if [ !v ] return 0
+        return v.count / (side * side)
+
+    func grey [ dir: string, name: string ] -> vec f32
+        raw : vec u8 hy_bytes[ dir, 'bank_{name}.u8' ]
+        v : vec f32 [ raw.count ]
+        for [ i: i64 0, i < raw.count, i += 1 ]
+            v[ i ] = f32[ raw[ i ] ] / 255.0
+        return v
+
+    func load [ dir: string ]
+        side = 128
+        hands = grey[ dir, 'hands' ]
+        hmasks = grey[ dir, 'hmasks' ]
+        hair = grey[ dir, 'hair' ]
+        hairm = grey[ dir, 'hairm' ]
+        eyes = grey_gold[ dir ]
+        own = grey[ dir, 'own' ]
+        myhair = grey[ dir, 'myhair' ]
+
+    func grey_gold [ dir: string ] -> vec f32
+        return grad_gold[ dir, 'bank_eyes' ]
+
+# each stage's picture against the one python made (a test); none
+# when there is no record
+class HyCheck
+    public dir   : string
+    public names : vec string
+    public at    : i64
+    public worst : f64
+
+    func load [ d: string ]
+        dir = d
+        names = vec string []
+        f : path '{d}/stages.txt'
+        tx : string f.load[ typeid[ string ], null ]
+        if [ !tx ] return
+        for [ nm: string ] in tx.split[ '\n' ]
+            if [ nm.count > 0 ] names.push[ nm ]
+
+    func see [ name: string, x: vec f32 ]
+        if [ at >= names.count ] return
+        if [ names[ at ] != name ]
+            log 'stage {at}: silver ran {name}, python {names[ at ]}'
+            worst = 1.0e30
+            at += 1
+            return
+        e : f64 hy_diff[ 'stage {at} {name}', x,
+                         grad_gold[ dir, 'st{at}' ] ]
+        if [ e > worst ] worst = e
+        at += 1
+
+func hy_see [ ck: HyCheck, name: string, x: vec f32 ]
+    if [ ck ] ck.see[ name, x ]
+
+func hy_lin [ i: i64, h: i64 ] -> f64
+    return f64[ i ] / f64[ h - 1 ]
+
+func hy_clamp [ v: f64, lo: f64, hi: f64 ] -> f64
+    return fmin[ fmax[ v, lo ], hi ]
+
+func hy_smooth [ t: f64 ] -> f64
+    c : f64 hy_clamp[ t, 0.0, 1.0 ]
+    return c * c * (3.0 - 2.0 * c)
+
+func hy_sigmoid [ t: f64 ] -> f64
+    return 1.0 / (1.0 + exp[ -t ])
+
+# smooth noise in 0 .. 1: octaves of random grids, bicubic, summed
+func hy_perlin [ b: i64, h: i64, cells: vec i64, dr: HyDraws ]
+        -> vec f32
+    hh : i64 [ h * h ]
+    out : vec f32 [ b * hh ]
+    amp : f64 [ 1.0 ]
+    tot : f64 [ 0.0 ]
+    for [ n: i64 ] in cells
+        g : vec f64 dr.uniform[ b * n * n, 0.0, 1.0 ]
+        small : vec f32 [ b * n * n ]
+        for [ k: i64 0, k < b * n * n, k += 1 ]
+            small[ k ] = g[ k ]
+        for [ k: i64 0, k < b, k += 1 ]
+            up : vec f32 hy_bicubic[ small, k * n * n, n, h ]
+            for [ c: i64 0, c < hh, c += 1 ]
+                out[ k * hh + c ] += amp * f64[ up[ c ] ]
+        tot += amp
+        amp *= 0.5
+    for [ c: i64 0, c < b * hh, c += 1 ]
+        out[ c ] = hy_clamp[ f64[ out[ c ] ] / tot, 0.0, 1.0 ]
+    return out
+
+# one picture sampled through a 2 x 3 map of the crop's -1 .. 1 to
+# the source's (affine_grid, grid_sample, align_corners false)
+func hy_affine [ src: vec f32, sbase: i64, ss: i64, t: vec f64,
+                 h: i64 ] -> vec f32
+    out : vec f32 [ h * h ]
+    for [ i: i64 0, i < h, i += 1 ]
+        my : f64 [ (2.0 * f64[ i ] + 1.0) / f64[ h ] - 1.0 ]
+        for [ j: i64 0, j < h, j += 1 ]
+            mx : f64 [ (2.0 * f64[ j ] + 1.0) / f64[ h ] - 1.0 ]
+            gx : f64 [ t[ 0 ] * mx + t[ 1 ] * my + t[ 2 ] ]
+            gy : f64 [ t[ 3 ] * mx + t[ 4 ] * my + t[ 5 ] ]
+            ix : f64 [ ((gx + 1.0) * f64[ ss ] - 1.0) / 2.0 ]
+            iy : f64 [ ((gy + 1.0) * f64[ ss ] - 1.0) / 2.0 ]
+            out[ i * h + j ] = hy_bilinear[ src, sbase, ss, ix, iy ]
+    return out
+
+# each pixel the mean of the k x k round it, zeros past the edge
+# counted (avg_pool2d, stride 1)
+func hy_box [ x: vec f32, base: i64, h: i64, k: i64 ] -> vec f32
+    out : vec f32 [ h * h ]
+    half : i64 [ k / 2 ]
+    for [ i: i64 0, i < h, i += 1 ]
+        for [ j: i64 0, j < h, j += 1 ]
+            sum : f64 [ 0.0 ]
+            for [ a: i64 i - half, a <= i + half, a += 1 ]
+                if [ a < 0 || a >= h ] continue
+                for [ c: i64 j - half, c <= j + half, c += 1 ]
+                    if [ c < 0 || c >= h ] continue
+                    sum += f64[ x[ base + a * h + c ] ]
+            out[ i * h + j ] = sum / f64[ k * k ]
+    return out
+
+# a soft ellipse round (mx, my), radii rx, ry, turned an
+func hy_blob [ gx: f64, gy: f64, mx: f64, my: f64, rx: f64,
+               ry: f64, an: f64 ] -> f64
+    ux : f64 [ (gx - mx) * cos[ an ] + (gy - my) * sin[ an ] ]
+    uy : f64 [ -(gx - mx) * sin[ an ] + (gy - my) * cos[ an ] ]
+    return hy_sigmoid[ (1.0 - (ux / rx) * (ux / rx)
+                        - (uy / ry) * (uy / ry)) * 8.0 ]
+
+# every face gets another face's hair, laid by the eyes; half the
+# time his own hair frames fill its shape; the eyes left clear
+func hy_paint_hair [ x: vec f32, q: vec f32, b: i64, h: i64,
+                     bk: HyBanks, dr: HyDraws ] -> vec f32
+    if [ !bk || bk.count[ bk.hair ] == 0 ] return x
+    hs : i64 bk.side
+    hh : i64 [ h * h ]
+    k : vec f64 dr.ints[ b, 0, bk.count[ bk.hair ] ]
+    turn : vec f64 dr.uniform[ b, -0.15, 0.15 ]
+    size : vec f64 dr.uniform[ b, 0.9, 1.15 ]
+    side : vec f64 dr.uniform[ b, 0.0, 1.0 ]
+    pic : vec f32 [ b * hh ]
+    mask : vec f32 [ b * hh ]
+    for [ n: i64 0, n < b, n += 1 ]
+        e : i64 [ i64[ k[ n ] ] ]
+        w : i64 [ n * HY_ROW ]
+        ex : f64 [ (f64[ q[ w ] ] + f64[ q[ w + 2 ] ]) / 2.0 ]
+        ey : f64 [ (f64[ q[ w + 1 ] ] + f64[ q[ w + 3 ] ]) / 2.0 ]
+        dx : f64 [ f64[ q[ w + 2 ] ] - f64[ q[ w ] ] ]
+        dy : f64 [ f64[ q[ w + 3 ] ] - f64[ q[ w + 1 ] ] ]
+        sc : f64 [ sqrt[ dx * dx + dy * dy ] ]
+        an : f64 [ atan2[ dy, dx ] + turn[ n ] ]
+        k2 : f64 [ f64[ bk.eyes[ e * 3 + 2 ] ] / fmax[ sc, 1.0e-4 ]
+                   * size[ n ] ]
+        mirror : f64 [ (side[ n ] < 0.5) ? -1.0 : 1.0 ]
+        c : f64 [ cos[ an ] * k2 ]
+        s : f64 [ sin[ an ] * k2 ]
+        a00 : f64 [ c * mirror ]
+        a10 : f64 [ -s * mirror ]
+        tx : f64 [ f64[ bk.eyes[ e * 3 ] ] - (a00 * ex + s * ey) ]
+        ty : f64 [ f64[ bk.eyes[ e * 3 + 1 ] ] - (a10 * ex + c * ey) ]
+        t : vec f64 [] [ a00, s, a00 + s + 2.0 * tx - 1.0, a10, c,
+                         a10 + c + 2.0 * ty - 1.0 ]
+        got : vec f32 hy_affine[ bk.hair, e * hs * hs, hs, t, h ]
+        gm : vec f32 hy_affine[ bk.hairm, e * hs * hs, hs, t, h ]
+        for [ i: i64 0, i < hh, i += 1 ]
+            pic[ n * hh + i ] = got[ i ]
+            mask[ n * hh + i ] = gm[ i ]
+    if [ bk.count[ bk.myhair ] > 0 ]
+        mine : vec f32 [ b * hh ]
+        best : vec f64 [ b ]
+        for [ again: i64 0, again < 4, again += 1 ]
+            j : vec f64 dr.ints[ b, 0, bk.count[ bk.myhair ] ]
+            sec : vec f64 dr.uniform[ b, 0.25, 0.6 ]
+            an : vec f64 dr.uniform[ b, -0.4, 0.4 ]
+            off : vec f64 dr.uniform[ b * 2, -0.5, 0.5 ]
+            for [ n: i64 0, n < b, n += 1 ]
+                c : f64 [ sec[ n ] * cos[ an[ n ] ] ]
+                s : f64 [ sec[ n ] * sin[ an[ n ] ] ]
+                t : vec f64 [] [ c, -s, off[ n * 2 ], s, c,
+                                 off[ n * 2 + 1 ] ]
+                got : vec f32 hy_affine[ bk.myhair,
+                    i64[ j[ n ] ] * hs * hs, hs, t, h ]
+                lit : f64 [ 0.0 ]
+                for [ i: i64 0, i < hh, i += 1 ]
+                    lit += f64[ got[ i ] ]
+                lit = lit / f64[ hh ]
+                take : bool [ again == 0
+                              || (best[ n ] < 0.15 && lit > best[ n ]) ]
+                if [ !take ] continue
+                best[ n ] = lit
+                for [ i: i64 0, i < hh, i += 1 ]
+                    mine[ n * hh + i ] = got[ i ]
+        his : vec f64 dr.uniform[ b, 0.0, 1.0 ]
+        for [ n: i64 0, n < b, n += 1 ]
+            if [ his[ n ] >= 0.5 ] continue
+            for [ i: i64 0, i < hh, i += 1 ]
+                pic[ n * hh + i ] = mine[ n * hh + i ]
+    tone : vec f64 dr.uniform[ b, 0.3, 1.3 ]
+    out : vec f32 [ b * hh ]
+    for [ n: i64 0, n < b, n += 1 ]
+        w : i64 [ n * HY_ROW ]
+        dx : f64 [ f64[ q[ w + 2 ] ] - f64[ q[ w ] ] ]
+        dy : f64 [ f64[ q[ w + 3 ] ] - f64[ q[ w + 1 ] ] ]
+        r : f64 [ sqrt[ dx * dx + dy * dy ] * 0.3 ]
+        for [ i: i64 0, i < h, i += 1 ]
+            for [ j: i64 0, j < h, j += 1 ]
+                at : i64 [ n * hh + i * h + j ]
+                m : f64 [ f64[ mask[ at ] ] ]
+                for [ e: i64 4, e <= 6, e += 2 ]
+                    ox : f64 [ hy_lin[ j, h ] - f64[ q[ w + e ] ] ]
+                    oy : f64 [ hy_lin[ i, h ] - f64[ q[ w + e + 1 ] ] ]
+                    d : f64 [ sqrt[ ox * ox + oy * oy ] ]
+                    m = m * hy_clamp[ (d - r) / r, 0.0, 1.0 ]
+                p : f64 hy_clamp[ f64[ pic[ at ] ] * tone[ n ], 0.0,
+                                  1.0 ]
+                out[ at ] = f64[ x[ at ] ] * (1.0 - m) + p * m
+    return out
+
+# most pictures: no photo round the face. A dark canvas of noise
+# brushed on in patches, the eyes brushed in from the photo through
+# a soft ragged section that gets most of the face
+func hy_eye_canvas [ x: vec f32, q: vec f32, b: i64, h: i64,
+                     dr: HyDraws ] -> vec f32
+    hh : i64 [ h * h ]
+    out : vec f32 [ b * hh ]
+    for [ again: i64 0, again < 3, again += 1 ]
+        tone : vec f32 hy_perlin[ b, h, vec i64 [] [ 3, 6, 12, 24 ],
+                                  dr ]
+        lv : vec f64 dr.uniform[ b, 0.1, 0.8 ]
+        cut : vec f32 hy_perlin[ b, h, vec i64 [] [ 2, 4, 8 ], dr ]
+        from : vec f64 dr.uniform[ b, 0.4, 0.75 ]
+        soft : vec f64 dr.uniform[ b, 0.2, 0.5 ]
+        for [ n: i64 0, n < b, n += 1 ]
+            for [ c: i64 0, c < hh, c += 1 ]
+                at : i64 [ n * hh + c ]
+                m : f64 hy_smooth[ (f64[ cut[ at ] ] - from[ n ])
+                                   / soft[ n ] ]
+                out[ at ] = f64[ out[ at ] ] * (1.0 - m)
+                    + f64[ tone[ at ] ] * lv[ n ] * m
+    down : vec f64 dr.uniform[ b, 0.2, 0.5 ]
+    wide : vec f64 dr.uniform[ b, 1.1, 1.6 ]
+    tall : vec f64 dr.uniform[ b, 1.0, 1.5 ]
+    rag : vec f32 hy_perlin[ b, h, vec i64 [] [ 3, 6, 12 ], dr ]
+    soft : vec f64 dr.uniform[ b, 0.4, 0.9 ]
+    use : vec f64 dr.uniform[ b, 0.0, 1.0 ]
+    got : vec f32 [ b * hh ]
+    for [ n: i64 0, n < b, n += 1 ]
+        p : i64 [ n * HY_ROW ]
+        ex : f64 [ (f64[ q[ p ] ] + f64[ q[ p + 2 ] ]) / 2.0 ]
+        ey : f64 [ (f64[ q[ p + 1 ] ] + f64[ q[ p + 3 ] ]) / 2.0 ]
+        dx : f64 [ f64[ q[ p + 2 ] ] - f64[ q[ p ] ] ]
+        dy : f64 [ f64[ q[ p + 3 ] ] - f64[ q[ p + 1 ] ] ]
+        sc : f64 [ fmax[ sqrt[ dx * dx + dy * dy ], 1.0e-4 ] ]
+        for [ i: i64 0, i < h, i += 1 ]
+            for [ j: i64 0, j < h, j += 1 ]
+                at : i64 [ n * hh + i * h + j ]
+                if [ use[ n ] >= HY_CANVAS ]
+                    got[ at ] = x[ at ]
+                    continue
+                gx : f64 [ hy_lin[ j, h ] - ex ]
+                gy : f64 [ hy_lin[ i, h ] - ey ]
+                along : f64 [ (gx * dx + gy * dy) / sc ]
+                across : f64 [ (-gx * dy + gy * dx) / sc
+                               - sc * down[ n ] ]
+                a : f64 [ along / (sc * wide[ n ]) ]
+                c : f64 [ across / (sc * tall[ n ]) ]
+                d : f64 [ sqrt[ a * a + c * c ] ]
+                edge : f64 [ (1.0 - d)
+                             + (f64[ rag[ at ] ] - 0.5) * 0.9 ]
+                m : f64 hy_smooth[ edge / soft[ n ] ]
+                got[ at ] = f64[ out[ at ] ] * (1.0 - m)
+                    + f64[ x[ at ] ] * m
+    return got
+
+# the lamp leaves all but the face dark: a fuzzy ragged oval round
+# it, the rest 3% to 30% as bright, 90% of the time
+func hy_surround_dark [ x: vec f32, q: vec f32, b: i64, h: i64,
+                        dr: HyDraws ] -> vec f32
+    hh : i64 [ h * h ]
+    rad : vec f64 dr.uniform[ b, 0.55, 0.9 ]
+    blots : vec f64 dr.uniform[ b * 25, 0.0, 1.0 ]
+    small : vec f32 [ b * 25 ]
+    for [ k: i64 0, k < b * 25, k += 1 ]
+        small[ k ] = blots[ k ]
+    soft : vec f64 dr.uniform[ b, 0.15, 0.5 ]
+    on : vec f64 dr.uniform[ b, 0.0, 1.0 ]
+    keep : vec f64 dr.uniform[ b, 0.03, 0.3 ]
+    out : vec f32 [ b * hh ]
+    for [ n: i64 0, n < b, n += 1 ]
+        rag : vec f32 hy_bicubic[ small, n * 25, 5, h ]
+        cx : f64 [ f64[ q[ n * HY_ROW + 8 ] ] ]
+        cy : f64 [ f64[ q[ n * HY_ROW + 9 ] ] ]
+        r : f64 [ f64[ q[ n * HY_ROW + 10 ] ] * rad[ n ] ]
+        lit : f64 [ (on[ n ] < 0.9) ? 1.0 : 0.0 ]
+        for [ i: i64 0, i < h, i += 1 ]
+            for [ j: i64 0, j < h, j += 1 ]
+                at : i64 [ n * hh + i * h + j ]
+                ox : f64 [ hy_lin[ j, h ] - cx ]
+                oy : f64 [ hy_lin[ i, h ] - cy ]
+                d : f64 [ sqrt[ ox * ox + oy * oy ] ]
+                edge : f64 [ (d / r + (f64[ rag[ i * h + j ] ] - 0.5)
+                              * 0.6 - 1.0) / soft[ n ] ]
+                dark : f64 hy_sigmoid[ edge * 4.0 ]
+                out[ at ] = f64[ x[ at ] ]
+                    * (1.0 - lit * dark * (1.0 - keep[ n ]))
+    return out
+
+# a third of the faces get lids painted over their open eyes, part
+# or all the way shut, a soft dark lash line where each stops; both
+# eyes mostly, one alone a fifth of the time
+func hy_close_eyes [ x: vec f32, q: vec f32, b: i64, h: i64,
+                     dr: HyDraws ] -> vec f32
+    hh : i64 [ h * h ]
+    use : vec f64 dr.uniform[ b, 0.0, 1.0 ]
+    shut : vec f64 dr.uniform[ b, 0.4, 1.0 ]
+    lash : vec f64 dr.uniform[ b, 0.3, 0.7 ]
+    one : vec f64 dr.uniform[ b, 0.0, 1.0 ]
+    pick : vec f64 dr.uniform[ b, 0.0, 1.0 ]
+    out : vec f32 [ b * hh ]
+    for [ c: i64 0, c < b * hh, c += 1 ]
+        out[ c ] = x[ c ]
+    blurred : vec f32 [ b * hh ]
+    for [ n: i64 0, n < b, n += 1 ]
+        bx : vec f32 hy_box[ x, n * hh, h, 5 ]
+        for [ c: i64 0, c < hh, c += 1 ]
+            blurred[ n * hh + c ] = bx[ c ]
+    for [ k: i64 0, k < 2, k += 1 ]
+        oc : i64 [ k * 2 ]
+        pu : i64 [ 4 + k * 2 ]
+        sgn : f64 [ (k == 0) ? 1.0 : -1.0 ]
+        lighter : vec f64 dr.uniform[ b, 0.85, 1.0 ]
+        for [ n: i64 0, n < b, n += 1 ]
+            p : i64 [ n * HY_ROW ]
+            px : f64 [ f64[ q[ p + pu ] ] ]
+            py : f64 [ f64[ q[ p + pu + 1 ] ] ]
+            dx : f64 [ px - f64[ q[ p + oc ] ] ]
+            dy : f64 [ py - f64[ q[ p + oc + 1 ] ] ]
+            d : f64 [ fmax[ sqrt[ dx * dx + dy * dy ], 1.0e-4 ] ]
+            half : f64 [ d * 1.25 ]
+            ax : f64 [ dx / d ]
+            ay : f64 [ dy / d ]
+            tall : f64 [ half * 0.55 ]
+            edge : f64 [ -tall + 2.0 * tall * shut[ n ] ]
+            sx : f64 [ px + sgn * ay * half * 0.9 ]
+            sy : f64 [ py - sgn * ax * half * 0.9 ]
+            tone : f64 hy_bilinear[ blurred, n * hh, h,
+                ((sx * 2.0 - 1.0 + 1.0) * f64[ h ] - 1.0) / 2.0,
+                ((sy * 2.0 - 1.0 + 1.0) * f64[ h ] - 1.0) / 2.0 ]
+            tone = tone * lighter[ n ]
+            on : f64 [ (use[ n ] < 1.0 / 3.0) ? 1.0 : 0.0 ]
+            if [ one[ n ] < 0.2 && (pick[ n ] < 0.5) != (k == 0) ]
+                on = 0.0
+            for [ i: i64 0, i < h, i += 1 ]
+                for [ j: i64 0, j < h, j += 1 ]
+                    gx : f64 [ hy_lin[ j, h ] - px ]
+                    gy : f64 [ hy_lin[ i, h ] - py ]
+                    along : f64 [ gx * ax + gy * ay ]
+                    across : f64 [ sgn * (-gx * ay + gy * ax) ]
+                    a : f64 [ along / half ]
+                    t : f64 [ across / tall ]
+                    inside : f64 [ sqrt[ a * a + t * t ] ]
+                    eye : f64 hy_smooth[ (1.0 - inside) / 0.45 ]
+                    lid : f64 [ eye * hy_clamp[ (edge - across)
+                        / (tall * 0.15), 0.0, 1.0 ] ]
+                    z : f64 [ (across - edge) / (tall * 0.12) ]
+                    line : f64 [ eye * exp[ -(z * z) ] ]
+                    at : i64 [ n * hh + i * h + j ]
+                    m : f64 [ lid * on ]
+                    v : f64 [ f64[ out[ at ] ] * (1.0 - m) + tone * m ]
+                    out[ at ] = v * (1.0 - line * on * lash[ n ])
+    return out
+
+# the IR cameras' look: a random curve, light falling off away from
+# the face, the lamp up close pushing skin white, a little blur,
+# sensor noise
+func hy_ir_look [ x: vec f32, q: vec f32, b: i64, h: i64,
+                  dr: HyDraws ] -> vec f32
+    hh : i64 [ h * h ]
+    gamma : vec f64 dr.uniform[ b, 0.45, 1.4 ]
+    lo : vec f64 dr.uniform[ b, 0.0, 0.1 ]
+    hi : vec f64 dr.uniform[ b, 0.6, 1.0 ]
+    s : vec f64 dr.uniform[ b, 0.0, 1.0 ]
+    fall : vec f64 dr.uniform[ b, 0.0, 1.2 ]
+    white : vec f64 dr.uniform[ b, 0.4, 0.85 ]
+    out : vec f32 [ b * hh ]
+    for [ n: i64 0, n < b, n += 1 ]
+        cx : f64 [ f64[ q[ n * HY_ROW + 8 ] ] ]
+        cy : f64 [ f64[ q[ n * HY_ROW + 9 ] ] ]
+        lit : f64 [ 0.0 ]
+        wsum : f64 [ 0.0 ]
+        for [ i: i64 0, i < h, i += 1 ]
+            for [ j: i64 0, j < h, j += 1 ]
+                at : i64 [ n * hh + i * h + j ]
+                v : f64 [ pow[ hy_clamp[ f64[ x[ at ] ], 1.0e-4, 1.0 ],
+                               gamma[ n ] ] ]
+                v = hy_clamp[ (v - lo[ n ]) / (hi[ n ] - lo[ n ]), 0.0,
+                              1.0 ]
+                v = v * (1.0 - s[ n ])
+                    + s[ n ] * v * v * (3.0 - 2.0 * v)
+                ox : f64 [ hy_lin[ j, h ] - cx ]
+                oy : f64 [ hy_lin[ i, h ] - cy ]
+                d2 : f64 [ ox * ox + oy * oy ]
+                v = v * hy_clamp[ 1.0 - fall[ n ] * d2, 0.1, 1.0 ]
+                near : f64 [ exp[ -d2 / 0.02 ] ]
+                lit += v * near
+                wsum += near
+                out[ at ] = v
+        lit = lit / fmax[ wsum, 1.0e-6 ]
+        g : f64 hy_clamp[ white[ n ] / fmax[ lit, 0.02 ], 0.5, 10.0 ]
+        for [ c: i64 0, c < hh, c += 1 ]
+            out[ n * hh + c ] = f64[ out[ n * hh + c ] ] * g
+    blur : vec f64 dr.uniform[ 1, 0.0, 1.0 ]
+    if [ blur[ 0 ] < 0.5 ]
+        for [ n: i64 0, n < b, n += 1 ]
+            bx : vec f32 hy_box[ out, n * hh, h, 3 ]
+            for [ c: i64 0, c < hh, c += 1 ]
+                out[ n * hh + c ] = bx[ c ]
+    grain : vec f64 dr.normal[ b * hh ]
+    level : vec f64 dr.uniform[ b, 0.0, 0.02 ]
+    for [ n: i64 0, n < b, n += 1 ]
+        for [ c: i64 0, c < hh, c += 1 ]
+            at : i64 [ n * hh + c ]
+            out[ at ] = hy_clamp[ f64[ out[ at ] ] + grain[ at ]
+                                  * level[ n ], 0.0, 1.0 ]
+    return out
+
+# a cover's surface: flat, a gradient, blotches or stripes, with
+# grain, at a random level
+func hy_surface [ b: i64, h: i64, dr: HyDraws ] -> vec f32
+    hh : i64 [ h * h ]
+    base : vec f64 dr.uniform[ b, 0.05, 0.95 ]
+    an : vec f64 dr.uniform[ b, 0.0, HY_PI ]
+    slope : vec f64 dr.uniform[ b, -0.4, 0.4 ]
+    blots : vec f64 dr.uniform[ b * 64, 0.0, 1.0 ]
+    small : vec f32 [ b * 64 ]
+    for [ k: i64 0, k < b * 64, k += 1 ]
+        small[ k ] = blots[ k ]
+    often : vec f64 dr.uniform[ b, 20.0, 80.0 ]
+    kind : vec f64 dr.ints[ b, 0, 4 ]
+    grain : vec f64 dr.normal[ b * hh ]
+    out : vec f32 [ b * hh ]
+    for [ n: i64 0, n < b, n += 1 ]
+        blot : vec f32 hy_bicubic[ small, n * 64, 8, h ]
+        for [ i: i64 0, i < h, i += 1 ]
+            for [ j: i64 0, j < h, j += 1 ]
+                c : i64 [ i * h + j ]
+                along : f64 [ hy_lin[ j, h ] * cos[ an[ n ] ]
+                              + hy_lin[ i, h ] * sin[ an[ n ] ] ]
+                v : f64 base[ n ]
+                if [ kind[ n ] == 1.0 ]
+                    v = base[ n ] + slope[ n ] * (along - 0.5)
+                if [ kind[ n ] == 2.0 ]
+                    v = base[ n ] * (0.5 + f64[ blot[ c ] ])
+                if [ kind[ n ] == 3.0 ]
+                    wave : f64 [ sin[ along * often[ n ] ] ]
+                    v = base[ n ] * (0.7 + 0.3 * wave)
+                v += grain[ n * hh + c ] * 0.01
+                out[ n * hh + c ] = hy_clamp[ v, 0.0, 1.0 ]
+    return out
+
+# a picture and its mask
+class HyCut
+    public pic  : vec f32
+    public mask : vec f32
+
+# a real hand over each crop: a random cutout, its frame 0.6 to 1.6
+# times the face, turned an, its middle at (mx, my); picture, mask
+func hy_real_hand [ b: i64, h: i64, mx: vec f64, my: vec f64,
+                    sz: vec f64, an: vec f64, bk: HyBanks,
+                    dr: HyDraws ] -> HyCut
+    hs : i64 bk.side
+    hh : i64 [ h * h ]
+    k : vec f64 dr.ints[ b, 0, bk.count[ bk.hands ] ]
+    size : vec f64 dr.uniform[ b, 0.6, 1.6 ]
+    pic : vec f32 [ b * hh ]
+    mask : vec f32 [ b * hh ]
+    for [ n: i64 0, n < b, n += 1 ]
+        scale : f64 [ sz[ n ] * size[ n ] ]
+        c : f64 [ cos[ an[ n ] ] ]
+        s : f64 [ sin[ an[ n ] ] ]
+        ox : f64 [ 1.0 - 2.0 * mx[ n ] ]
+        oy : f64 [ 1.0 - 2.0 * my[ n ] ]
+        t : vec f64 [] [ c / scale, s / scale,
+                         (c * ox + s * oy) / scale,
+                         -s / scale, c / scale,
+                         (-s * ox + c * oy) / scale ]
+        e : i64 [ i64[ k[ n ] ] * hs * hs ]
+        got : vec f32 hy_affine[ bk.hands, e, hs, t, h ]
+        gm : vec f32 hy_affine[ bk.hmasks, e, hs, t, h ]
+        for [ i: i64 0, i < hh, i += 1 ]
+            pic[ n * hh + i ] = got[ i ]
+            mask[ n * hh + i ] = gm[ i ]
+    tone : vec f64 dr.uniform[ b, 0.7, 1.5 ]
+    for [ n: i64 0, n < b, n += 1 ]
+        for [ i: i64 0, i < hh, i += 1 ]
+            at : i64 [ n * hh + i ]
+            pic[ at ] = hy_clamp[ f64[ pic[ at ] ] * tone[ n ], 0.0,
+                                  1.0 ]
+    return HyCut [ pic: pic, mask: mask ]
+
+# a random section of one of his frames (a fifth to two thirds),
+# turned, laid round (mx, my) at 0.4 to 1.2 times the face, cut by
+# a blob with a ragged edge
+func hy_own_patch [ b: i64, h: i64, mx: vec f64, my: vec f64,
+                    sz: vec f64, an: vec f64, bk: HyBanks,
+                    dr: HyDraws ] -> HyCut
+    hs : i64 bk.side
+    hh : i64 [ h * h ]
+    k : vec f64 dr.ints[ b, 0, bk.count[ bk.own ] ]
+    cx : vec f64 dr.uniform[ b, -0.6, 0.6 ]
+    cy : vec f64 dr.uniform[ b, -0.6, 0.6 ]
+    sec : vec f64 dr.uniform[ b, 0.2, 0.67 ]
+    area : vec f64 dr.uniform[ b, 0.4, 1.2 ]
+    pic : vec f32 [ b * hh ]
+    for [ n: i64 0, n < b, n += 1 ]
+        k2 : f64 [ sec[ n ] / (sz[ n ] * area[ n ]) ]
+        c : f64 [ cos[ an[ n ] ] ]
+        s : f64 [ sin[ an[ n ] ] ]
+        ox : f64 [ -(2.0 * mx[ n ] - 1.0) ]
+        oy : f64 [ -(2.0 * my[ n ] - 1.0) ]
+        t : vec f64 [] [ c * k2, s * k2,
+                         cx[ n ] + (c * ox + s * oy) * k2,
+                         -s * k2, c * k2,
+                         cy[ n ] + (-s * ox + c * oy) * k2 ]
+        got : vec f32 hy_affine[ bk.own, i64[ k[ n ] ] * hs * hs, hs, t,
+                                 h ]
+        for [ i: i64 0, i < hh, i += 1 ]
+            pic[ n * hh + i ] = got[ i ]
+    thin : vec f64 dr.uniform[ b, 0.5, 1.0 ]
+    blots : vec f64 dr.uniform[ b * 36, 0.0, 1.0 ]
+    small : vec f32 [ b * 36 ]
+    for [ i: i64 0, i < b * 36, i += 1 ]
+        small[ i ] = blots[ i ]
+    mask : vec f32 [ b * hh ]
+    for [ n: i64 0, n < b, n += 1 ]
+        rag : vec f32 hy_bicubic[ small, n * 36, 6, h ]
+        a : f64 [ sz[ n ] * area[ n ] / 2.0 ]
+        for [ i: i64 0, i < h, i += 1 ]
+            for [ j: i64 0, j < h, j += 1 ]
+                m : f64 hy_blob[ hy_lin[ j, h ], hy_lin[ i, h ],
+                                 mx[ n ], my[ n ], a, a * thin[ n ],
+                                 an[ n ] ]
+                m = (m + (f64[ rag[ i * h + j ] ] - 0.5) * 0.8 - 0.5)
+                    * 6.0 + 0.5
+                mask[ n * hh + i * h + j ] = hy_clamp[ m, 0.0, 1.0 ]
+    return HyCut [ pic: pic, mask: mask ]
+
+# a mask kept clear of both eye centers (r of them, fading to r more)
+func hy_clear_eyes [ src: vec f32, q: vec f32, b: i64, h: i64,
+                     share: f64 ] -> vec f32
+    hh : i64 [ h * h ]
+    m : vec f32 [ src.count ]
+    for [ c: i64 0, c < src.count, c += 1 ]
+        m[ c ] = src[ c ]
+    for [ n: i64 0, n < b, n += 1 ]
+        w : i64 [ n * HY_ROW ]
+        r : f64 [ f64[ q[ w + 10 ] ] * share ]
+        for [ i: i64 0, i < h, i += 1 ]
+            for [ j: i64 0, j < h, j += 1 ]
+                at : i64 [ n * hh + i * h + j ]
+                for [ e: i64 4, e <= 6, e += 2 ]
+                    ox : f64 [ hy_lin[ j, h ] - f64[ q[ w + e ] ] ]
+                    oy : f64 [ hy_lin[ i, h ] - f64[ q[ w + e + 1 ] ] ]
+                    d : f64 [ sqrt[ ox * ox + oy * oy ] ]
+                    m[ at ] = f64[ m[ at ] ]
+                        * hy_clamp[ (d - r) / r, 0.0, 1.0 ]
+    return m
+
+# things over the face: up to three, each half the time; his own
+# frames, real hands, round blobs or long thin strips; never over
+# both eyes; then half the crops a hand over the mouth
+func hy_cover [ win: vec f32, q: vec f32, b: i64, h: i64,
+                bk: HyBanks, dr: HyDraws ] -> vec f32
+    hh : i64 [ h * h ]
+    out : vec f32 [ b * hh ]
+    for [ c: i64 0, c < b * hh, c += 1 ]
+        out[ c ] = win[ c ]
+    sz : vec f64 [ b ]
+    for [ n: i64 0, n < b, n += 1 ]
+        sz[ n ] = q[ n * HY_ROW + 10 ]
+    for [ again: i64 0, again < 3, again += 1 ]
+        use : vec f64 dr.uniform[ b, 0.0, 1.0 ]
+        mx : vec f64 dr.uniform[ b, -0.4, 0.4 ]
+        my : vec f64 dr.uniform[ b, -0.35, 0.45 ]
+        an : vec f64 dr.uniform[ b, 0.0, HY_PI ]
+        pick : vec f64 dr.uniform[ b, 0.0, 1.0 ]
+        rx : vec f64 dr.uniform[ b, 0.1, 0.35 ]
+        ry : vec f64 dr.uniform[ b, 0.08, 0.3 ]
+        sx : vec f64 dr.uniform[ b, 0.3, 0.9 ]
+        sy : vec f64 dr.uniform[ b, 0.015, 0.06 ]
+        for [ n: i64 0, n < b, n += 1 ]
+            mx[ n ] = f64[ q[ n * HY_ROW + 8 ] ] + sz[ n ] * mx[ n ]
+            my[ n ] = f64[ q[ n * HY_ROW + 9 ] ] + sz[ n ] * my[ n ]
+        fill : vec f32 hy_surface[ b, h, dr ]
+        hand : HyCut hy_real_hand[ b, h, mx, my, sz, an, bk, dr ]
+        mine : HyCut hy_own_patch[ b, h, mx, my, sz, an, bk, dr ]
+        om : vec f32 hy_clear_eyes[ mine.mask, q, b, h, 0.12 ]
+        m : vec f32 [ b * hh ]
+        for [ n: i64 0, n < b, n += 1 ]
+            kind : i64 [ (pick[ n ] < 0.5) ? 3 : (pick[ n ] < 0.8) ? 2
+                         : (pick[ n ] < 0.95) ? 0 : 1 ]
+            on : f64 [ (use[ n ] < 0.5) ? 1.0 : 0.0 ]
+            for [ i: i64 0, i < h, i += 1 ]
+                for [ j: i64 0, j < h, j += 1 ]
+                    at : i64 [ n * hh + i * h + j ]
+                    v : f64 [ 0.0 ]
+                    if [ kind == 0 ]
+                        v = hy_blob[ hy_lin[ j, h ], hy_lin[ i, h ],
+                            mx[ n ], my[ n ], sz[ n ] * rx[ n ],
+                            sz[ n ] * ry[ n ], an[ n ] ]
+                    if [ kind == 1 ]
+                        v = hy_blob[ hy_lin[ j, h ], hy_lin[ i, h ],
+                            mx[ n ], my[ n ], sz[ n ] * sx[ n ],
+                            sz[ n ] * sy[ n ], an[ n ] ]
+                    if [ kind == 2 ]
+                        v = hand.mask[ at ]
+                        fill[ at ] = hand.pic[ at ]
+                    if [ kind == 3 ]
+                        v = om[ at ]
+                        fill[ at ] = mine.pic[ at ]
+                    m[ at ] = v * on
+            # a cover over both eye centers is dropped
+            both : bool [ true ]
+            for [ e: i64 4, e <= 6, e += 2 ]
+                ix : i64 [ min[ max[ i64[ f64[ q[ n * HY_ROW + e ] ]
+                    * f64[ h ] ], 0 ], h - 1 ] ]
+                iy : i64 [ min[ max[ i64[ f64[ q[ n * HY_ROW + e + 1 ] ]
+                    * f64[ h ] ], 0 ], h - 1 ] ]
+                if [ m[ n * hh + iy * h + ix ] <= 0.5 ] both = false
+            for [ c: i64 0, c < hh, c += 1 ]
+                at : i64 [ n * hh + c ]
+                w : f64 [ (both) ? 0.0 : f64[ m[ at ] ] ]
+                out[ at ] = f64[ out[ at ] ] * (1.0 - w)
+                    + f64[ fill[ at ] ] * w
+    return hy_mouth_hand[ out, q, b, h, bk, dr ]
+
+# half the crops: a hand over the mouth (a real hand or one of his
+# frames), below the eye line by about the eyes' spacing
+func hy_mouth_hand [ x: vec f32, q: vec f32, b: i64, h: i64,
+                     bk: HyBanks, dr: HyDraws ] -> vec f32
+    hh : i64 [ h * h ]
+    down : vec f64 dr.uniform[ b, 1.0, 1.6 ]
+    ax : vec f64 dr.uniform[ b, -0.3, 0.3 ]
+    ay : vec f64 dr.uniform[ b, -0.3, 0.3 ]
+    an : vec f64 dr.uniform[ b, 0.0, HY_PI ]
+    sz : vec f64 [ b ]
+    big : vec f64 [ b ]
+    mx : vec f64 [ b ]
+    my : vec f64 [ b ]
+    for [ n: i64 0, n < b, n += 1 ]
+        p : i64 [ n * HY_ROW ]
+        sz[ n ] = q[ p + 10 ]
+        big[ n ] = f64[ q[ p + 10 ] ] * 1.3
+        ex : f64 [ (f64[ q[ p + 4 ] ] + f64[ q[ p + 6 ] ]) / 2.0 ]
+        ey : f64 [ (f64[ q[ p + 5 ] ] + f64[ q[ p + 7 ] ]) / 2.0 ]
+        dx : f64 [ f64[ q[ p + 6 ] ] - f64[ q[ p + 4 ] ] ]
+        dy : f64 [ f64[ q[ p + 7 ] ] - f64[ q[ p + 5 ] ] ]
+        mx[ n ] = ex - dy * down[ n ] + dx * ax[ n ]
+        my[ n ] = ey + dx * down[ n ] + dy * ay[ n ]
+    hand : HyCut hy_real_hand[ b, h, mx, my, sz, an, bk, dr ]
+    pic : vec f32 hand.pic
+    m : vec f32 hand.mask
+    mine : HyCut hy_own_patch[ b, h, mx, my, big, an, bk, dr ]
+    his : vec f64 dr.uniform[ b, 0.0, 1.0 ]
+    for [ n: i64 0, n < b, n += 1 ]
+        if [ his[ n ] >= 0.5 ] continue
+        for [ c: i64 0, c < hh, c += 1 ]
+            at : i64 [ n * hh + c ]
+            v : f64 [ f64[ mine.pic[ at ] ] ]
+            pic[ at ] = v
+            m[ at ] = f64[ mine.mask[ at ] ]
+                * hy_clamp[ (v - 0.2) / 0.15, 0.0, 1.0 ]
+    rx : vec f64 dr.uniform[ b, 0.3, 0.5 ]
+    ry : vec f64 dr.uniform[ b, 0.25, 0.4 ]
+    fill : vec f32 hy_surface[ b, h, dr ]
+    for [ n: i64 0, n < b, n += 1 ]
+        for [ i: i64 0, i < h, i += 1 ]
+            for [ j: i64 0, j < h, j += 1 ]
+                at : i64 [ n * hh + i * h + j ]
+                if [ m[ at ] <= 0.5 ] pic[ at ] = fill[ at ]
+                oval : f64 hy_blob[ hy_lin[ j, h ], hy_lin[ i, h ],
+                    mx[ n ], my[ n ], sz[ n ] * rx[ n ],
+                    sz[ n ] * ry[ n ], an[ n ] ]
+                m[ at ] = fmax[ f64[ m[ at ] ], oval ]
+    m = hy_clear_eyes[ m, q, b, h, 0.12 ]
+    bright : vec f64 dr.uniform[ b, 1.0, 1.8 ]
+    use : vec f64 dr.uniform[ b, 0.0, 1.0 ]
+    out : vec f32 [ b * hh ]
+    for [ n: i64 0, n < b, n += 1 ]
+        on : f64 [ (use[ n ] < 0.5) ? 1.0 : 0.0 ]
+        for [ c: i64 0, c < hh, c += 1 ]
+            at : i64 [ n * hh + c ]
+            w : f64 [ f64[ m[ at ] ] * on ]
+            p : f64 hy_clamp[ f64[ pic[ at ] ] * bright[ n ], 0.0, 1.0 ]
+            out[ at ] = f64[ x[ at ] ] * (1.0 - w) + p * w
+    return out
+
+# the lamp close: most faces lit too hot, a third each way: a soft
+# hot spot; burnt as camera 2 burns them; or washed out
+func hy_blow_out [ x: vec f32, q: vec f32, b: i64, h: i64,
+                   dr: HyDraws ] -> vec f32
+    hh : i64 [ h * h ]
+    ox : vec f64 dr.uniform[ b, -0.3, 0.3 ]
+    oy : vec f64 dr.uniform[ b, -0.2, 0.4 ]
+    rad : vec f64 dr.uniform[ b, 0.4, 1.0 ]
+    gain : vec f64 dr.uniform[ b, 2.0, 6.0 ]
+    by : vec f64 dr.uniform[ b, 0.0, 0.15 ]
+    brad : vec f64 dr.uniform[ b, 0.3, 0.45 ]
+    pw : vec f64 dr.uniform[ b, 2.0, 3.0 ]
+    lift : vec f64 dr.uniform[ b, 1.0, 1.4 ]
+    wash : vec f64 dr.uniform[ b, 3.0, 10.0 ]
+    kind : vec f64 dr.ints[ b, 0, 3 ]
+    on : vec f64 dr.uniform[ b, 0.0, 1.0 ]
+    out : vec f32 [ b * hh ]
+    for [ n: i64 0, n < b, n += 1 ]
+        sz : f64 [ f64[ q[ n * HY_ROW + 10 ] ] ]
+        mx : f64 [ f64[ q[ n * HY_ROW + 8 ] ] + sz * ox[ n ] ]
+        my : f64 [ f64[ q[ n * HY_ROW + 9 ] ] + sz * oy[ n ] ]
+        r : f64 [ sz * rad[ n ] ]
+        bmy : f64 [ f64[ q[ n * HY_ROW + 9 ] ] + sz * by[ n ] ]
+        br : f64 [ sz * brad[ n ] ]
+        mid : f64 [ 0.0 ]
+        wsum : f64 [ 0.0 ]
+        for [ i: i64 0, i < h, i += 1 ]
+            for [ j: i64 0, j < h, j += 1 ]
+                gx : f64 [ hy_lin[ j, h ] - mx ]
+                gy : f64 [ hy_lin[ i, h ] - bmy ]
+                d : f64 [ (gx * gx + gy * gy) / (br * br) ]
+                wt : f64 [ exp[ -d * d ] ]
+                mid += f64[ x[ n * hh + i * h + j ] ] * wt
+                wsum += wt
+        mid = fmax[ mid / wsum, 0.05 ]
+        for [ i: i64 0, i < h, i += 1 ]
+            for [ j: i64 0, j < h, j += 1 ]
+                at : i64 [ n * hh + i * h + j ]
+                v : f64 [ f64[ x[ at ] ] ]
+                if [ on[ n ] >= HY_BLOW ]
+                    out[ at ] = v
+                    continue
+                gx : f64 [ hy_lin[ j, h ] - mx ]
+                sy : f64 [ hy_lin[ i, h ] - my ]
+                gy : f64 [ hy_lin[ i, h ] - bmy ]
+                if [ kind[ n ] == 0.0 ]
+                    spot : f64 [ exp[ -(gx * gx + sy * sy) / (r * r) ] ]
+                    out[ at ] = hy_clamp[ v * (1.0 + (gain[ n ] - 1.0)
+                                          * spot), 0.0, 1.0 ]
+                    continue
+                d : f64 [ (gx * gx + gy * gy) / (br * br) ]
+                if [ kind[ n ] == 1.0 ]
+                    wt : f64 [ exp[ -d * d ] ]
+                    hot : f64 hy_clamp[ pow[ v / mid, pw[ n ] ]
+                                        * lift[ n ], 0.0, 1.0 ]
+                    out[ at ] = v * (1.0 - wt) + hot * wt
+                    continue
+                flat : f64 [ pow[ exp[ -d ], 0.3 ] ]
+                out[ at ] = hy_clamp[ v * (1.0 + (wash[ n ] - 1.0)
+                                      * flat ), 0.0, 1.0 ]
+    return out
+
+# a list sorted, small to large (a heap sort)
+func hy_sorted [ src: vec f64 ] -> vec f64
+    v : vec f64 [ src.count ]
+    n : i64 src.count
+    for [ i: i64 0, i < n, i += 1 ]
+        v[ i ] = src[ i ]
+    for [ top: i64 n / 2 - 1, top >= 0, top -= 1 ]
+        hy_sift[ v, top, n ]
+    for [ end: i64 n - 1, end > 0, end -= 1 ]
+        t : f64 v[ 0 ]
+        v[ 0 ] = v[ end ]
+        v[ end ] = t
+        hy_sift[ v, 0, end ]
+    return v
+
+func hy_sift [ v: vec f64, from: i64, n: i64 ]
+    at : i64 from
+    going : bool [ true ]
+    while [ going ]
+        big : i64 [ at * 2 + 1 ]
+        if [ big + 1 < n && v[ big + 1 ] > v[ big ] ] big += 1
+        if [ big >= n || v[ at ] >= v[ big ] ]
+            going = false
+            continue
+        t : f64 v[ at ]
+        v[ at ] = v[ big ]
+        v[ big ] = t
+        at = big
+
+# torch.quantile's value at share t of sorted values (linear)
+func hy_quantile [ v: vec f64, t: f64 ] -> f64
+    pos : f64 [ t * f64[ v.count - 1 ] ]
+    lo : i64 [ i64[ floor[ pos ] ] ]
+    hi : i64 [ min[ lo + 1, v.count - 1 ] ]
+    return v[ lo ] + (v[ hi ] - v[ lo ]) * (pos - f64[ lo ])
+
+# every crop's painting: hair, then (training) half normal (the face
+# on its canvas, its contrast stretched) and half rough (closed
+# lids, the IR look, the canvas, covers, burns, the dark round it)
+func hy_paint [ win: vec f32, q: vec f32, b: i64, h: i64, aug: bool,
+                bk: HyBanks, dr: HyDraws, ck: HyCheck ] -> vec f32
+    hh : i64 [ h * h ]
+    x : vec f32 hy_paint_hair[ win, q, b, h, bk, dr ]
+    hy_see[ ck, 'paint_hair', x ]
+    if [ !aug ]
+        x = hy_eye_canvas[ x, q, b, h, dr ]
+        hy_see[ ck, 'eye_canvas', x ]
+        x = hy_surround_dark[ x, q, b, h, dr ]
+        hy_see[ ck, 'surround_dark', x ]
+        return x
+    calm : vec f32 hy_eye_canvas[ win, q, b, h, dr ]
+    hy_see[ ck, 'eye_canvas', calm ]
+    for [ n: i64 0, n < b, n += 1 ]
+        r : f64 [ f64[ q[ n * HY_ROW + 10 ] ] * 0.35 ]
+        face : vec f64 []
+        for [ i: i64 0, i < h, i += 1 ]
+            for [ j: i64 0, j < h, j += 1 ]
+                ox : f64 [ hy_lin[ j, h ] - f64[ q[ n * HY_ROW + 8 ] ] ]
+                oy : f64 [ hy_lin[ i, h ] - f64[ q[ n * HY_ROW + 9 ] ] ]
+                if [ ox * ox + oy * oy < r * r ]
+                    face.push[ f64[ calm[ n * hh + i * h + j ] ] ]
+        lo : f64 [ 0.0 ]
+        hi : f64 [ 1.0 ]
+        if [ face.count > 0 ]
+            sorted : vec f64 hy_sorted[ face ]
+            lo = hy_quantile[ sorted, 0.02 ]
+            hi = hy_quantile[ sorted, 0.98 ]
+        span : f64 [ fmax[ hi - lo, 0.05 ] ]
+        for [ c: i64 0, c < hh, c += 1 ]
+            at : i64 [ n * hh + c ]
+            calm[ at ] = (f64[ calm[ at ] ] - lo) / span
+    grain : vec f64 dr.normal[ b * hh ]
+    for [ c: i64 0, c < b * hh, c += 1 ]
+        calm[ c ] = hy_clamp[ f64[ calm[ c ] ] + grain[ c ] * 0.01, 0.0,
+                              1.0 ]
+    x = hy_close_eyes[ x, q, b, h, dr ]
+    hy_see[ ck, 'close_eyes', x ]
+    x = hy_ir_look[ x, q, b, h, dr ]
+    hy_see[ ck, 'ir_look', x ]
+    x = hy_eye_canvas[ x, q, b, h, dr ]
+    hy_see[ ck, 'eye_canvas', x ]
+    x = hy_cover[ x, q, b, h, bk, dr ]
+    hy_see[ ck, 'cover', x ]
+    x = hy_blow_out[ x, q, b, h, dr ]
+    hy_see[ ck, 'blow_out', x ]
+    x = hy_surround_dark[ x, q, b, h, dr ]
+    hy_see[ ck, 'surround_dark', x ]
+    rough : vec f64 dr.uniform[ b, 0.0, 1.0 ]
+    for [ n: i64 0, n < b, n += 1 ]
+        his : bool [ q[ n * HY_ROW + 11 ] > 0.5 ]
+        if [ !his && rough[ n ] < HY_ROUGH ] continue
+        for [ c: i64 0, c < hh, c += 1 ]
+            at : i64 [ n * hh + c ]
+            x[ at ] = (his) ? win[ at ] : calm[ at ]
+    return x
+
+# a batch of training pictures and their labels (wide a row)
+class HyBatch
+    public n    : i64
+    public s    : i64
+    public wide : i64
+    public x    : vec f32
+    public y    : vec f32
+
+func hy_find_batch [ bytes: vec u8, pts: vec f32, n: i64, aug: bool,
+                     bk: HyBanks, dr: HyDraws, ck: HyCheck ] -> HyBatch
+    r : HyCrop hy_find_crop[ bytes, pts, n, aug, dr ]
+    x : vec f32 hy_paint[ r.win, r.q, n, r.s, aug, bk, dr, ck ]
+    return HyBatch [ n: n, s: r.s, wide: 3, x: x,
+                     y: hy_find_labels[ r ] ]
+
+# target's: the face's square on the outer corners' midpoint, SPAN
+# times their distance, jittered as find misses, rolled, bent
+func hy_target_batch [ bytes: vec u8, pts: vec f32, n: i64, aug: bool,
+                       bk: HyBanks, dr: HyDraws, ck: HyCheck ]
+        -> HyBatch
+    f : HyFrames hy_frames[ bytes, pts, n, HY_FRAME, aug, dr ]
+    jit : vec f64 [ n ]
+    sx : vec f64 [ n ]
+    sy : vec f64 [ n ]
+    roll : vec f64 [ n ]
+    tilt : f64 [ HY_TURN * 8.0 / 15.0 ]
+    if [ aug ]
+        jit = dr.uniform[ n, 0.9, 1.1 ]
+        sx = dr.uniform[ n, -0.12, 0.12 ]
+        sy = dr.uniform[ n, -0.15, 0.15 ]
+        roll = dr.uniform[ n, -tilt, tilt ]
+    side : vec f64 [ n ]
+    cx : vec f64 [ n ]
+    cy : vec f64 [ n ]
+    for [ k: i64 0, k < n, k += 1 ]
+        p : i64 [ k * HY_ROW ]
+        dx : f64 [ f64[ f.p[ p + 2 ] ] - f64[ f.p[ p ] ] ]
+        dy : f64 [ f64[ f.p[ p + 3 ] ] - f64[ f.p[ p + 1 ] ] ]
+        sc : f64 [ sqrt[ dx * dx + dy * dy ] ]
+        side[ k ] = sc * HY_SPAN * ((aug) ? jit[ k ] : 1.0)
+        cx[ k ] = (f64[ f.p[ p ] ] + f64[ f.p[ p + 2 ] ]) / 2.0
+            + ((aug) ? side[ k ] * sx[ k ] : 0.0)
+        cy[ k ] = (f64[ f.p[ p + 1 ] ] + f64[ f.p[ p + 3 ] ]) / 2.0
+            + ((aug) ? side[ k ] * sy[ k ] : 0.0)
+    bend : f64 [ (aug) ? HY_BEND : 0.0 ]
+    r : HyCrop hy_window[ f, cx, cy, side, roll, HY_SIDE, bend, dr ]
+    x : vec f32 hy_paint[ r.win, r.q, n, r.s, aug, bk, dr, ck ]
+    y : vec f32 [ n * 10 ]
+    for [ k: i64 0, k < n, k += 1 ]
+        q : i64 [ k * HY_ROW ]
+        for [ c: i64 0, c < 8, c += 1 ]
+            y[ k * 10 + c ] = r.q[ q + c ]
+        dx : f64 [ f64[ r.q[ q ] ] - f64[ r.q[ q + 2 ] ] ]
+        dy : f64 [ f64[ r.q[ q + 1 ] ] - f64[ r.q[ q + 3 ] ] ]
+        y[ k * 10 + 8 ] = sqrt[ dx * dx + dy * dy ]
+        y[ k * 10 + 9 ] = 1.0
+    return HyBatch [ n: n, s: r.s, wide: 10, x: x, y: y ]
+
+# the eye stage's: one eye, centred between its outer corner and
+# pupil, EYE_SPAN of sc across, turned level; the right eye
+# mirrored so its outer corner is on the left. Cut from the face
+# painted at FACE
+func hy_eye_batch [ bytes: vec u8, pts: vec f32, n: i64, aug: bool,
+                    bk: HyBanks, dr: HyDraws, ck: HyCheck ] -> HyBatch
+    f : HyFrames hy_frames[ bytes, pts, n, HY_FRAME, aug, dr ]
+    tilt : f64 [ HY_TURN * 8.0 / 15.0 ]
+    roll : vec f64 [ n ]
+    if [ aug ] roll = dr.uniform[ n, -tilt, tilt ]
+    cx : vec f64 [ n ]
+    cy : vec f64 [ n ]
+    side : vec f64 [ n ]
+    for [ k: i64 0, k < n, k += 1 ]
+        p : i64 [ k * HY_ROW ]
+        cx[ k ] = (f64[ f.p[ p + 4 ] ] + f64[ f.p[ p + 6 ] ]) / 2.0
+        cy[ k ] = (f64[ f.p[ p + 5 ] ] + f64[ f.p[ p + 7 ] ]) / 2.0
+        side[ k ] = f.p[ p + 10 ]
+    bend : f64 [ (aug) ? HY_BEND : 0.0 ]
+    face : HyCrop hy_window[ f, cx, cy, side, roll, HY_FACE, bend, dr ]
+    painted : vec f32 hy_paint[ face.win, face.q, n, face.s, aug, bk,
+                                dr, ck ]
+    right : vec f64 [ n ]
+    if [ aug ] right = dr.uniform[ n, 0.0, 1.0 ]
+    size : vec f64 dr.uniform[ n, 0.85, 1.15 ]
+    ox : vec f64 dr.uniform[ n, -0.15, 0.15 ]
+    oy : vec f64 dr.uniform[ n, -0.15, 0.15 ]
+    turn : vec f64 dr.uniform[ n, -HY_EYE_TURN, HY_EYE_TURN ]
+    e : HyFrames [ n: n, s: face.s, x: painted ]
+    e.p = vec f32 [ n * HY_ROW ]
+    mirror : vec bool [ n ]
+    for [ k: i64 0, k < n, k += 1 ]
+        mirror[ k ] = (aug) ? right[ k ] < 0.5 : (k % 2) == 1
+        q : i64 [ k * HY_ROW ]
+        oc : i64 [ (mirror[ k ]) ? 2 : 0 ]
+        pu : i64 [ (mirror[ k ]) ? 6 : 4 ]
+        dx : f64 [ f64[ face.q[ q + 2 ] ] - f64[ face.q[ q ] ] ]
+        dy : f64 [ f64[ face.q[ q + 3 ] ] - f64[ face.q[ q + 1 ] ] ]
+        sc : f64 [ fmax[ sqrt[ dx * dx + dy * dy ], 1.0e-3 ] ]
+        side[ k ] = sc * HY_EYE_SPAN * size[ k ]
+        cx[ k ] = (f64[ face.q[ q + oc ] ] + f64[ face.q[ q + pu ] ])
+            / 2.0 + side[ k ] * ox[ k ]
+        cy[ k ] = (f64[ face.q[ q + oc + 1 ] ]
+                   + f64[ face.q[ q + pu + 1 ] ]) / 2.0
+            + side[ k ] * oy[ k ]
+        roll[ k ] = atan2[ dy, dx ] + turn[ k ]
+        e.p[ q ] = face.q[ q + oc ]
+        e.p[ q + 1 ] = face.q[ q + oc + 1 ]
+        e.p[ q + 2 ] = face.q[ q + pu ]
+        e.p[ q + 3 ] = face.q[ q + pu + 1 ]
+        e.p[ q + 10 ] = sc
+    r : HyCrop hy_window[ e, cx, cy, side, roll, HY_EYE, 0.0, dr ]
+    s : i64 r.s
+    x : vec f32 [ n * s * s ]
+    y : vec f32 [ n * 4 ]
+    for [ k: i64 0, k < n, k += 1 ]
+        for [ i: i64 0, i < s, i += 1 ]
+            for [ j: i64 0, j < s, j += 1 ]
+                from : i64 [ (mirror[ k ]) ? s - 1 - j : j ]
+                x[ k * s * s + i * s + j ] = r.win[ k * s * s + i * s
+                    + from ]
+        for [ c: i64 0, c < 4, c += 1 ]
+            v : f64 [ f64[ r.q[ k * HY_ROW + c ] ] ]
+            if [ mirror[ k ] && (c % 2) == 0 ] v = 1.0 - v
+            y[ k * 4 + c ] = v
+    return HyBatch [ n: n, s: s, wide: 4, x: x, y: y ]
+
+# HanCo's sample: each green-screen frame grey at side, and its mask
+func hy_hand_bank [ zipped: path, side: i64 ] -> HyBanks
+    bk : HyBanks [ side: side, hands: vec f32 [], hmasks: vec f32 [] ]
+    z : HyZip []
+    if [ !z.open[ zipped ] ] return bk
+    order : vec string []
+    for [ nm: string ] in z.names
+        if [ nm.starts_with[ 'rgb/' ] && nm.ends_with[ '.jpg' ] ]
+            order.push[ nm ]
+    sorted : vec string hy_sort_names[ order ]
+    for [ nm: string ] in sorted
+        mk : i64 z.find[ 'mask_fg/{nm.mid[ 4, nm.count - 4 ]}' ]
+        if [ mk < 0 ] continue
+        im : HyGrey hy_grey_jpeg[ z.member[ z.find[ nm ] ] ]
+        ms : HyGrey hy_grey_jpeg[ z.member[ mk ] ]
+        if [ !im.valid || !ms.valid ] continue
+        for [ v: u8 ] in hy_resize[ im.bytes, im.w, im.h, side ]
+            bk.hands.push[ f32[ v ] / 255.0 ]
+        for [ v: u8 ] in hy_resize[ ms.bytes, ms.w, ms.h, side ]
+            bk.hmasks.push[ f32[ v ] / 255.0 ]
+    return bk
+
+# hair cut from FaceSynthetics faces by their part maps (part 13):
+# grey and mask at side, with that face's eye middle and sc; the
+# first `most` of the first 2 x most faces with 2% hair or more
+func hy_hair_bank [ root: string, side: i64, most: i64 ] -> HyBanks
+    bk : HyBanks [ side: side, hair: vec f32 [], hairm: vec f32 [],
+                   eyes: vec f32 [] ]
+    got : i64 [ 0 ]
+    for [ k: i64 0, k < most * 2 && got < most, k += 1 ]
+        stem : string '{root}/{hy_six[ k ]}'
+        sp : path '{stem}_seg.png'
+        seg : HyGrey hy_grey[ sp ]
+        if [ !seg.valid ] continue
+        mask : vec u8 [ seg.bytes.count ]
+        on : i64 [ 0 ]
+        for [ i: i64 0, i < mask.count, i += 1 ]
+            if [ seg.bytes[ i ] == 13 ]
+                mask[ i ] = 255
+                on += 1
+        if [ f64[ on ] / f64[ mask.count ] < 0.02 ] continue
+        ip : path '{stem}.png'
+        g : HyGrey hy_grey[ ip ]
+        mp : path '{stem}_ldmks.txt'
+        tx : string mp.load[ typeid[ string ], null ]
+        if [ !g.valid || !tx ] continue
+        xs : vec f64 []
+        ys : vec f64 []
+        for [ ln: string ] in tx.split[ '\n' ]
+            ws : vec string ln.trim[].split[ ' ' ]
+            if [ ws.count < 2 ] continue
+            xs.push[ strtod[ ws[ 0 ].chars, null ] / f64[ g.w ] ]
+            ys.push[ strtod[ ws[ 1 ].chars, null ] / f64[ g.h ] ]
+        if [ xs.count < 46 ] continue
+        for [ v: u8 ] in hy_resize[ g.bytes, g.w, g.h, side ]
+            bk.hair.push[ f32[ v ] / 255.0 ]
+        for [ v: u8 ] in hy_resize[ mask, seg.w, seg.h, side ]
+            bk.hairm.push[ f32[ v ] / 255.0 ]
+        bk.eyes.push[ (xs[ 36 ] + xs[ 45 ]) / 2.0 ]
+        bk.eyes.push[ (ys[ 36 ] + ys[ 45 ]) / 2.0 ]
+        sc : f64 hypot[ xs[ 36 ] - xs[ 45 ], ys[ 36 ] - ys[ 45 ] ]
+        bk.eyes.push[ sc ]
+        got += 1
+    return bk
+
+# a part of a batch, made on a worker thread into lists made by
+# the main one (each thread's objects stay its own)
+class HyJob
+    public kind  : i64
+    public aug   : bool
+    public n     : i64
+    public bytes : vec u8
+    public pts   : vec f32
+    public bk    : HyBanks
+    public seed  : u64
+    public x     : vec f32
+    public y     : vec f32
+
+func hy_job_run [ arg: object ]
+    j : HyJob [ arg ]
+    dr : HyDraws [ state: j.seed ]
+    b : HyBatch [ (j.kind == 0)
+        ? hy_find_batch[ j.bytes, j.pts, j.n, j.aug, j.bk, dr, null ]
+        : (j.kind == 1)
+        ? hy_target_batch[ j.bytes, j.pts, j.n, j.aug, j.bk, dr, null ]
+        : hy_eye_batch[ j.bytes, j.pts, j.n, j.aug, j.bk, dr, null ] ]
+    for [ i: i64 0, i < b.x.count, i += 1 ]
+        j.x[ i ] = b.x[ i ]
+    for [ i: i64 0, i < b.y.count, i += 1 ]
+        j.y[ i ] = b.y[ i ]
+
+# a training batch of the faces idx (frames HY_FRAME square, rows
+# HY_ROW), kind 0 find, 1 target, 2 the eye stage, in `parts` pieces
+# on threads, each its own random stream from dr
+func hy_batch [ kind: i64, frames: vec u8, pts: vec f32, idx: vec i64,
+                aug: bool, bk: HyBanks, dr: HyDraws, parts: i64 ]
+        -> HyBatch
+    b : i64 idx.count
+    fs : i64 [ HY_FRAME * HY_FRAME ]
+    side : i64 [ (kind == 0) ? HY_FIND
+                 : (kind == 1) ? HY_SIDE : HY_EYE ]
+    wide : i64 [ (kind == 0) ? 3 : (kind == 1) ? 10 : 4 ]
+    jobs : vec Au []
+    mine : vec HyJob []
+    each : i64 [ (b + parts - 1) / parts ]
+    for [ from: i64 0, from < b, from += each ]
+        m : i64 [ min[ each, b - from ] ]
+        j : HyJob [ kind: kind, aug: aug, n: m, bk: bk,
+                    seed: dr.next_u[] | 1 ]
+        j.bytes = vec u8 [ m * fs ]
+        j.pts = vec f32 [ m * HY_ROW ]
+        for [ k: i64 0, k < m, k += 1 ]
+            at : i64 idx[ from + k ]
+            memcpy[ @j.bytes[ k * fs ], @frames[ at * fs ], fs ]
+            for [ c: i64 0, c < HY_ROW, c += 1 ]
+                j.pts[ k * HY_ROW + c ] = pts[ at * HY_ROW + c ]
+        j.x = vec f32 [ m * side * side ]
+        j.y = vec f32 [ m * wide ]
+        jobs.push[ j ]
+        mine.push[ j ]
+    f : lambda [ arg: object ]
+        hy_job_run[ arg ]
+    t : async [ work_fn: f, work: jobs ]
+    t.sync[ null ]
+    out : HyBatch [ n: b, s: side, wide: wide, x: vec f32 [],
+                    y: vec f32 [] ]
+    for [ j: HyJob ] in mine
+        for [ v: f32 ] in j.x
+            out.x.push[ v ]
+        for [ v: f32 ] in j.y
+            out.y.push[ v ]
+    return out
+
+# the training pictures against train_eyes.py's, the same draws
+# (python3 ai/tests/data_gold.py <dir>, then HYPER_DATA=<dir>)
+expect func t_hyper_data [] -> bool
+    ge : cstr [ getenv[ 'HYPER_DATA' ] ]
+    if [ !ge ] return true
+    dir : string [ ge ]
+    dr : HyDraws []
+    if [ !dr.load[ dir ] ] return false
+    bytes : vec u8 hy_bytes[ dir, 'frames.u8' ]
+    pts : vec f32 grad_gold[ dir, 'pts' ]
+    n : i64 [ pts.count / HY_ROW ]
+    ok : bool [ true ]
+    for [ tag: string ] in vec string [] [ 'fp', 'fa' ]
+        r : HyCrop hy_find_crop[ bytes, pts, n, tag == 'fa', dr ]
+        pw : f64 hy_diff[ tag, r.win, grad_gold[ dir, '{tag}_win' ] ]
+        yw : f64 grad_worst[ hy_find_labels[ r ],
+                             grad_gold[ dir, '{tag}_y' ] ]
+        log '{tag}: labels worst {yw}'
+        if [ pw > 1.0e-3 || yw > 1.0e-5 ] ok = false
+    bk : HyBanks []
+    bk.load[ dir ]
+    ck : HyCheck []
+    ck.load[ dir ]
+    for [ tag: string ] in vec string [] [ 'gp', 'ga' ]
+        aug : bool [ tag == 'ga' ]
+        r : HyCrop hy_find_crop[ bytes, pts, n, aug, dr ]
+        win : vec f32 hy_paint[ r.win, r.q, n, r.s, aug, bk, dr, ck ]
+        pw : f64 hy_diff[ '{tag} painted', win,
+                          grad_gold[ dir, '{tag}_win' ] ]
+        yw : f64 grad_worst[ hy_find_labels[ r ],
+                             grad_gold[ dir, '{tag}_y' ] ]
+        log '{tag}: labels worst {yw}'
+        if [ pw > 1.0e-3 || yw > 1.0e-5 ] ok = false
+    for [ tag: string ] in vec string [] [ 'tp', 'ta', 'ep', 'ea' ]
+        aug : bool [ tag.ends_with[ 'a' ] ]
+        t : HyBatch [ (tag.starts_with[ 't' ])
+            ? hy_target_batch[ bytes, pts, n, aug, bk, dr, ck ]
+            : hy_eye_batch[ bytes, pts, n, aug, bk, dr, ck ] ]
+        pw : f64 hy_diff[ tag, t.x, grad_gold[ dir, '{tag}_win' ] ]
+        yw : f64 grad_worst[ t.y, grad_gold[ dir, '{tag}_y' ] ]
+        log '{tag}: labels worst {yw}'
+        if [ pw > 1.0e-3 || yw > 1.0e-5 ] ok = false
+    if [ ck.worst > 1.0e-3 ] ok = false
+    # the faces read from their own files
+    nf : path '{dir}/dec_names.txt'
+    nt : string nf.load[ typeid[ string ], null ]
+    frames : vec u8 []
+    rows : vec f32 []
+    poses : vec f32 []
+    for [ stem: string ] in nt.split[ '\n' ]
+        if [ stem.count == 0 ] continue
+        pic : path '{stem}.png'
+        marks : path '{stem}_ldmks.txt'
+        fc : HyFace hy_decode[ pic, marks ]
+        if [ !fc.valid ]
+            log 'could not read {stem}'
+            ok = false
+            continue
+        for [ v: u8 ] in fc.frame
+            frames.push[ v ]
+        for [ k: i64 0, k < 11, k += 1 ]
+            rows.push[ fc.row[ k ] ]
+        for [ v: f32 ] in fc.pose
+            poses.push[ v ]
+    want : vec u8 hy_bytes[ dir, 'dec_frames.u8' ]
+    off : i64 [ 0 ]
+    if [ want.count != frames.count ] off = -1
+    for [ i: i64 0, off >= 0 && i < want.count, i += 1 ]
+        if [ want[ i ] != frames[ i ] ] off += 1
+    rw : f64 grad_worst[ rows, grad_gold[ dir, 'dec_pts' ] ]
+    pw : f64 grad_worst[ poses, grad_gold[ dir, 'dec_pose' ] ]
+    log 'read: {off} of {want.count} grey levels differ, rows worst {rw}, poses worst {pw}'
+    if [ off != 0 || rw > 1.0e-6 || pw > 1.0e-5 ] ok = false
+    # his marked frames, split as train_eyes splits them, as rows
+    home : cstr [ getenv[ 'HOME' ] ]
+    cache : string '{string[ home ]}/.cache/hyperspace'
+    inst : string '{path.path_install[]}'
+    ann : string '{inst}/home/hyperspace/.local/state/hyperspace'
+    marked : vec HyMarked hy_own_marked[ cache, ann ]
+    hold : vec HyMarked []
+    train : vec HyMarked []
+    for [ i: i64 0, i < marked.count, i += 1 ]
+        m : HyMarked marked[ i ]
+        if [ m.name.index_of[ '/' ] < 0 || i % 5 == 0 ]
+            hold.push[ m ]
+            continue
+        train.push[ m ]
+    split : string ''
+    for [ m: HyMarked ] in hold
+        split = '{split}{m.name}\n'
+    split = '{split}--\n'
+    for [ m: HyMarked ] in train
+        split = '{split}{m.name}\n'
+    sf : path '{dir}/own_names.txt'
+    same : bool [ split == sf.load[ typeid[ string ], null ] ]
+    own : HyOwnRows hy_own_rows[ train ]
+    ob : vec u8 hy_bytes[ dir, 'own_frames.u8' ]
+    od : i64 [ (ob.count == own.frames.count) ? 0 : -1 ]
+    for [ i: i64 0, od >= 0 && i < ob.count, i += 1 ]
+        if [ ob[ i ] != own.frames[ i ] ] od += 1
+    orw : f64 grad_worst[ own.rows, grad_gold[ dir, 'own_pts' ] ]
+    log 'his frames: {hold.count} test, {train.count} train, the split the same {same}, {od} grey levels differ, rows worst {orw}'
+    if [ !same || od != 0 || orw > 1.0e-6 ] ok = false
+    # the pose bins and an epoch's order
+    pose : vec f32 grad_gold[ dir, 'pose' ]
+    np : i64 [ pose.count / 2 ]
+    bins : HyBins hy_bins[ pose, np ]
+    hy_add_own[ bins, np, own.n ]
+    gs : vec f32 []
+    gi : vec f32 []
+    for [ g: HyGroup ] in bins.train
+        gs.push[ f32[ g.idx.count ] ]
+        for [ i: i64 ] in g.idx
+            gi.push[ f32[ i ] ]
+    wn : vec i64 hy_ints_file[ dir, 'groups.n' ]
+    wi : vec i64 hy_ints_file[ dir, 'groups.i64' ]
+    ga : vec f32 []
+    gb : vec f32 []
+    for [ v: i64 ] in wn
+        ga.push[ f32[ v ] ]
+    for [ v: i64 ] in wi
+        gb.push[ f32[ v ] ]
+    bw : f64 [ grad_worst[ gs, ga ] + grad_worst[ gi, gb ] ]
+    order : vec i64 hy_one_pass[ bins.train, 2, 3000, dr ]
+    wo : vec i64 hy_ints_file[ dir, 'order.i64' ]
+    oo : i64 [ (wo.count == order.count) ? 0 : -1 ]
+    for [ i: i64 0, oo >= 0 && i < wo.count, i += 1 ]
+        if [ wo[ i ] != order[ i ] ] oo += 1
+    log 'bins: {bins.train.count} groups, differ by {bw}; epoch order: {order.count} faces, {oo} differ'
+    if [ bw != 0.0 || oo != 0 ] ok = false
+    # how long a training batch of these faces takes, made here: one
+    # thread, then in 16 pieces
+    live : HyDraws []
+    all : vec i64 []
+    for [ k: i64 0, k < 128, k += 1 ]
+        all.push[ k % n ]
+    for [ kind: i64 0, kind < 3, kind += 1 ]
+        t0 : i64 [ Au.epoch_millis[] ]
+        hb : HyBatch hy_batch[ kind, bytes, pts, all, true, bk, live,
+                               16 ]
+        log 'kind {kind}: a batch of 128 on 16 threads in {Au.epoch_millis[] - t0} ms, {hb.x.count} values'
+    for [ which: string ] in vec string [] [ 'find', 'target', 'eye' ]
+        t0 : i64 [ Au.epoch_millis[] ]
+        if [ which == 'find' ]
+            hy_find_batch[ bytes, pts, n, true, bk, live, null ]
+        if [ which == 'target' ]
+            hy_target_batch[ bytes, pts, n, true, bk, live, null ]
+        if [ which == 'eye' ]
+            hy_eye_batch[ bytes, pts, n, true, bk, live, null ]
+        log '{which}: a batch of {n} in {Au.epoch_millis[] - t0} ms'
+    if [ dr.bad ] ok = false
+    log 'draws: {dr.next} of {dr.counts.count} taken'
+    return ok

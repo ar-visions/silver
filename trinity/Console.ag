@@ -17,6 +17,11 @@ struct TermCell
     bg   : i32 [ -1 ]
     attr : i32 [ 0 ]
 
+# the shell's history kept at each command, and a blank line
+# before its prompt when a command ran since the last one
+PROMPT_GAP : string [ 'history -a; __h=$(HISTTIMEFORMAT= history 1); '
+    + '[ -n "$__p" ] && [ "$__h" != "$__p" ] && echo; __p=$__h' ]
+
 class ConsoleSession
     mutable pty_fd     : i32 [ -1 ]
     mutable pid        : i32 [ 0  ]
@@ -139,6 +144,10 @@ class ConsoleSession
             el
                 # the prompt is its working folder, as it changes
                 setenv[ 'PS1', '\\w> ', 1 ]
+                # a blank line after a command, and after its output
+                # (only when one ran: an empty Enter adds none)
+                setenv[ 'PS0', '\n', 1 ]
+                setenv[ 'PROMPT_COMMAND', PROMPT_GAP, 1 ]
                 norc : string '--norc'
                 execl[ '/bin/bash', 'bash', norc.chars, null ]
             _exit[ 1 ]

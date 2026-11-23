@@ -1012,6 +1012,13 @@ abstract live_app media_app
                     if [ ht == i32[ HM.live ] ]
                         bwn.dict_live = host_pa[] != 0
                         bwn.restyle   = true
+                    el [ ht == i32[ HM.place ] ]
+                        bwn.place_x = host_pa[]
+                        bwn.place_y = host_pb[]
+                        bwn.place_on = true
+                    el [ ht == i32[ HM.monitor ] ]
+                        bwn.monitor_w = host_pa[]
+                        bwn.monitor_h = host_pb[]
 
         ifdef [ unix ]
             if [ attach && isolate_app ]

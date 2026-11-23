@@ -964,7 +964,7 @@ func orbiter.dock_pop_items [] -> vec PopItem
     if [ !dock_find ] dock_find = ''
     if [ dock_find.count > 0 ]
         out.push[ PopItem [ icon: 'magnify',
-                            label: 'find: {dock_find}', note: true ] ]
+                            label: 'find: {dock_find}', act: '' ] ]
     ae : AppEntry null
     want : string [ (dock_pop.file) ? '{dock_pop.file}' : '' ]
     for [ e_: AppEntry ] in app_entries[]

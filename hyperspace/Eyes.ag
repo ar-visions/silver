@@ -3,32 +3,20 @@ extend hyperspace
 # hyperspace.c: the eye nets on a thread a camera
 func hs_worker_open [ dir: cstr ] -> handle
 func hs_worker_put [ worker: handle, grey: @u8, w: i32, h: i32 ]
-func hs_worker_get [ worker: handle, out: @f32, ms: @f32 ] -> i32
+func hs_worker_get [ worker: handle, out: @f32, ms: @f32, grey: @u8,
+                     w: i32, h: i32 ] -> i32
 func hs_worker_free [ worker: handle ]
 func hs_worker_gaze [ worker: handle, clips: @f32, aux: @f32,
                       sound: @i32 ] -> i32
 func hs_gaze_load [ path: cstr ] -> handle
 func hs_gaze_free [ net: handle ]
+func hs_gaze_uses [ net: handle, c: i32 ] -> i32
 func hs_gaze_run [ net: handle, clips0: @f32, aux0: @f32, sound0: i32,
                    clips1: @f32, aux1: @f32, sound1: i32,
                    out: @f32 ] -> i32
 
-# a new answer's share: 70%, down to 5% for a fast jump
-EASE_MOST : f32 [ 0.7 ]
-EASE_LEAST : f32 [ 0.05 ]
-JUMP_SLOW : f32 [ 0.02 ]
-JUMP_FAST : f32 [ 0.2 ]
-
-# a jump in pixels; side the camera image's width
-func hs_ease [ jump: f32, side: f32 ] -> f32
-    lo : f32 [ JUMP_SLOW * side ]
-    hi : f32 [ JUMP_FAST * side ]
-    t : f32 [ (jump - lo) / (hi - lo) ]
-    t = min[ max[ t, 0.0 ], 1.0 ]
-    return EASE_MOST + (EASE_LEAST - EASE_MOST) * t
-
 # the gaze from both cameras: their workers' clips, numbers and
-# checks to the gaze net (models/gaze.hsg), the dot eased
+# checks to the gaze net (models/gaze.hsg)
 class GazeHub
     intern first : handle
     intern second : handle
@@ -39,9 +27,12 @@ class GazeHub
     intern aux : vec f32
     intern clips2 : vec f32
     intern aux2 : vec f32
-    # the dot on the screen, -0.5 to 0.5 from its middle; eased
+    # the dot on the screen, -0.5 to 0.5 from its middle, and the
+    # last answer it eases to
     public x : f32
     public y : f32
+    intern goal_x : f32
+    intern goal_y : f32
     public has : bool
     public missing : bool
 
@@ -69,27 +60,40 @@ class GazeHub
             for [ i: i32 0, i < 18, i += 1 ]
                 aux.push[ 0.0 ]
                 aux2.push[ 0.0 ]
-        if [ !net || !first || !second ] return
+        if [ !net ] return
+        # only the cameras the net reads (one, or both)
+        one : bool [ hs_gaze_uses[ net, 0 ] != 0 ]
+        two : bool [ hs_gaze_uses[ net, 1 ] != 0 ]
+        if [ (one && !first) || (two && !second) ] return
         s0 : i32 [ 0 ]
         s1 : i32 [ 0 ]
-        n0 : i32 hs_worker_gaze[ first, @clips[ 0 ], @aux[ 0 ], @s0 ]
-        n1 : i32 hs_worker_gaze[ second, @clips2[ 0 ], @aux2[ 0 ],
+        n0 : i32 [ 0 ]
+        n1 : i32 [ 0 ]
+        if [ one ]
+            n0 = hs_worker_gaze[ first, @clips[ 0 ], @aux[ 0 ], @s0 ]
+            if [ n0 == 0 ] return
+        if [ two ]
+            n1 = hs_worker_gaze[ second, @clips2[ 0 ], @aux2[ 0 ],
                                  @s1 ]
-        if [ n0 == 0 || n1 == 0 || n0 + n1 == used ] return
+            if [ n1 == 0 ] return
+        if [ n0 + n1 == used ] return
         used = n0 + n1
         out : vec f32 [] [ 0.0, 0.0 ]
         hs_gaze_run[ net, @clips[ 0 ], @aux[ 0 ], s0, @clips2[ 0 ],
             @aux2[ 0 ], s1, @out[ 0 ] ]
+        goal_x = out[ 0 ]
+        goal_y = out[ 1 ]
         if [ !has ]
-            x = out[ 0 ]
-            y = out[ 1 ]
+            x = goal_x
+            y = goal_y
             has = true
-            return
-        jx : f32 [ out[ 0 ] - x ]
-        jy : f32 [ out[ 1 ] - y ]
-        k : f32 hs_ease[ sqrt[ jx * jx + jy * jy ], 1.0 ]
-        x += jx * k
-        y += jy * k
+
+    # each display frame the dot eases toward the last answer: 30% of
+    # the way a 60th of a second, whatever the display's rate
+    func ease [ factor: f32 ]
+        if [ !has ] return
+        x = filter_n[ x, goal_x, 0.3, factor ]
+        y = filter_n[ y, goal_y, 0.3, factor ]
 
 # a camera with the eyes its worker found drawn over it
 CameraView EyeView
@@ -101,35 +105,14 @@ CameraView EyeView
     intern found  : vec f32
     intern took   : f32
     intern seen   : i32
-    # the eased answer drawn, and the answers it has taken
-    intern shown  : vec f32
-    intern used   : i32
     intern taken_at : i64
+    # the frame the shown answer came from, and its picture
+    intern grey   : vec u8
+    intern pic    : Texture
+    intern drawn  : i32
 
     func dealloc []
         if [ worker ] hs_worker_free[ worker ]
-
-    # each point and find's square eased by its own jump
-    func ease_in []
-        if [ used == 0 ]
-            for [ i: i32 0, i < 11, i += 1 ] shown[ i ] = found[ i ]
-            return
-        cw : f32 [ f32[ camera.width ] ]
-        ch : f32 [ f32[ camera.height ] ]
-        fx : f32 [ (found[ 0 ] - shown[ 0 ]) * cw ]
-        fy : f32 [ (found[ 1 ] - shown[ 1 ]) * ch ]
-        fj : f32 [ sqrt[ fx * fx + fy * fy ] ]
-        fk : f32 hs_ease[ fj, cw ]
-        for [ i: i32 0, i < 3, i += 1 ]
-            shown[ i ] += (found[ i ] - shown[ i ]) * fk
-        for [ k: i32 0, k < 4, k += 1 ]
-            xi : i32 [ 3 + 2 * k ]
-            jx : f32 [ found[ xi ] - shown[ xi ] ]
-            jy : f32 [ found[ xi + 1 ] - shown[ xi + 1 ] ]
-            j : f32 [ sqrt[ jx * jx + jy * jy ] ]
-            pk : f32 hs_ease[ j, cw ]
-            shown[ xi ] += (found[ xi ] - shown[ xi ]) * pk
-            shown[ xi + 1 ] += (found[ xi + 1 ] - shown[ xi + 1 ]) * pk
 
     # a square of a colour, centred on a point of the frame
     func mark [ cv: Canvas, x: f32, y: f32, size: f32, color: string ]
@@ -137,20 +120,27 @@ CameraView EyeView
         cv.rect_to[ x - size / 2.0, y - size / 2.0, size, size ]
         cv.paint[]
 
+    # the camera pumped; its picture drawn only before the first
+    # answer: then each answer over the frame it came from
     func draw [ w: Window ]
-        super.draw[ w ]
-        if [ paint_off || !camera ] return
+        if [ !camera || !camera.image ] return
+        camera.src_rect = (src_rect) ? src_rect :
+            rect [ x: 0.0, y: 0.0, w: f32[ camera.width ],
+                   h: f32[ camera.height ] ]
+        camera.update[]
+        if [ paint_off ] return
         cv : Canvas w.screen
+        full : rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ]
         if [ !tried ]
             tried = true
             dir : string '{hs_models[]}'
             worker = hs_worker_open[ dir.chars ]
             found = vec f32 []
-            shown = vec f32 []
             for [ i: i32 0, i < 11, i += 1 ]
                 found.push[ 0.0 ]
-                shown.push[ 0.0 ]
         if [ !worker ]
+            cv.draw_image[ camera.image, full ]
+            cv.paint[]
             hs_text[ cv, 'no models in {hs_models[]}', 12.0, 8.0,
                 bounds.w, 20.0, 14.0, '#ffffffa0' ]
             return
@@ -162,21 +152,34 @@ CameraView EyeView
             if [ img ]
                 px : @u8 img.vdata[]
                 hs_worker_put[ worker, px, camera.width, camera.height ]
+        cw : i32 camera.width
+        chh : i32 camera.height
+        if [ !grey || grey.count != cw * chh ]
+            grey = vec u8 [ cw * chh ]
+            pic = Texture [ vk: vk, w: ux, width: cw, height: chh,
+                pixel_format: Pixel.u8, surface: Surface.color ]
+            drawn = 0
         ms : f32 [ 0.0 ]
-        seen = hs_worker_get[ worker, @found[ 0 ], @ms ]
+        seen = hs_worker_get[ worker, @found[ 0 ], @ms, @grey[ 0 ], cw,
+                              chh ]
         took = ms
-        if [ seen == 0 ] return
-        if [ seen != used ]
-            ease_in[]
-            used = seen
+        if [ seen == 0 ]
+            cv.draw_image[ camera.image, full ]
+            cv.paint[]
+            return
+        if [ seen != drawn ]
+            pic.upload[ @grey[ 0 ], cw * chh ]
+            drawn = seen
+        cv.draw_image[ pic, full ]
+        cv.paint[]
         # the frame is drawn stretched over the element
         sx : f32 [ bounds.w / f32[ camera.width ] ]
         sy : f32 [ bounds.h / f32[ camera.height ] ]
         # find's square, a pixel wide
-        fx : f32 [ shown[ 0 ] * bounds.w ]
-        fy : f32 [ shown[ 1 ] * bounds.h ]
-        hw : f32 [ shown[ 2 ] * bounds.w / 2.0 ]
-        hh : f32 [ shown[ 2 ] * bounds.h / 2.0 ]
+        fx : f32 [ found[ 0 ] * bounds.w ]
+        fy : f32 [ found[ 1 ] * bounds.h ]
+        hw : f32 [ found[ 2 ] * bounds.w / 2.0 ]
+        hh : f32 [ found[ 2 ] * bounds.h / 2.0 ]
         cv.fill_color[ rgba [ '#806bff' ] ]
         cv.rect_to[ fx - hw, fy - hh, hw * 2.0, 1.0 ]
         cv.rect_to[ fx - hw, fy + hh, hw * 2.0, 1.0 ]
@@ -185,8 +188,8 @@ CameraView EyeView
         cv.paint[]
         # outer corners red, pupils green
         for [ k: i32 0, k < 4, k += 1 ]
-            x : f32 [ shown[ 3 + 2 * k ] * sx ]
-            y : f32 [ shown[ 4 + 2 * k ] * sy ]
+            x : f32 [ found[ 3 + 2 * k ] * sx ]
+            y : f32 [ found[ 4 + 2 * k ] * sy ]
             col : string [ (k < 2) ? '#ff4646' : '#46ff6e' ]
             mark[ cv, x, y, 7.0, '#000000' ]
             mark[ cv, x, y, 5.0, col ]

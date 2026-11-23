@@ -131,6 +131,7 @@ GKern KUnary
             float e = 1.0 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * exp(-az * az);
             r = 0.5 * v * (1.0 + sg * e);
         }}
+        else if (p.n1 == 7) r = v / (1.0 + exp(-v));
         y.v[i] = r;
     }
 
@@ -150,6 +151,7 @@ GKern KUnaryBack
             float e = 1.0 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * exp(-az * az);
             d = 0.5 * (1.0 + sg * e) + v * 0.3989422804 * exp(-0.5 * v * v);
         }}
+        else if (p.n1 == 7) {{ float sg = 1.0 / (1.0 + exp(-v)); d = sg * (1.0 + v * (1.0 - sg)); }}
         dx.v[i] += dy.v[i] * d;
     }
 
@@ -444,7 +446,7 @@ GKern KGemm
         int m0 = int(gl_WorkGroupID.y) * 64; int c0 = int(gl_WorkGroupID.x) * 64;
         int lx = int(gl_LocalInvocationID.x); int ly = int(gl_LocalInvocationID.y);
         int tid = ly * 16 + lx;
-        uint za = z * uint(p.n_); uint zb = z * uint(p.n10); uint zc = z * uint(p.n11);
+        uint za = z * uint(p.n9); uint zb = z * uint(p.n10); uint zc = z * uint(p.n11);
         float acc[4][4];
         float cmp[4][4];
         for (int i = 0; i < 4; i++) for (int j = 0; j < 4; j++) {{ acc[i][j] = 0.0; cmp[i][j] = 0.0; }}
@@ -501,7 +503,7 @@ GKern KGemm2
         int m0 = int(gl_WorkGroupID.y) * 128; int c0 = int(gl_WorkGroupID.x) * 64;
         int lx = int(gl_LocalInvocationID.x); int ly = int(gl_LocalInvocationID.y);
         int tid = ly * 16 + lx;
-        uint za = z * uint(p.n_); uint zb = z * uint(p.n10); uint zc = z * uint(p.n11);
+        uint za = z * uint(p.n9); uint zb = z * uint(p.n10); uint zc = z * uint(p.n11);
         float acc[8][4];
         float cmp[8][4];
         for (int i = 0; i < 8; i++) for (int j = 0; j < 4; j++) {{ acc[i][j] = 0.0; cmp[i][j] = 0.0; }}
@@ -671,15 +673,226 @@ GKern KIm2col2d
     func compute [] -> GLSL none {
         uint i = gl_GlobalInvocationID.x;
         uint B = uint(p.n0); uint Ci = uint(p.n1); uint H = uint(p.n2); uint W = uint(p.n3); uint KH = uint(p.n4); uint KW = uint(p.n5);
-        int ph = p.n6; int pw = p.n7; uint OH = uint(p.n8); uint OW = uint(p.n_);
+        int ph = p.n6; int pw = p.n7; uint OH = uint(p.n8); uint OW = uint(p.n9); int S = max(p.n10, 1);
         uint N = B * OH * OW;
         if (i >= Ci * KH * KW * N) return;
         uint row = i / N; uint col = i - row * N;
         uint c = row / (KH * KW); uint rk = row - c * KH * KW; uint kh = rk / KW; uint kw = rk - kh * KW;
         uint b = col / (OH * OW); uint rc = col - b * OH * OW; uint oh = rc / OW; uint ow = rc - oh * OW;
-        int ih = int(oh) - ph + int(kh); int iw = int(ow) - pw + int(kw);
+        int ih = int(oh) * S - ph + int(kh); int iw = int(ow) * S - pw + int(kw);
         F x = F(p.a0); F o = F(p.a1);
         o.v[i] = (ih >= 0 && ih < int(H) && iw >= 0 && iw < int(W)) ? x.v[((b * Ci + c) * H + uint(ih)) * W + uint(iw)] : 0.0;
+    }
+
+# conv2d's input gradient from its column gradient: each pixel
+# gathers the columns that read it
+GKern KCol2im2d
+    func compute [] -> GLSL none {
+        uint i = gl_GlobalInvocationID.x;
+        uint B = uint(p.n0); uint Ci = uint(p.n1); uint H = uint(p.n2); uint W = uint(p.n3); int KH = p.n4; int KW = p.n5;
+        int ph = p.n6; int pw = p.n7; int OH = p.n8; int OW = p.n9; int S = max(p.n10, 1);
+        if (i >= B * Ci * H * W) return;
+        uint b = i / (Ci * H * W); uint r = i - b * Ci * H * W; uint c = r / (H * W); uint rr = r - c * H * W;
+        int ih = int(rr / W); int iw = int(rr - (rr / W) * W);
+        F dc = F(p.a0); F dx = F(p.a1);
+        uint N = B * uint(OH) * uint(OW); float s = 0.0;
+        for (int kh = 0; kh < KH; kh++) {{
+            int qh = ih + ph - kh;
+            if (qh < 0 || qh % S != 0) continue;
+            int oh = qh / S;
+            if (oh >= OH) continue;
+            for (int kw = 0; kw < KW; kw++) {{
+                int qw = iw + pw - kw;
+                if (qw < 0 || qw % S != 0) continue;
+                int ow = qw / S;
+                if (ow >= OW) continue;
+                uint row = (c * uint(KH) + uint(kh)) * uint(KW) + uint(kw);
+                s += dc.v[row * N + (b * uint(OH) + uint(oh)) * uint(OW) + uint(ow)];
+            }}
+        }}
+        dx.v[i] += s;
+    }
+
+# GroupNorm, a workgroup a (batch, group): its mean and reciprocal
+# deviation kept for the backward pass (eps 1e-5)
+GKern KGnorm
+    func decl [] -> GLSL none {
+        shared float pa[256];
+        shared float pb[256];
+    }
+    func compute [] -> GLSL none {
+        uint row = gl_WorkGroupID.x; uint l = gl_LocalInvocationID.x;
+        uint C = uint(p.n1); uint HW = uint(p.n2); uint G = uint(p.n3); uint per = C / G;
+        uint g = row % G; uint n = per * HW; uint at = row * n;
+        F x = F(p.a0); F ga = F(p.a1); F be = F(p.a2); F y = F(p.a3); F st = F(p.a4);
+        float s1 = 0.0; float s2 = 0.0;
+        for (uint j = l; j < n; j += 256u) {{ float v = x.v[at + j]; s1 += v; s2 += v * v; }}
+        pa[l] = s1; pb[l] = s2; barrier();
+        for (uint w = 128u; w > 0u; w >>= 1) {{ if (l < w) {{ pa[l] += pa[l + w]; pb[l] += pb[l + w]; }} barrier(); }}
+        float m = pa[0] / float(n); float var = pb[0] / float(n) - m * m;
+        float r = inversesqrt(max(var, 0.0) + 1e-5);
+        if (l == 0u) {{ st.v[row * 2u] = m; st.v[row * 2u + 1u] = r; }}
+        for (uint j = l; j < n; j += 256u) {{
+            uint c = g * per + j / HW;
+            y.v[at + j] = (x.v[at + j] - m) * r * ga.v[c] + be.v[c];
+        }}
+    }
+
+# GroupNorm's input gradient, a workgroup a (batch, group)
+GKern KGnormDx
+    func decl [] -> GLSL none {
+        shared float pa[256];
+        shared float pb[256];
+    }
+    func compute [] -> GLSL none {
+        uint row = gl_WorkGroupID.x; uint l = gl_LocalInvocationID.x;
+        uint C = uint(p.n1); uint HW = uint(p.n2); uint G = uint(p.n3); uint per = C / G;
+        uint g = row % G; uint n = per * HW; uint at = row * n;
+        F x = F(p.a0); F ga = F(p.a1); F dy = F(p.a2); F dx = F(p.a3); F st = F(p.a4);
+        float m = st.v[row * 2u]; float r = st.v[row * 2u + 1u];
+        float s1 = 0.0; float s2 = 0.0;
+        for (uint j = l; j < n; j += 256u) {{
+            uint c = g * per + j / HW;
+            float d = dy.v[at + j] * ga.v[c]; float xh = (x.v[at + j] - m) * r;
+            s1 += d; s2 += d * xh;
+        }}
+        pa[l] = s1; pb[l] = s2; barrier();
+        for (uint w = 128u; w > 0u; w >>= 1) {{ if (l < w) {{ pa[l] += pa[l + w]; pb[l] += pb[l + w]; }} barrier(); }}
+        float md = pa[0] / float(n); float mdx = pb[0] / float(n);
+        for (uint j = l; j < n; j += 256u) {{
+            uint c = g * per + j / HW;
+            float d = dy.v[at + j] * ga.v[c]; float xh = (x.v[at + j] - m) * r;
+            dx.v[at + j] += r * (d - md - xh * mdx);
+        }}
+    }
+
+# GroupNorm's scale and shift gradients, a workgroup a channel
+GKern KGnormDg
+    func decl [] -> GLSL none {
+        shared float pa[256];
+        shared float pb[256];
+    }
+    func compute [] -> GLSL none {
+        uint c = gl_WorkGroupID.x; uint l = gl_LocalInvocationID.x;
+        uint B = uint(p.n0); uint C = uint(p.n1); uint HW = uint(p.n2); uint G = uint(p.n3); uint per = C / G;
+        uint g = c / per;
+        F x = F(p.a0); F db = F(p.a1); F dy = F(p.a2); F st = F(p.a4); F dg = F(p.a5);
+        float s1 = 0.0; float s2 = 0.0;
+        for (uint j = l; j < B * HW; j += 256u) {{
+            uint b = j / HW; uint t = j - b * HW;
+            uint idx = (b * C + c) * HW + t; uint row = b * G + g;
+            float xh = (x.v[idx] - st.v[row * 2u]) * st.v[row * 2u + 1u];
+            s1 += dy.v[idx] * xh; s2 += dy.v[idx];
+        }}
+        pa[l] = s1; pb[l] = s2; barrier();
+        for (uint w = 128u; w > 0u; w >>= 1) {{ if (l < w) {{ pa[l] += pa[l + w]; pb[l] += pb[l + w]; }} barrier(); }}
+        if (l == 0u) {{ dg.v[c] += pa[0]; db.v[c] += pb[0]; }}
+    }
+
+# twice the size, bilinear as F.interpolate (align_corners off)
+GKern KUp2
+    func compute [] -> GLSL none {
+        uint i = gl_GlobalInvocationID.x; uint BC = uint(p.n0); int H = p.n1; int W = p.n2;
+        int OH = H * 2; int OW = W * 2;
+        if (i >= BC * uint(OH * OW)) return;
+        uint bc = i / uint(OH * OW); int r = int(i - bc * uint(OH * OW)); int oy = r / OW; int ox = r - oy * OW;
+        float sy = max((float(oy) + 0.5) * 0.5 - 0.5, 0.0); float sx = max((float(ox) + 0.5) * 0.5 - 0.5, 0.0);
+        int y0 = int(sy); int x0 = int(sx); int y1 = min(y0 + 1, H - 1); int x1 = min(x0 + 1, W - 1);
+        float fy = sy - float(y0); float fx = sx - float(x0);
+        F x = F(p.a0); F y = F(p.a1); uint b0 = bc * uint(H * W);
+        float top = (1.0 - fx) * x.v[b0 + uint(y0 * W + x0)] + fx * x.v[b0 + uint(y0 * W + x1)];
+        float low = (1.0 - fx) * x.v[b0 + uint(y1 * W + x0)] + fx * x.v[b0 + uint(y1 * W + x1)];
+        y.v[i] = (1.0 - fy) * top + fy * low;
+    }
+
+# its gradient: each input pixel gathers the outputs that read it
+GKern KUp2Back
+    func compute [] -> GLSL none {
+        uint i = gl_GlobalInvocationID.x; uint BC = uint(p.n0); int H = p.n1; int W = p.n2;
+        int OH = H * 2; int OW = W * 2;
+        if (i >= BC * uint(H * W)) return;
+        uint bc = i / uint(H * W); int r = int(i - bc * uint(H * W)); int iy = r / W; int ix = r - iy * W;
+        F dy = F(p.a0); F dx = F(p.a1); uint o0 = bc * uint(OH * OW);
+        float s = 0.0;
+        for (int oy = max(2 * iy - 2, 0); oy <= min(2 * iy + 2, OH - 1); oy++) {{
+            float sy = max((float(oy) + 0.5) * 0.5 - 0.5, 0.0);
+            int y0 = int(sy); int y1 = min(y0 + 1, H - 1); float fy = sy - float(y0);
+            float wy = ((y0 == iy) ? 1.0 - fy : 0.0) + ((y1 == iy) ? fy : 0.0);
+            if (wy == 0.0) continue;
+            for (int ox = max(2 * ix - 2, 0); ox <= min(2 * ix + 2, OW - 1); ox++) {{
+                float sx = max((float(ox) + 0.5) * 0.5 - 0.5, 0.0);
+                int x0 = int(sx); int x1 = min(x0 + 1, W - 1); float fx = sx - float(x0);
+                float wx = ((x0 == ix) ? 1.0 - fx : 0.0) + ((x1 == ix) ? fx : 0.0);
+                s += wy * wx * dy.v[o0 + uint(oy * OW + ox)];
+            }}
+        }}
+        dx.v[i] += s;
+    }
+
+# a softmax over each row, scaled first by a learned temperature:
+# exp(t) of the one-number tensor t, held to 1 .. 100
+GKern KSoftT
+    func decl [] -> GLSL none {
+        shared float pa[256];
+    }
+    func compute [] -> GLSL none {
+        uint row = gl_WorkGroupID.x; uint l = gl_LocalInvocationID.x; uint N = uint(p.n1);
+        F x = F(p.a0); F lt = F(p.a1); F y = F(p.a2);
+        float T = clamp(exp(lt.v[0]), 1.0, 100.0);
+        float m = -1e30;
+        for (uint j = l; j < N; j += 256u) m = max(m, x.v[row * N + j] * T);
+        pa[l] = m; barrier();
+        for (uint w = 128u; w > 0u; w >>= 1) {{ if (l < w) pa[l] = max(pa[l], pa[l + w]); barrier(); }}
+        float top = pa[0]; barrier();
+        float s = 0.0;
+        for (uint j = l; j < N; j += 256u) s += exp(x.v[row * N + j] * T - top);
+        pa[l] = s; barrier();
+        for (uint w = 128u; w > 0u; w >>= 1) {{ if (l < w) pa[l] += pa[l + w]; barrier(); }}
+        float tot = pa[0];
+        for (uint j = l; j < N; j += 256u) y.v[row * N + j] = exp(x.v[row * N + j] * T - top) / tot;
+    }
+
+# its gradient: to the row, and each row's share of the
+# temperature's (summed after by row_sums)
+GKern KSoftTBack
+    func decl [] -> GLSL none {
+        shared float pa[256];
+    }
+    func compute [] -> GLSL none {
+        uint row = gl_WorkGroupID.x; uint l = gl_LocalInvocationID.x; uint N = uint(p.n1);
+        F x = F(p.a0); F lt = F(p.a1); F y = F(p.a2); F dy = F(p.a3); F dx = F(p.a4); F dt = F(p.a5);
+        float e = exp(lt.v[0]); float T = clamp(e, 1.0, 100.0);
+        float s = 0.0;
+        for (uint j = l; j < N; j += 256u) s += y.v[row * N + j] * dy.v[row * N + j];
+        pa[l] = s; barrier();
+        for (uint w = 128u; w > 0u; w >>= 1) {{ if (l < w) pa[l] += pa[l + w]; barrier(); }}
+        float sd = pa[0]; barrier();
+        float sx = 0.0;
+        for (uint j = l; j < N; j += 256u) {{
+            uint k = row * N + j;
+            float dz = y.v[k] * (dy.v[k] - sd);
+            if (p.n2 != 0) dx.v[k] += dz * T;
+            sx += dz * x.v[k];
+        }}
+        pa[l] = sx; barrier();
+        for (uint w = 128u; w > 0u; w >>= 1) {{ if (l < w) pa[l] += pa[l + w]; barrier(); }}
+        if (l == 0u) dt.v[row] = (e > 1.0 && e < 100.0) ? pa[0] * e : 0.0;
+    }
+
+# each row's mean (a channel's over its picture); back spreads it
+GKern KRowMean
+    func compute [] -> GLSL none {
+        uint i = gl_GlobalInvocationID.x; uint R = uint(p.n0); uint N = uint(p.n1);
+        F x = F(p.a0); F y = F(p.a1); F dy = F(p.a2); F dx = F(p.a3);
+        if (p.n2 == 0) {{
+            if (i >= R) return;
+            float s = 0.0;
+            for (uint j = 0u; j < N; j++) s += x.v[i * N + j];
+            y.v[i] = s / float(N);
+        }} else {{
+            if (i >= R * N) return;
+            dx.v[i] += dy.v[i / N] / float(N);
+        }}
     }
 
 GKern KConvt2dGather
@@ -853,6 +1066,7 @@ GKern KLoss
             if (mode == 0) {{ float d = p.f0 - v; s += d * d; }}
             else if (mode == 1) s += abs(v - F(p.a1).v[i]);
             else if (mode == 3) s += max(v, 0.0) - v * F(p.a1).v[i] + log(1.0 + exp(-abs(v)));
+            else if (mode == 5) {{ float d = abs(v - F(p.a1).v[i]); s += (d < p.f0) ? 0.5 * d * d / p.f0 : d - 0.5 * p.f0; }}
             else {{
                 F lq = F(p.a1); F mp = F(p.a3); F lp = F(p.a4);
                 uint T9 = uint(p.n2); uint C9 = uint(p.n3);
@@ -890,6 +1104,142 @@ GKern KLossBack
             if (p.a4 != 0ul) F(p.a4).v[i] -= g * sg;
         }}
         else if (mode == 3) dx.v[i] += g * (1.0 / (1.0 + exp(-v)) - F(p.a1).v[i]);
+        else if (mode == 5) {{
+            float d = v - F(p.a1).v[i];
+            float e = (abs(d) < p.f0) ? d / p.f0 : ((d > 0.0) ? 1.0 : -1.0);
+            dx.v[i] += g * e;
+            if (p.a4 != 0ul) F(p.a4).v[i] -= g * e;
+        }}
+    }
+
+# cross entropy against soft targets, a workgroup a row: its
+# -sum t log softmax(x), and its log-sum-exp kept for the gradient
+GKern KSoftCE
+    func decl [] -> GLSL none {
+        shared float pa[256];
+    }
+    func compute [] -> GLSL none {
+        uint row = gl_WorkGroupID.x; uint l = gl_LocalInvocationID.x; uint N = uint(p.n1);
+        F x = F(p.a0); F t = F(p.a1); F o = F(p.a2); F ls = F(p.a3);
+        float m = -1e30;
+        for (uint j = l; j < N; j += 256u) m = max(m, x.v[row * N + j]);
+        pa[l] = m; barrier();
+        for (uint w = 128u; w > 0u; w >>= 1) {{ if (l < w) pa[l] = max(pa[l], pa[l + w]); barrier(); }}
+        float top = pa[0]; barrier();
+        float s = 0.0;
+        for (uint j = l; j < N; j += 256u) s += exp(x.v[row * N + j] - top);
+        pa[l] = s; barrier();
+        for (uint w = 128u; w > 0u; w >>= 1) {{ if (l < w) pa[l] += pa[l + w]; barrier(); }}
+        float lse = top + log(pa[0]); barrier();
+        float c = 0.0;
+        for (uint j = l; j < N; j += 256u) c -= t.v[row * N + j] * (x.v[row * N + j] - lse);
+        pa[l] = c; barrier();
+        for (uint w = 128u; w > 0u; w >>= 1) {{ if (l < w) pa[l] += pa[l + w]; barrier(); }}
+        if (l == 0u) {{ o.v[row] = pa[0]; ls.v[row] = lse; }}
+    }
+
+# its gradient: (softmax(x) * sum t - t) * the loss's gradient / rows
+GKern KSoftCEBack
+    func decl [] -> GLSL none {
+        shared float pa[256];
+    }
+    func compute [] -> GLSL none {
+        uint row = gl_WorkGroupID.x; uint l = gl_LocalInvocationID.x; uint N = uint(p.n1);
+        F x = F(p.a0); F t = F(p.a1); F dl = F(p.a2); F ls = F(p.a3); F dx = F(p.a4);
+        float st = 0.0;
+        for (uint j = l; j < N; j += 256u) st += t.v[row * N + j];
+        pa[l] = st; barrier();
+        for (uint w = 128u; w > 0u; w >>= 1) {{ if (l < w) pa[l] += pa[l + w]; barrier(); }}
+        float g = dl.v[0] * p.f0; float tot = pa[0]; float lse = ls.v[row];
+        for (uint j = l; j < N; j += 256u) {{
+            uint k = row * N + j;
+            dx.v[k] += g * (exp(x.v[k] - lse) * tot - t.v[k]);
+        }}
+    }
+
+# batch norm over [b, c, h*w], a workgroup a channel: training, the
+# batch's mean and (biased) variance, the running ones moved toward
+# them (momentum f0, unbiased); else the running ones
+GKern KBnorm
+    func decl [] -> GLSL none {
+        shared float pa[256];
+        shared float pb[256];
+    }
+    func compute [] -> GLSL none {
+        uint c = gl_WorkGroupID.x; uint l = gl_LocalInvocationID.x;
+        uint B = uint(p.n0); uint C = uint(p.n1); uint HW = uint(p.n2); uint n = B * HW;
+        F x = F(p.a0); F ga = F(p.a1); F be = F(p.a2); F y = F(p.a3); F rs = F(p.a4); F st = F(p.a5);
+        float m; float r;
+        if (p.n3 != 0) {{
+            float s1 = 0.0; float s2 = 0.0;
+            for (uint j = l; j < n; j += 256u) {{
+                uint b = j / HW; float v = x.v[(b * C + c) * HW + j - b * HW]; s1 += v; s2 += v * v;
+            }}
+            pa[l] = s1; pb[l] = s2; barrier();
+            for (uint w = 128u; w > 0u; w >>= 1) {{ if (l < w) {{ pa[l] += pa[l + w]; pb[l] += pb[l + w]; }} barrier(); }}
+            m = pa[0] / float(n); float var = max(pb[0] / float(n) - m * m, 0.0);
+            r = inversesqrt(var + 1e-5);
+            if (l == 0u) {{
+                st.v[c * 2u] = m; st.v[c * 2u + 1u] = r;
+                rs.v[c] = (1.0 - p.f0) * rs.v[c] + p.f0 * m;
+                rs.v[C + c] = (1.0 - p.f0) * rs.v[C + c] + p.f0 * var * float(n) / float(max(n - 1u, 1u));
+            }}
+        }} else {{
+            m = rs.v[c]; r = inversesqrt(rs.v[C + c] + 1e-5);
+            if (l == 0u) {{ st.v[c * 2u] = m; st.v[c * 2u + 1u] = r; }}
+        }}
+        for (uint j = l; j < n; j += 256u) {{
+            uint b = j / HW; uint k = (b * C + c) * HW + j - b * HW;
+            y.v[k] = (x.v[k] - m) * r * ga.v[c] + be.v[c];
+        }}
+    }
+
+# its gradients, a workgroup a channel: to x (the batch's statistics
+# held as the forward pass took them), scale and shift
+GKern KBnormBack
+    func decl [] -> GLSL none {
+        shared float pa[256];
+        shared float pb[256];
+    }
+    func compute [] -> GLSL none {
+        uint c = gl_WorkGroupID.x; uint l = gl_LocalInvocationID.x;
+        uint B = uint(p.n0); uint C = uint(p.n1); uint HW = uint(p.n2); uint n = B * HW;
+        F x = F(p.a0); F ga = F(p.a1); F dy = F(p.a2); F dx = F(p.a3); F st = F(p.a4); F dgb = F(p.a5);
+        float m = st.v[c * 2u]; float r = st.v[c * 2u + 1u];
+        float s1 = 0.0; float s2 = 0.0;
+        for (uint j = l; j < n; j += 256u) {{
+            uint b = j / HW; uint k = (b * C + c) * HW + j - b * HW;
+            s1 += dy.v[k]; s2 += dy.v[k] * (x.v[k] - m) * r;
+        }}
+        pa[l] = s1; pb[l] = s2; barrier();
+        for (uint w = 128u; w > 0u; w >>= 1) {{ if (l < w) {{ pa[l] += pa[l + w]; pb[l] += pb[l + w]; }} barrier(); }}
+        float sdy = pa[0]; float sdx = pb[0];
+        if (l == 0u && p.a5 != 0ul) {{ dgb.v[c] += sdx; dgb.v[C + c] += sdy; }}
+        if (p.n3 == 0) return;
+        float md = sdy / float(n); float mdx = sdx / float(n);
+        for (uint j = l; j < n; j += 256u) {{
+            uint b = j / HW; uint k = (b * C + c) * HW + j - b * HW;
+            float xh = (x.v[k] - m) * r;
+            dx.v[k] += ga.v[c] * r * (dy.v[k] - md - xh * mdx);
+        }}
+    }
+
+# 2x2 max pooling: each output the largest of its four, the place it
+# came from kept (its bits in a float) for the gradient
+GKern KMaxPool2
+    func compute [] -> GLSL none {
+        uint i = gl_GlobalInvocationID.x; uint BC = uint(p.n0); uint H = uint(p.n1); uint W = uint(p.n2);
+        uint OH = H / 2u; uint OW = W / 2u;
+        F x = F(p.a0); F y = F(p.a1); F at = F(p.a2); F dy = F(p.a3); F dx = F(p.a4);
+        if (i >= BC * OH * OW) return;
+        if (p.n3 != 0) {{ dx.v[floatBitsToUint(at.v[i])] += dy.v[i]; return; }}
+        uint bc = i / (OH * OW); uint r = i - bc * OH * OW; uint oh = r / OW; uint ow = r - oh * OW;
+        uint k = (bc * H + oh * 2u) * W + ow * 2u;
+        uint best = k;
+        if (x.v[k + 1u] > x.v[best]) best = k + 1u;
+        if (x.v[k + W] > x.v[best]) best = k + W;
+        if (x.v[k + W + 1u] > x.v[best]) best = k + W + 1u;
+        y.v[i] = x.v[best]; at.v[i] = uintBitsToFloat(best);
     }
 
 GKern KKlBack
@@ -1287,6 +1637,54 @@ GOp GXentOp
     public nv  : i64
     public nt  : i64
 
+# y = conv2d(x, w) + b, any stride; padding ph, pw
+GOp GConv2dOp
+    public cx  : GTensor
+    public cw  : GTensor
+    public cb  : GTensor
+    public cst : i32
+    public cph : i32
+    public cpw : i32
+
+# GroupNorm over [b, c, h, w]: its mean and deviation kept
+GOp GGnormOp
+    public gx  : GTensor
+    public gg  : GTensor
+    public gb  : GTensor
+    public gst : GTensor
+    public gn  : i32
+
+# 2x bilinear upsampling of [b, c, h, w]
+GOp GUp2Op
+    public ux2 : GTensor
+
+# a softmax over each row at the learned temperature exp(t)
+GOp GSoftTOp
+    public sx  : GTensor
+    public slt : GTensor
+
+# cross entropy of rows of logits against soft targets
+GOp GSoftCEOp
+    public cex : GTensor
+    public cet : GTensor
+    public cel : GTensor
+
+# batch norm in training (the batch's statistics)
+GOp GBnormOp
+    public bx  : GTensor
+    public bg  : GTensor
+    public bb  : GTensor
+    public bst : GTensor
+
+# 2x2 max pooling, the places the maxima came from
+GOp GMaxPoolOp
+    public mpx : GTensor
+    public mpa : GTensor
+
+# each row's mean
+GOp GRowMeanOp
+    public mx  : GTensor
+
 # [b, a, c] turned to [b, c, a]
 GOp GSwapOp
     public wx : GTensor
@@ -1650,6 +2048,22 @@ class Grad
                 bmm_back[ cast GBmmOp [ rec ] ]
             case 25
                 xent_back[ cast GXentOp [ rec ] ]
+            case 26
+                conv2d_back[ cast GConv2dOp [ rec ] ]
+            case 27
+                gnorm_back[ cast GGnormOp [ rec ] ]
+            case 28
+                up2_back[ cast GUp2Op [ rec ] ]
+            case 29
+                soft_t_back[ cast GSoftTOp [ rec ] ]
+            case 30
+                row_mean_back[ cast GRowMeanOp [ rec ] ]
+            case 31
+                soft_ce_back[ cast GSoftCEOp [ rec ] ]
+            case 32
+                bnorm_back[ cast GBnormOp [ rec ] ]
+            case 33
+                max_pool2_back[ cast GMaxPoolOp [ rec ] ]
 
     func keeps [ t: GTensor ] -> bool
         return record && t && t.need
@@ -2593,36 +3007,45 @@ class Grad
         rn.dispatch[ k, g, i32[ x.dims[ 0 ] * x.dims[ 1 ] ], 1, 1 ]
         return y
 
-    # pytorch's conv2d, forward only
+    # pytorch's conv2d, stride 1 (the pitch model's)
     func conv2d [ x: GTensor, w: GTensor, b: GTensor, ph: i32,
                   pw: i32 ] -> GTensor
-        nb : i64 [ x.dims[ 0 ] ]
-        ci : i64 [ x.dims[ 1 ] ]
-        nh : i64 [ x.dims[ 2 ] ]
-        nw : i64 [ x.dims[ 3 ] ]
-        co : i64 [ w.dims[ 0 ] ]
-        kh : i64 [ w.dims[ 2 ] ]
-        kw : i64 [ w.dims[ 3 ] ]
-        oh : i64 [ nh + 2 * i64[ ph ] - kh + 1 ]
-        ow : i64 [ nw + 2 * i64[ pw ] - kw + 1 ]
-        n : i64 [ nb * oh * ow ]
-        scratch.top = 0
-        cols : GTensor stemp[ vec i64 [] [ ci * kh * kw, n ] ]
+        return conv2d_st[ x, w, b, 1, ph, pw ]
+
+    # unroll x for a 2d conv: cols[(ci, kh, kw)][b, oh, ow]
+    func im2col2d [ x: GTensor, cols: GTensor, kh: i64, kw: i64,
+                    st: i32, ph: i32, pw: i32, oh: i64, ow: i64 ]
         k : GKernel kernel[ 'im2col2d', KIm2col2d [] ]
         g : GArgs []
         g.ad[ 0 ] = x.addr[]
         g.ad[ 1 ] = cols.addr[]
-        g.nn[ 0 ] = i32[ nb ]
-        g.nn[ 1 ] = i32[ ci ]
-        g.nn[ 2 ] = i32[ nh ]
-        g.nn[ 3 ] = i32[ nw ]
+        g.nn[ 0 ] = i32[ x.dims[ 0 ] ]
+        g.nn[ 1 ] = i32[ x.dims[ 1 ] ]
+        g.nn[ 2 ] = i32[ x.dims[ 2 ] ]
+        g.nn[ 3 ] = i32[ x.dims[ 3 ] ]
         g.nn[ 4 ] = i32[ kh ]
         g.nn[ 5 ] = i32[ kw ]
         g.nn[ 6 ] = ph
         g.nn[ 7 ] = pw
         g.nn[ 8 ] = i32[ oh ]
         g.nn[ 9 ] = i32[ ow ]
+        g.nn[ 10 ] = st
         rn.dispatch[ k, g, groups[ cols.count ], 1, 1 ]
+
+    # pytorch's conv2d: any stride, b may be null
+    func conv2d_st [ x: GTensor, w: GTensor, b: GTensor, st: i32,
+                     ph: i32, pw: i32 ] -> GTensor
+        nb : i64 [ x.dims[ 0 ] ]
+        ci : i64 [ x.dims[ 1 ] ]
+        co : i64 [ w.dims[ 0 ] ]
+        kh : i64 [ w.dims[ 2 ] ]
+        kw : i64 [ w.dims[ 3 ] ]
+        oh : i64 [ (x.dims[ 2 ] + 2 * i64[ ph ] - kh) / i64[ st ] + 1 ]
+        ow : i64 [ (x.dims[ 3 ] + 2 * i64[ pw ] - kw) / i64[ st ] + 1 ]
+        n : i64 [ nb * oh * ow ]
+        scratch.top = 0
+        cols : GTensor stemp[ vec i64 [] [ ci * kh * kw, n ] ]
+        im2col2d[ x, cols, kh, kw, st, ph, pw, oh, ow ]
         ym : GTensor stemp[ vec i64 [] [ co, n ] ]
         gemm[ GView [ t: w, rs: ci * kh * kw, cs: 1, bs: 0 ],
               GView [ t: cols, rs: n, cs: 1, bs: 0 ],
@@ -2630,7 +3053,208 @@ class Grad
               1, 1.0, 0.0 ]
         y : GTensor temp[ vec i64 [] [ nb, co, oh, ow ] ]
         regroup[ ym, y, b, nb, co, oh * ow, 1, 0.0 ]
+        if [ keeps[ x ] || keeps[ w ] || keeps[ b ] ]
+            y.need = true
+            tape.push[ GConv2dOp [ kind: 26, out: y, cx: x, cw: w, cb: b,
+                                   cst: st, cph: ph, cpw: pw ] ]
         return y
+
+    func conv2d_back [ rec: GConv2dOp ]
+        x : GTensor rec.cx
+        w : GTensor rec.cw
+        dy : GTensor rec.out.gr
+        if [ !dy ] return
+        nb : i64 [ x.dims[ 0 ] ]
+        ci : i64 [ x.dims[ 1 ] ]
+        co : i64 [ w.dims[ 0 ] ]
+        kh : i64 [ w.dims[ 2 ] ]
+        kw : i64 [ w.dims[ 3 ] ]
+        oh : i64 [ rec.out.dims[ 2 ] ]
+        ow : i64 [ rec.out.dims[ 3 ] ]
+        n : i64 [ nb * oh * ow ]
+        kk : i64 [ ci * kh * kw ]
+        scratch.top = 0
+        dm : GTensor stemp[ vec i64 [] [ co, n ] ]
+        regroup[ dy, dm, null, nb, co, oh * ow, 0, 0.0 ]
+        if [ rec.cb && rec.cb.need ]
+            row_sums[ dm, grad_of[ rec.cb ], co, n ]
+        if [ w.need ]
+            # the columns again: cheaper than keeping them
+            cols : GTensor stemp[ vec i64 [] [ kk, n ] ]
+            im2col2d[ x, cols, kh, kw, rec.cst, rec.cph, rec.cpw, oh,
+                      ow ]
+            gemm[ GView [ t: dm, rs: n, cs: 1, bs: 0 ],
+                  GView [ t: cols, rs: 1, cs: n, bs: 0 ],
+                  GView [ t: grad_of[ w ], rs: kk, cs: 1, bs: 0 ], co,
+                  kk, n, 1, 1.0, 1.0 ]
+        if [ x.need ]
+            dc : GTensor stemp[ vec i64 [] [ kk, n ] ]
+            gemm[ GView [ t: w, rs: 1, cs: kk, bs: 0 ],
+                  GView [ t: dm, rs: n, cs: 1, bs: 0 ],
+                  GView [ t: dc, rs: n, cs: 1, bs: 0 ], kk, n, co, 1,
+                  1.0, 0.0 ]
+            k : GKernel kernel[ 'col2im2d', KCol2im2d [] ]
+            g : GArgs []
+            g.ad[ 0 ] = dc.addr[]
+            g.ad[ 1 ] = grad_of[ x ].addr[]
+            g.nn[ 0 ] = i32[ nb ]
+            g.nn[ 1 ] = i32[ ci ]
+            g.nn[ 2 ] = i32[ x.dims[ 2 ] ]
+            g.nn[ 3 ] = i32[ x.dims[ 3 ] ]
+            g.nn[ 4 ] = i32[ kh ]
+            g.nn[ 5 ] = i32[ kw ]
+            g.nn[ 6 ] = rec.cph
+            g.nn[ 7 ] = rec.cpw
+            g.nn[ 8 ] = i32[ oh ]
+            g.nn[ 9 ] = i32[ ow ]
+            g.nn[ 10 ] = rec.cst
+            rn.dispatch[ k, g, groups[ x.count ], 1, 1 ]
+
+    # GroupNorm over [b, c, h, w] in n groups, eps 1e-5
+    func gnorm [ x: GTensor, gamma: GTensor, beta: GTensor,
+                 n: i32 ] -> GTensor
+        nb : i64 [ x.dims[ 0 ] ]
+        y : GTensor temp[ x.dims ]
+        st : GTensor temp[ vec i64 [] [ nb * i64[ n ] * 2 ] ]
+        k : GKernel kernel[ 'gnorm', KGnorm [] ]
+        g : GArgs []
+        g.ad[ 0 ] = x.addr[]
+        g.ad[ 1 ] = gamma.addr[]
+        g.ad[ 2 ] = beta.addr[]
+        g.ad[ 3 ] = y.addr[]
+        g.ad[ 4 ] = st.addr[]
+        g.nn[ 0 ] = i32[ nb ]
+        g.nn[ 1 ] = i32[ x.dims[ 1 ] ]
+        g.nn[ 2 ] = i32[ x.dims[ 2 ] * x.dims[ 3 ] ]
+        g.nn[ 3 ] = n
+        rn.dispatch[ k, g, i32[ nb ] * n, 1, 1 ]
+        if [ keeps[ x ] || keeps[ gamma ] || keeps[ beta ] ]
+            y.need = true
+            tape.push[ GGnormOp [ kind: 27, out: y, gx: x, gg: gamma,
+                                  gb: beta, gst: st, gn: n ] ]
+        return y
+
+    func gnorm_back [ rec: GGnormOp ]
+        dy : GTensor rec.out.gr
+        if [ !dy ] return
+        x : GTensor rec.gx
+        nb : i64 [ x.dims[ 0 ] ]
+        g : GArgs []
+        g.ad[ 0 ] = x.addr[]
+        g.ad[ 2 ] = dy.addr[]
+        g.ad[ 4 ] = rec.gst.addr[]
+        g.nn[ 0 ] = i32[ nb ]
+        g.nn[ 1 ] = i32[ x.dims[ 1 ] ]
+        g.nn[ 2 ] = i32[ x.dims[ 2 ] * x.dims[ 3 ] ]
+        g.nn[ 3 ] = rec.gn
+        if [ rec.gg.need || rec.gb.need ]
+            g.ad[ 1 ] = grad_of[ rec.gb ].addr[]
+            g.ad[ 5 ] = grad_of[ rec.gg ].addr[]
+            k : GKernel kernel[ 'gnorm_dg', KGnormDg [] ]
+            rn.dispatch[ k, g, i32[ x.dims[ 1 ] ], 1, 1 ]
+        if [ x.need ]
+            g.ad[ 1 ] = rec.gg.addr[]
+            g.ad[ 3 ] = grad_of[ x ].addr[]
+            k : GKernel kernel[ 'gnorm_dx', KGnormDx [] ]
+            rn.dispatch[ k, g, i32[ nb ] * rec.gn, 1, 1 ]
+
+    # x / (1 + exp(-x))
+    func silu [ x: GTensor ] -> GTensor
+        return unary[ x, 7, 0.0 ]
+
+    # [b, c, h, w] to [b, c, 2h, 2w], bilinear
+    func up2 [ x: GTensor ] -> GTensor
+        y : GTensor temp[ vec i64 [] [ x.dims[ 0 ], x.dims[ 1 ],
+                                       x.dims[ 2 ] * 2, x.dims[ 3 ] * 2 ] ]
+        k : GKernel kernel[ 'up2', KUp2 [] ]
+        g : GArgs []
+        g.ad[ 0 ] = x.addr[]
+        g.ad[ 1 ] = y.addr[]
+        g.nn[ 0 ] = i32[ x.dims[ 0 ] * x.dims[ 1 ] ]
+        g.nn[ 1 ] = i32[ x.dims[ 2 ] ]
+        g.nn[ 2 ] = i32[ x.dims[ 3 ] ]
+        rn.dispatch[ k, g, groups[ y.count ], 1, 1 ]
+        if [ keeps[ x ] ]
+            y.need = true
+            tape.push[ GUp2Op [ kind: 28, out: y, ux2: x ] ]
+        return y
+
+    func up2_back [ rec: GUp2Op ]
+        if [ !rec.out.gr || !rec.ux2.need ] return
+        x : GTensor rec.ux2
+        k : GKernel kernel[ 'up2_back', KUp2Back [] ]
+        g : GArgs []
+        g.ad[ 0 ] = rec.out.gr.addr[]
+        g.ad[ 1 ] = grad_of[ x ].addr[]
+        g.nn[ 0 ] = i32[ x.dims[ 0 ] * x.dims[ 1 ] ]
+        g.nn[ 1 ] = i32[ x.dims[ 2 ] ]
+        g.nn[ 2 ] = i32[ x.dims[ 3 ] ]
+        rn.dispatch[ k, g, groups[ x.count ], 1, 1 ]
+
+    # softmax over each row of x [rows, n] after x * exp(lt), the
+    # temperature held to 1 .. 100 (lt a one-number tensor)
+    func soft_t [ x: GTensor, lt: GTensor ] -> GTensor
+        rows : i64 [ x.dims[ 0 ] ]
+        y : GTensor temp[ x.dims ]
+        k : GKernel kernel[ 'soft_t', KSoftT [] ]
+        g : GArgs []
+        g.ad[ 0 ] = x.addr[]
+        g.ad[ 1 ] = lt.addr[]
+        g.ad[ 2 ] = y.addr[]
+        g.nn[ 1 ] = i32[ x.count / rows ]
+        rn.dispatch[ k, g, i32[ rows ], 1, 1 ]
+        if [ keeps[ x ] || keeps[ lt ] ]
+            y.need = true
+            tape.push[ GSoftTOp [ kind: 29, out: y, sx: x, slt: lt ] ]
+        return y
+
+    func soft_t_back [ rec: GSoftTOp ]
+        dy : GTensor rec.out.gr
+        if [ !dy ] return
+        x : GTensor rec.sx
+        rows : i64 [ x.dims[ 0 ] ]
+        scratch.top = 0
+        part : GTensor stemp[ vec i64 [] [ rows ] ]
+        k : GKernel kernel[ 'soft_t_back', KSoftTBack [] ]
+        g : GArgs []
+        g.ad[ 0 ] = x.addr[]
+        g.ad[ 1 ] = rec.slt.addr[]
+        g.ad[ 2 ] = rec.out.addr[]
+        g.ad[ 3 ] = dy.addr[]
+        g.ad[ 4 ] = (x.need) ? grad_of[ x ].addr[] : part.addr[]
+        g.ad[ 5 ] = part.addr[]
+        g.nn[ 1 ] = i32[ x.count / rows ]
+        g.nn[ 2 ] = (x.need) ? 1 : 0
+        rn.dispatch[ k, g, i32[ rows ], 1, 1 ]
+        if [ rec.slt.need ]
+            row_sums[ part, grad_of[ rec.slt ], 1, rows ]
+
+    # each row's mean: x [rows, n] to [rows]
+    func row_mean [ x: GTensor, rows: i64 ] -> GTensor
+        y : GTensor temp[ vec i64 [] [ rows ] ]
+        k : GKernel kernel[ 'row_mean', KRowMean [] ]
+        g : GArgs []
+        g.ad[ 0 ] = x.addr[]
+        g.ad[ 1 ] = y.addr[]
+        g.nn[ 0 ] = i32[ rows ]
+        g.nn[ 1 ] = i32[ x.count / rows ]
+        rn.dispatch[ k, g, groups[ rows ], 1, 1 ]
+        if [ keeps[ x ] ]
+            y.need = true
+            tape.push[ GRowMeanOp [ kind: 30, out: y, mx: x ] ]
+        return y
+
+    func row_mean_back [ rec: GRowMeanOp ]
+        if [ !rec.out.gr || !rec.mx.need ] return
+        rows : i64 [ rec.out.count ]
+        k : GKernel kernel[ 'row_mean', KRowMean [] ]
+        g : GArgs []
+        g.ad[ 2 ] = rec.out.gr.addr[]
+        g.ad[ 3 ] = grad_of[ rec.mx ].addr[]
+        g.nn[ 0 ] = i32[ rows ]
+        g.nn[ 1 ] = i32[ rec.mx.count / rows ]
+        g.nn[ 2 ] = 1
+        rn.dispatch[ k, g, groups[ rec.mx.count ], 1, 1 ]
 
     # conv_transpose2d k3 stride st doubles h, w; forward
     func convt2d [ x: GTensor, w: GTensor, st: i32, pd: i32 ] -> GTensor
@@ -2916,6 +3540,150 @@ class Grad
     # mean(|x - y|)
     func l1 [ x: GTensor, y: GTensor ] -> GTensor
         return loss_run[ x, y, 1, 0.0, f32[ 1.0 / f64[ x.count ] ] ]
+
+    # pytorch's smooth_l1_loss: squared under beta, else straight
+    func smooth_l1 [ x: GTensor, y: GTensor, beta: f32 ] -> GTensor
+        return loss_run[ x, y, 5, beta, f32[ 1.0 / f64[ x.count ] ] ]
+
+    # the mean over rows of -sum t log softmax(x): x, t [rows, n], t
+    # each row's target distribution (no gradient to it)
+    func soft_ce [ x: GTensor, t: GTensor ] -> GTensor
+        rows : i64 [ x.dims[ 0 ] ]
+        o : GTensor temp[ one[] ]
+        lse : GTensor temp[ vec i64 [] [ rows ] ]
+        save : i64 [ scratch.top ]
+        pt : GTensor stemp[ dims3[ 1, 1, rows ] ]
+        k : GKernel kernel[ 'soft_ce', KSoftCE [] ]
+        g : GArgs []
+        g.ad[ 0 ] = x.addr[]
+        g.ad[ 1 ] = t.addr[]
+        g.ad[ 2 ] = pt.addr[]
+        g.ad[ 3 ] = lse.addr[]
+        g.nn[ 1 ] = i32[ x.count / rows ]
+        rn.dispatch[ k, g, i32[ rows ], 1, 1 ]
+        k2 : GKernel kernel[ 'loss_sum', KLossSum [] ]
+        g2 : GArgs []
+        g2.ad[ 0 ] = pt.addr[]
+        g2.ad[ 1 ] = o.addr[]
+        g2.nn[ 0 ] = i32[ rows ]
+        g2.ff[ 0 ] = f32[ 1.0 / f64[ rows ] ]
+        rn.dispatch[ k2, g2, 1, 1, 1 ]
+        scratch.top = save
+        if [ keeps[ x ] ]
+            o.need = true
+            tape.push[ GSoftCEOp [ kind: 31, out: o, cex: x, cet: t,
+                                   cel: lse ] ]
+        return o
+
+    func soft_ce_back [ rec: GSoftCEOp ]
+        dl : GTensor rec.out.gr
+        if [ !dl || !rec.cex.need ] return
+        x : GTensor rec.cex
+        rows : i64 [ x.dims[ 0 ] ]
+        k : GKernel kernel[ 'soft_ce_back', KSoftCEBack [] ]
+        g : GArgs []
+        g.ad[ 0 ] = x.addr[]
+        g.ad[ 1 ] = rec.cet.addr[]
+        g.ad[ 2 ] = dl.addr[]
+        g.ad[ 3 ] = rec.cel.addr[]
+        g.ad[ 4 ] = grad_of[ x ].addr[]
+        g.nn[ 1 ] = i32[ x.count / rows ]
+        g.ff[ 0 ] = f32[ 1.0 / f64[ rows ] ]
+        rn.dispatch[ k, g, i32[ rows ], 1, 1 ]
+
+    # batch norm over [b, c, h, w]: training (train true) by the
+    # batch's statistics, moving the running ones (rs: c means then
+    # c variances) by momentum; else by the running ones
+    func bnorm [ x: GTensor, gamma: GTensor, beta: GTensor,
+                 rs: GTensor, train: bool, momentum: f32 ] -> GTensor
+        nc : i64 [ x.dims[ 1 ] ]
+        y : GTensor temp[ x.dims ]
+        st : GTensor temp[ vec i64 [] [ nc * 2 ] ]
+        k : GKernel kernel[ 'bnorm', KBnorm [] ]
+        g : GArgs []
+        g.ad[ 0 ] = x.addr[]
+        g.ad[ 1 ] = gamma.addr[]
+        g.ad[ 2 ] = beta.addr[]
+        g.ad[ 3 ] = y.addr[]
+        g.ad[ 4 ] = rs.addr[]
+        g.ad[ 5 ] = st.addr[]
+        g.nn[ 0 ] = i32[ x.dims[ 0 ] ]
+        g.nn[ 1 ] = i32[ nc ]
+        g.nn[ 2 ] = i32[ x.count / (x.dims[ 0 ] * nc) ]
+        g.nn[ 3 ] = (train) ? 1 : 0
+        g.ff[ 0 ] = momentum
+        rn.dispatch[ k, g, i32[ nc ], 1, 1 ]
+        if [ train && (keeps[ x ] || keeps[ gamma ] || keeps[ beta ]) ]
+            y.need = true
+            tape.push[ GBnormOp [ kind: 32, out: y, bx: x, bg: gamma,
+                                  bb: beta, bst: st ] ]
+        return y
+
+    func bnorm_back [ rec: GBnormOp ]
+        dy : GTensor rec.out.gr
+        if [ !dy ] return
+        x : GTensor rec.bx
+        nc : i64 [ x.dims[ 1 ] ]
+        save : i64 [ scratch.top ]
+        # the scale's then the shift's gradients, side by side
+        both : GTensor stemp[ vec i64 [] [ nc * 2 ] ]
+        fill[ both, 0.0 ]
+        k : GKernel kernel[ 'bnorm_back', KBnormBack [] ]
+        g : GArgs []
+        g.ad[ 0 ] = x.addr[]
+        g.ad[ 1 ] = rec.bg.addr[]
+        g.ad[ 2 ] = dy.addr[]
+        g.ad[ 3 ] = (x.need) ? grad_of[ x ].addr[] : u64[ 0 ]
+        g.ad[ 4 ] = rec.bst.addr[]
+        g.ad[ 5 ] = both.addr[]
+        g.nn[ 0 ] = i32[ x.dims[ 0 ] ]
+        g.nn[ 1 ] = i32[ nc ]
+        g.nn[ 2 ] = i32[ x.count / (x.dims[ 0 ] * nc) ]
+        g.nn[ 3 ] = (x.need) ? 1 : 0
+        rn.dispatch[ k, g, i32[ nc ], 1, 1 ]
+        dims : vec i64 [] [ nc ]
+        if [ rec.bg.need ]
+            sg : GTensor GTensor [ ar: both.ar, off: both.off,
+                                   count: nc, dims: dims ]
+            axpby[ sg, grad_of[ rec.bg ], 1.0, 1.0 ]
+        if [ rec.bb.need ]
+            sb : GTensor GTensor [ ar: both.ar, off: both.off + nc * 4,
+                                   count: nc, dims: dims ]
+            axpby[ sb, grad_of[ rec.bb ], 1.0, 1.0 ]
+        scratch.top = save
+
+    # [b, c, h, w] to [b, c, h/2, w/2], each the largest of its four
+    func max_pool2 [ x: GTensor ] -> GTensor
+        y : GTensor temp[ vec i64 [] [ x.dims[ 0 ], x.dims[ 1 ],
+                                       x.dims[ 2 ] / 2, x.dims[ 3 ] / 2 ] ]
+        at : GTensor temp[ y.dims ]
+        k : GKernel kernel[ 'max_pool2', KMaxPool2 [] ]
+        g : GArgs []
+        g.ad[ 0 ] = x.addr[]
+        g.ad[ 1 ] = y.addr[]
+        g.ad[ 2 ] = at.addr[]
+        g.nn[ 0 ] = i32[ x.dims[ 0 ] * x.dims[ 1 ] ]
+        g.nn[ 1 ] = i32[ x.dims[ 2 ] ]
+        g.nn[ 2 ] = i32[ x.dims[ 3 ] ]
+        rn.dispatch[ k, g, groups[ y.count ], 1, 1 ]
+        if [ keeps[ x ] ]
+            y.need = true
+            tape.push[ GMaxPoolOp [ kind: 33, out: y, mpx: x, mpa: at ] ]
+        return y
+
+    func max_pool2_back [ rec: GMaxPoolOp ]
+        if [ !rec.out.gr || !rec.mpx.need ] return
+        x : GTensor rec.mpx
+        k : GKernel kernel[ 'max_pool2', KMaxPool2 [] ]
+        g : GArgs []
+        g.ad[ 2 ] = rec.mpa.addr[]
+        g.ad[ 3 ] = rec.out.gr.addr[]
+        g.ad[ 4 ] = grad_of[ x ].addr[]
+        g.nn[ 0 ] = i32[ x.dims[ 0 ] * x.dims[ 1 ] ]
+        g.nn[ 1 ] = i32[ x.dims[ 2 ] ]
+        g.nn[ 2 ] = i32[ x.dims[ 3 ] ]
+        g.nn[ 3 ] = 1
+        rn.dispatch[ k, g, groups[ rec.out.count ], 1, 1 ]
 
     func loss_back [ rec: GLossOp ]
         dl : GTensor rec.out.gr
@@ -3495,6 +4263,117 @@ expect func t_grad_lm_ops [] -> bool
     ok : bool [ true ]
     for [ w: f64 ] in e
         if [ w > 0.0001 ] ok = false
+    return ok
+
+# one op of find's against pytorch: y and each input's gradient
+func find_check [ gd: Grad, dir: string, nm: string, y: GTensor,
+                  ins: vec GTensor ] -> f64
+    gd.upload[ gd.grad_of[ y ], grad_gold[ dir, '{nm}_dy' ] ]
+    i : i64 [ gd.tape.count - 1 ]
+    while [ i >= 0 ]
+        gd.back_op[ gd.tape[ i ] ]
+        i -= 1
+    gd.rn.finish[]
+    w : f64 grad_worst[ gd.download[ y ], grad_gold[ dir, '{nm}_y' ] ]
+    for [ k: i64 0, k < ins.count, k += 1 ]
+        t : GTensor ins[ k ]
+        e : f64 grad_worst[ gd.download[ t.gr ],
+                            grad_gold[ dir, '{nm}_d{k}' ] ]
+        if [ e > w ] w = e
+    # the op's record (and its output) let go after the reads
+    gd.tape.clear[]
+    log 'grad find op {nm}: worst {w}'
+    return w
+
+# find's ops vs pytorch (python3 ai/tests/find_gold.py <dir>, then
+# GRAD_GOLD=<dir>): strided conv2d, group norm, silu, 2x bilinear,
+# softmax at a learned temperature, row means; with gradients
+expect func t_grad_find_ops [] -> bool
+    ge : cstr [ getenv[ 'GRAD_GOLD' ] ]
+    if [ !ge ] return true
+    dir : string [ ge ]
+    vk : vk_context []
+    Au.hold[ vk ]
+    disp : Display [ vk: vk, backbuffer: true, width: 64, height: 64 ]
+    Au.hold[ disp ]
+    gd : Grad [ vk: vk, keep_mb: 16, work_mb: 64 ]
+    gd.record = true
+    worst : vec f64 []
+    x : GTensor grad_load[ gd, dir, 'cs_x', vec i64 [] [ 2, 4, 9, 9 ],
+                           true ]
+    w : GTensor grad_load[ gd, dir, 'cs_w', vec i64 [] [ 6, 4, 3, 3 ],
+                           true ]
+    worst.push[ find_check[ gd, dir, 'cs', gd.conv2d_st[ x, w, null, 2,
+        1, 1 ], vec GTensor [] [ x, w ] ] ]
+    x = grad_load[ gd, dir, 'c5_x', vec i64 [] [ 2, 3, 7, 8 ], true ]
+    w = grad_load[ gd, dir, 'c5_w', vec i64 [] [ 5, 3, 5, 5 ], true ]
+    b : GTensor grad_load[ gd, dir, 'c5_b', vec i64 [] [ 5 ], true ]
+    worst.push[ find_check[ gd, dir, 'c5', gd.conv2d_st[ x, w, b, 1, 2,
+        2 ], vec GTensor [] [ x, w, b ] ] ]
+    x = grad_load[ gd, dir, 'c1_x', vec i64 [] [ 2, 4, 6, 6 ], true ]
+    w = grad_load[ gd, dir, 'c1_w', vec i64 [] [ 3, 4, 1, 1 ], true ]
+    worst.push[ find_check[ gd, dir, 'c1', gd.conv2d_st[ x, w, null, 2,
+        0, 0 ], vec GTensor [] [ x, w ] ] ]
+    x = grad_load[ gd, dir, 'gn_x', vec i64 [] [ 2, 16, 5, 6 ], true ]
+    w = grad_load[ gd, dir, 'gn_g', vec i64 [] [ 16 ], true ]
+    b = grad_load[ gd, dir, 'gn_b', vec i64 [] [ 16 ], true ]
+    worst.push[ find_check[ gd, dir, 'gn', gd.gnorm[ x, w, b, 8 ],
+        vec GTensor [] [ x, w, b ] ] ]
+    x = grad_load[ gd, dir, 'si_x', vec i64 [] [ 2, 3, 4, 5 ], true ]
+    worst.push[ find_check[ gd, dir, 'si', gd.silu[ x ],
+        vec GTensor [] [ x ] ] ]
+    x = grad_load[ gd, dir, 'up_x', vec i64 [] [ 2, 3, 4, 5 ], true ]
+    worst.push[ find_check[ gd, dir, 'up', gd.up2[ x ],
+        vec GTensor [] [ x ] ] ]
+    x = grad_load[ gd, dir, 'st_x', vec i64 [] [ 3, 20 ], true ]
+    w = grad_load[ gd, dir, 'st_lt', vec i64 [] [ 1 ], true ]
+    worst.push[ find_check[ gd, dir, 'st', gd.soft_t[ x, w ],
+        vec GTensor [] [ x, w ] ] ]
+    x = grad_load[ gd, dir, 'rm_x', vec i64 [] [ 6, 7 ], true ]
+    worst.push[ find_check[ gd, dir, 'rm', gd.row_mean[ x, 6 ],
+        vec GTensor [] [ x ] ] ]
+    ok : bool [ true ]
+    for [ e: f64 ] in worst
+        if [ e > 0.0001 ] ok = false
+    return ok
+
+# training's ops vs pytorch (find_gold.py writes them): smooth L1,
+# cross entropy against soft targets, batch norm in training (its
+# running statistics too), 2x2 max pooling; with gradients
+expect func t_grad_train_ops [] -> bool
+    ge : cstr [ getenv[ 'GRAD_GOLD' ] ]
+    if [ !ge ] return true
+    dir : string [ ge ]
+    vk : vk_context []
+    Au.hold[ vk ]
+    disp : Display [ vk: vk, backbuffer: true, width: 64, height: 64 ]
+    Au.hold[ disp ]
+    gd : Grad [ vk: vk, keep_mb: 16, work_mb: 64 ]
+    gd.record = true
+    worst : vec f64 []
+    x : GTensor grad_load[ gd, dir, 'sl_x', vec i64 [] [ 5, 4 ], true ]
+    t : GTensor grad_load[ gd, dir, 'sl_t', vec i64 [] [ 5, 4 ], false ]
+    worst.push[ find_check[ gd, dir, 'sl', gd.smooth_l1[ x, t, 0.02 ],
+        vec GTensor [] [ x ] ] ]
+    x = grad_load[ gd, dir, 'ce_x', vec i64 [] [ 3, 12 ], true ]
+    t = grad_load[ gd, dir, 'ce_t', vec i64 [] [ 3, 12 ], false ]
+    worst.push[ find_check[ gd, dir, 'ce', gd.soft_ce[ x, t ],
+        vec GTensor [] [ x ] ] ]
+    x = grad_load[ gd, dir, 'bn_x', vec i64 [] [ 4, 6, 5, 5 ], true ]
+    g : GTensor grad_load[ gd, dir, 'bn_g', vec i64 [] [ 6 ], true ]
+    b : GTensor grad_load[ gd, dir, 'bn_b', vec i64 [] [ 6 ], true ]
+    rs : GTensor grad_load[ gd, dir, 'bn_rs', vec i64 [] [ 12 ], false ]
+    worst.push[ find_check[ gd, dir, 'bn', gd.bnorm[ x, g, b, rs, true,
+        0.1 ], vec GTensor [] [ x, g, b ] ] ]
+    rw : f64 grad_worst[ gd.download[ rs ], grad_gold[ dir, 'bn_rs2' ] ]
+    log 'grad train op bn running statistics: worst {rw}'
+    worst.push[ rw ]
+    x = grad_load[ gd, dir, 'mp_x', vec i64 [] [ 2, 3, 6, 8 ], true ]
+    worst.push[ find_check[ gd, dir, 'mp', gd.max_pool2[ x ],
+        vec GTensor [] [ x ] ] ]
+    ok : bool [ true ]
+    for [ e: f64 ] in worst
+        if [ e > 0.0001 ] ok = false
     return ok
 
 # linear, lookup, swap, flip, wnorm conv vs pytorch

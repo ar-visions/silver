@@ -1,0 +1,811 @@
+extend ai
+
+# hyperspace's networks on grad, to train in silver: the stage
+# networks (target, the eye stage, gaze's clip encoders), find, and
+# gaze, read from pytorch's checkpoints by their names
+
+# each row made mean 0, deviation 1 (as training's normalize; no
+# gradient: the rows are pictures)
+GKern KNormRows
+    func decl [] -> GLSL none {
+        shared float pa[256];
+        shared float pb[256];
+    }
+    func compute [] -> GLSL none {
+        uint row = gl_WorkGroupID.x; uint l = gl_LocalInvocationID.x; uint N = uint(p.n1);
+        F x = F(p.a0); F y = F(p.a1);
+        float s1 = 0.0;
+        for (uint j = l; j < N; j += 256u) s1 += x.v[row * N + j];
+        pa[l] = s1; barrier();
+        for (uint w = 128u; w > 0u; w >>= 1) {{ if (l < w) pa[l] += pa[l + w]; barrier(); }}
+        float m = pa[0] / float(N); barrier();
+        float s2 = 0.0;
+        for (uint j = l; j < N; j += 256u) {{ float d = x.v[row * N + j] - m; s2 += d * d; }}
+        pb[l] = s2; barrier();
+        for (uint w = 128u; w > 0u; w >>= 1) {{ if (l < w) pb[l] += pb[l + w]; barrier(); }}
+        float sd = max(sqrt(pb[0] / float(N - 1u)), 1e-4);
+        for (uint j = l; j < N; j += 256u) y.v[row * N + j] = (x.v[row * N + j] - m) / sd;
+    }
+
+# a network's tensors by their checkpoint names; a batch norm's
+# running statistics as '<name>.rs' (its means, then variances)
+class GNet
+    public vk    : vk_context
+    public gd    : Grad
+    public ps    : map GTensor [ string ]
+    # its weights, in the checkpoint's order (the ones that learn)
+    public learns : vec string
+    # the batch norms' running statistics, in the checkpoint's order
+    public stats : vec string
+    public valid : bool
+    # each step's working memory (a training batch's activations)
+    public work_mb : i64 [ 512 ]
+    # conv's column buffers in the backward pass
+    public scratch_mb : i64 [ 512 ]
+
+    func load [ src: path, train: bool ] -> bool
+        if [ !gd ]
+            gd = Grad [ vk: vk, keep_mb: 64, work_mb: work_mb,
+                        scratch_mb: scratch_mb ]
+        ps = map GTensor [ string ] []
+        learns = vec string []
+        stats = vec string []
+        ck : pth [ src: src ]
+        if [ !ck.valid || !gd.valid ] return false
+        for [ i: i32 0, i < ck.count[], i += 1 ]
+            nm : string ck.name_at[ i ]
+            if [ nm.ends_with[ 'num_batches_tracked' ] ] continue
+            if [ nm.ends_with[ '.running_mean' ] ]
+                base : string nm.mid[ 0, nm.count - 13 ]
+                mt : tensor ck.tensor_named[ nm ]
+                vt : tensor ck.tensor_named[ '{base}.running_var' ]
+                n : i64 [ i64[ mt.tensor_shape[ 0 ] ] ]
+                rs : GTensor gd.param[ vec i64 [] [ n * 2 ] ]
+                gd.upload_raw[ rs, mt.floats, n ]
+                tail : GTensor GTensor [ ar: rs.ar, off: rs.off + n * 4,
+                    count: n, dims: vec i64 [] [ n ] ]
+                gd.upload_raw[ tail, vt.floats, n ]
+                ps[ '{base}.rs' ] = rs
+                stats.push[ '{base}.rs' ]
+                continue
+            if [ nm.ends_with[ '.running_var' ] ] continue
+            t : GTensor gd.param_of[ ck.tensor_named[ nm ] ]
+            t.need = train
+            ps[ nm ] = t
+            learns.push[ nm ]
+        valid = true
+        return true
+
+    # made fresh as pytorch's layers start: a conv's or dense
+    # layer's weight and bias even in +-1/sqrt(its inputs), a norm's
+    # scale 1 and shift 0, its running means 0 and variances 1
+    func begin_fresh []
+        if [ !gd ]
+            gd = Grad [ vk: vk, keep_mb: 64, work_mb: work_mb,
+                        scratch_mb: scratch_mb ]
+        ps = map GTensor [ string ] []
+        learns = vec string []
+        stats = vec string []
+        valid = gd.valid
+
+    func fresh_put [ nm: string, dims: vec i64, v: vec f32 ]
+        t : GTensor gd.param[ dims ]
+        gd.upload[ t, v ]
+        t.need = true
+        ps[ nm ] = t
+        learns.push[ nm ]
+
+    # a layer's weight (dims, its inputs fan) and its bias
+    func fresh_layer [ nm: string, dims: vec i64, fan: i64, bias: bool ]
+        bound : f64 [ 1.0 / sqrt[ f64[ fan ] ] ]
+        n : i64 [ 1 ]
+        for [ d: i64 ] in dims
+            n *= d
+        w : vec f32 [ n ]
+        for [ i: i64 0, i < n, i += 1 ]
+            w[ i ] = (randf64[] * 2.0 - 1.0) * bound
+        fresh_put[ '{nm}.weight', dims, w ]
+        if [ !bias ] return
+        b : vec f32 [ dims[ 0 ] ]
+        for [ i: i64 0, i < dims[ 0 ], i += 1 ]
+            b[ i ] = (randf64[] * 2.0 - 1.0) * bound
+        fresh_put[ '{nm}.bias', vec i64 [] [ dims[ 0 ] ], b ]
+
+    # a norm's scale and shift; with running statistics for a batch
+    # norm
+    func fresh_norm [ nm: string, c: i64, running: bool ]
+        one : vec f32 [ c ]
+        for [ i: i64 0, i < c, i += 1 ]
+            one[ i ] = 1.0
+        fresh_put[ '{nm}.weight', vec i64 [] [ c ], one ]
+        fresh_put[ '{nm}.bias', vec i64 [] [ c ], vec f32 [ c ] ]
+        if [ !running ] return
+        rs : vec f32 [ c * 2 ]
+        for [ i: i64 c, i < c * 2, i += 1 ]
+            rs[ i ] = 1.0
+        t : GTensor gd.param[ vec i64 [] [ c * 2 ] ]
+        gd.upload[ t, rs ]
+        ps[ '{nm}.rs' ] = t
+        stats.push[ '{nm}.rs' ]
+
+    # pytorch's StageConv(side, outputs) fresh: four stages (16 32
+    # 64 128, the first conv first x first), the 128 dense layer,
+    # the outputs
+    func fresh_stages [ side: i64, outputs: i64, first: i64 ]
+        begin_fresh[]
+        chans : vec i64 [] [ 1, 16, 32, 64, 128 ]
+        for [ s: i64 0, s < 4, s += 1 ]
+            for [ k: i64 0, k < 2, k += 1 ]
+                at : i64 [ s * 7 + k * 3 ]
+                cin : i64 [ (k == 0) ? chans[ s ] : chans[ s + 1 ] ]
+                cout : i64 chans[ s + 1 ]
+                kk : i64 [ (s == 0 && k == 0) ? first : 3 ]
+                dims : vec i64 [] [ cout, cin, kk, kk ]
+                fresh_layer[ 'trunk.{at}', dims, cin * kk * kk, true ]
+                fresh_norm[ 'trunk.{at + 1}', cout, true ]
+        flat : i64 [ 128 * (side / 16) * (side / 16) ]
+        fresh_layer[ 'head.0', vec i64 [] [ 128, flat ], flat, true ]
+        fresh_layer[ 'head.2', vec i64 [] [ outputs, 128 ], 128, true ]
+
+    # its floats as the app reads them (export_eyes.py's), each
+    # batch norm folded into its conv: a stage net's .hsn (magic
+    # HSN1, side, outputs)
+    func put_floats [ fp: @FILE, nm: string ]
+        v : vec f32 gd.download[ ps[ nm ] ]
+        fwrite[ @v[ 0 ], 4, v.count, fp ]
+
+    func write_stages [ to: path, side: i32, outputs: i32 ] -> bool
+        fp : @FILE [ fopen[ '{to}'.chars, 'wb' ] ]
+        if [ !fp ] return false
+        head : vec i32 [] [ 827216712, side, outputs ]
+        fwrite[ @head[ 0 ], 4, 3, fp ]
+        for [ s: i64 0, s < 4, s += 1 ]
+            for [ k: i64 0, k < 2, k += 1 ]
+                at : i64 [ s * 7 + k * 3 ]
+                w : vec f32 gd.download[ ps[ 'trunk.{at}.weight' ] ]
+                b : vec f32 gd.download[ ps[ 'trunk.{at}.bias' ] ]
+                g : vec f32 gd.download[ ps[ 'trunk.{at + 1}.weight' ] ]
+                sh : vec f32 gd.download[ ps[ 'trunk.{at + 1}.bias' ] ]
+                rs : vec f32 gd.download[ ps[ 'trunk.{at + 1}.rs' ] ]
+                c : i64 b.count
+                per : i64 [ w.count / c ]
+                for [ o: i64 0, o < c, o += 1 ]
+                    k2 : f64 [ f64[ g[ o ] ]
+                               / sqrt[ f64[ rs[ c + o ] ] + 1.0e-5 ] ]
+                    for [ i: i64 0, i < per, i += 1 ]
+                        w[ o * per + i ] = f64[ w[ o * per + i ] ] * k2
+                    b[ o ] = (f64[ b[ o ] ] - f64[ rs[ o ] ]) * k2
+                        + f64[ sh[ o ] ]
+                fwrite[ @w[ 0 ], 4, w.count, fp ]
+                fwrite[ @b[ 0 ], 4, b.count, fp ]
+        for [ nm: string ] in vec string [] [ 'head.0.weight',
+                'head.0.bias', 'head.2.weight', 'head.2.bias' ]
+            put_floats[ fp, nm ]
+        fclose[ fp ]
+        return true
+
+    func p [ nm: string ] -> GTensor
+        return (ps.contains[ nm ]) ? ps[ nm ] : null
+
+    # pictures [n, 1, s, s] (or any [n, ...]) each made mean 0,
+    # deviation 1
+    func normalized [ x: GTensor, rows: i64 ] -> GTensor
+        y : GTensor gd.temp[ x.dims ]
+        k : GKernel gd.kernel[ 'norm_rows', KNormRows [] ]
+        g : GArgs []
+        g.ad[ 0 ] = x.addr[]
+        g.ad[ 1 ] = y.addr[]
+        g.nn[ 1 ] = i32[ x.count / rows ]
+        gd.rn.dispatch[ k, g, i32[ rows ], 1, 1 ]
+        return y
+
+    # n stages of pytorch's stage(): conv (its kernel from its
+    # weights, padded half), batch norm, ReLU, conv, batch norm, ReLU,
+    # 2x2 max pool; the layers of a stage 7 apart under prefix
+    func stages [ x: GTensor, pre: string, n: i32,
+                  train: bool ] -> GTensor
+        h : GTensor x
+        for [ s: i32 0, s < n, s += 1 ]
+            for [ k: i32 0, k < 2, k += 1 ]
+                at : i32 [ s * 7 + k * 3 ]
+                w : GTensor p[ '{pre}.{at}.weight' ]
+                pd : i32 [ i32[ w.dims[ 2 ] ] / 2 ]
+                b : GTensor p[ '{pre}.{at}.bias' ]
+                h = gd.conv2d_st[ h, w, b, 1, pd, pd ]
+                bn : string '{pre}.{at + 1}'
+                h = gd.bnorm[ h, p[ '{bn}.weight' ], p[ '{bn}.bias' ],
+                              p[ '{bn}.rs' ], train, 0.1 ]
+                h = gd.leaky[ h, 0.0 ]
+            h = gd.max_pool2[ h ]
+        return h
+
+    # a weight whose true gradient is zero: a conv's bias under a
+    # batch norm (the norm takes the mean away)
+    func still [ nm: string ] -> bool
+        if [ !nm.ends_with[ '.bias' ] ] return false
+        parts : vec string nm.split[ '.' ]
+        if [ parts.count != 3 ] return false
+        at : i32 [ i32[ parts[ 1 ].integer_value[] ] ]
+        return ps.contains[ '{parts[ 0 ]}.{at + 1}.rs' ]
+
+    # a new step: the gradients, the tape and the step's tensors let
+    # go (the weights, moments and running statistics stay)
+    func begin_step []
+        for [ nm: string ] in learns
+            t : GTensor ps[ nm ]
+            t.gr = null
+        gd.tape.clear[]
+        gd.reset_work[]
+
+    # pytorch's AdamW over every weight (betas b1, 0.999, eps 1e-8),
+    # the gradients first scaled to length clip at most (0: none, as
+    # clip_grad_norm_); returns their length before
+    intern ms    : map GTensor [ string ]
+    intern vs    : map GTensor [ string ]
+    intern steps : i64
+
+    func adamw_step [ lr: f32, b1: f32, decay: f32, clip: f32 ] -> f64
+        if [ !ms ]
+            ms = map GTensor [ string ] []
+            vs = map GTensor [ string ] []
+            for [ nm: string ] in learns
+                w : GTensor ps[ nm ]
+                m : GTensor gd.param[ w.dims ]
+                v : GTensor gd.param[ w.dims ]
+                gd.fill[ m, 0.0 ]
+                gd.fill[ v, 0.0 ]
+                ms[ nm ] = m
+                vs[ nm ] = v
+        sq : f64 [ 0.0 ]
+        # the length only when clipping (it reads every gradient back)
+        some : vec string [ (clip > 0.0) ? learns : vec string [] ]
+        for [ nm: string ] in some
+            g : GTensor ps[ nm ].gr
+            if [ !g ] continue
+            ss : vec f32 gd.download[ gd.loss_run[ g, null, 0, 0.0,
+                                                   1.0 ] ]
+            sq += f64[ ss[ 0 ] ]
+        norm : f64 [ sqrt[ sq ] ]
+        if [ clip > 0.0 ]
+            k : f64 [ f64[ clip ] / (norm + 1.0e-6) ]
+            if [ k < 1.0 ]
+                for [ nm: string ] in learns
+                    g : GTensor ps[ nm ].gr
+                    if [ g ] gd.axpby[ g, g, 0.0, f32[ k ] ]
+        steps += 1
+        gd.rn.nofence = true
+        for [ nm: string ] in learns
+            gd.adamw[ ps[ nm ], ms[ nm ], vs[ nm ], lr, b1, 0.999,
+                      0.00000001, decay, steps ]
+        gd.rn.nofence = false
+        gd.rn.fence_mem[]
+        return norm
+
+# pytorch's OneCycleLR at a step (0 the first): the rate up from a
+# 25th of top over the first 0.3, then down to that over 1e4; Adam's
+# first beta the other way, 0.95 to 0.85 and back; cosine both
+func one_cycle [ step: i64, total: i64, top: f64 ] -> vec f64
+    low : f64 [ top / 25.0 ]
+    up : f64 [ 0.3 * f64[ total ] - 1.0 ]
+    end : f64 [ f64[ total ] - 1.0 ]
+    st : f64 [ f64[ step ] ]
+    a : f64 [ low ]
+    b : f64 [ top ]
+    ma : f64 [ 0.95 ]
+    mb : f64 [ 0.85 ]
+    pct : f64 [ st / up ]
+    if [ st > up ]
+        a = top
+        b = low / 10000.0
+        ma = 0.85
+        mb = 0.95
+        pct = (st - up) / (end - up)
+    c : f64 [ (cos[ 3.141592653589793 * pct ] + 1.0) / 2.0 ]
+    return vec f64 [] [ b + (a - b) * c, mb + (ma - mb) * c ]
+
+# CosineAnnealingLR to 0 over total steps, at a step
+func cosine_rate [ step: i64, total: i64, top: f64 ] -> f64
+    pct : f64 [ f64[ step ] / f64[ total ] ]
+    return top * (1.0 + cos[ 3.141592653589793 * pct ]) / 2.0
+
+# pytorch's StageConv: four stages (16 32 64 128), flattened, a 128
+# dense layer under ReLU, then the outputs
+GNet GStageNet
+    func forward [ x: GTensor, train: bool ] -> GTensor
+        nb : i64 [ x.dims[ 0 ] ]
+        h : GTensor stages[ normalized[ x, nb ], 'trunk', 4, train ]
+        f : GTensor gd.reshape[ h, vec i64 [] [ nb, h.count / nb ] ]
+        f = gd.leaky[ gd.linear[ f, p[ 'head.0.weight' ],
+                                 p[ 'head.0.bias' ] ], 0.0 ]
+        return gd.linear[ f, p[ 'head.2.weight' ], p[ 'head.2.bias' ] ]
+
+    # its training loss: smooth L1 (beta 0.01) to the targets
+    func loss [ out: GTensor, y: GTensor ] -> GTensor
+        return gd.smooth_l1[ out, y, 0.01 ]
+
+# find's answer for a batch: the point [b, 1, 2], the gap [b, 1],
+# and the heat map's scores [b, cells]
+class GFindOut
+    public pt   : GTensor
+    public gap  : GTensor
+    public heat : GTensor
+
+# hyperspace's find (train_eyes.py's FindNet), its gradient whole
+GNet GFindNet
+    # the map's bias moves every cell's score alike: the softmax
+    # and the map's loss never see it
+    func still [ nm: string ] -> bool
+        return nm == 'heat.bias'
+
+    func fresh_block [ nm: string, cin: i64, cout: i64, st: i64 ]
+        fresh_layer[ '{nm}.body.0', vec i64 [] [ cout, cin, 3, 3 ],
+                     cin * 9, false ]
+        fresh_norm[ '{nm}.body.1', cout, false ]
+        fresh_layer[ '{nm}.body.3', vec i64 [] [ cout, cout, 3, 3 ],
+                     cout * 9, false ]
+        fresh_norm[ '{nm}.body.4', cout, false ]
+        if [ cin != cout || st != 1 ]
+            fresh_layer[ '{nm}.skip', vec i64 [] [ cout, cin, 1, 1 ],
+                         cin, false ]
+
+    # train_eyes.py's FindNet fresh
+    func fresh []
+        begin_fresh[]
+        fresh_layer[ 'stem.0', vec i64 [] [ 32, 1, 5, 5 ], 25, false ]
+        fresh_norm[ 'stem.1', 32, false ]
+        fresh_block[ 'full', 32, 32, 1 ]
+        fresh_block[ 'at_half.0', 32, 48, 2 ]
+        fresh_block[ 'at_half.1', 48, 48, 1 ]
+        fresh_block[ 'at_quarter.0', 48, 96, 2 ]
+        fresh_block[ 'at_quarter.1', 96, 96, 1 ]
+        fresh_block[ 'at_eighth.0', 96, 160, 2 ]
+        fresh_block[ 'at_eighth.1', 160, 160, 1 ]
+        fresh_layer[ 'to_quarter', vec i64 [] [ 96, 160, 1, 1 ], 160,
+                     true ]
+        fresh_block[ 'refine_quarter', 96, 96, 1 ]
+        fresh_layer[ 'to_half', vec i64 [] [ 48, 96, 1, 1 ], 96, true ]
+        fresh_block[ 'refine_half', 48, 48, 1 ]
+        fresh_layer[ 'heat', vec i64 [] [ 1, 48, 1, 1 ], 48, true ]
+        fresh_put[ 'log_temp', vec i64 [] [ 1 ],
+                   vec f32 [] [ 2.302585092994046 ] ]
+        fresh_layer[ 'gap.0', vec i64 [] [ 96, 208 ], 208, true ]
+        fresh_layer[ 'gap.2', vec i64 [] [ 1, 96 ], 96, true ]
+
+    # its floats as hyperspace.c's hs_find_run reads them (magic
+    # HSF1, side, 3)
+    func write_find [ to: path ] -> bool
+        fp : @FILE [ fopen[ '{to}'.chars, 'wb' ] ]
+        if [ !fp ] return false
+        head : vec i32 [] [ 826692424, 64, 3 ]
+        fwrite[ @head[ 0 ], 4, 3, fp ]
+        names : vec string [] [ 'stem.0.weight', 'stem.1.weight',
+                                'stem.1.bias' ]
+        blocks : vec string [] [ 'full', 'at_half.0', 'at_half.1',
+            'at_quarter.0', 'at_quarter.1', 'at_eighth.0',
+            'at_eighth.1', 'to_quarter', 'refine_quarter', 'to_half',
+            'refine_half' ]
+        for [ b: string ] in blocks
+            if [ b.starts_with[ 'to_' ] ]
+                names.push[ '{b}.weight' ]
+                names.push[ '{b}.bias' ]
+                continue
+            for [ k: string ] in vec string [] [ 'body.0.weight',
+                    'body.1.weight', 'body.1.bias', 'body.3.weight',
+                    'body.4.weight', 'body.4.bias' ]
+                names.push[ '{b}.{k}' ]
+            if [ ps.contains[ '{b}.skip.weight' ] ]
+                names.push[ '{b}.skip.weight' ]
+        for [ k: string ] in vec string [] [ 'heat.weight',
+                'heat.bias', 'log_temp', 'gap.0.weight', 'gap.0.bias',
+                'gap.2.weight', 'gap.2.bias' ]
+            names.push[ k ]
+        for [ nm: string ] in names
+            put_floats[ fp, nm ]
+        fclose[ fp ]
+        return true
+
+    func as3 [ x: GTensor ] -> GTensor
+        return gd.reshape[ x, vec i64 [] [ x.dims[ 0 ], x.dims[ 1 ],
+                                           x.dims[ 2 ] * x.dims[ 3 ] ] ]
+
+    func as4 [ x: GTensor, h: i64 ] -> GTensor
+        return gd.reshape[ x, vec i64 [] [ x.dims[ 0 ], x.dims[ 1 ], h,
+                                           x.dims[ 2 ] / h ] ]
+
+    func block [ x: GTensor, nm: string, st: i32 ] -> GTensor
+        a : GTensor gd.conv2d_st[ x, p[ '{nm}.body.0.weight' ], null,
+                                  st, 1, 1 ]
+        a = gd.silu[ gd.gnorm[ a, p[ '{nm}.body.1.weight' ],
+                               p[ '{nm}.body.1.bias' ], 8 ] ]
+        c : GTensor gd.conv2d_st[ a, p[ '{nm}.body.3.weight' ], null, 1,
+                                  1, 1 ]
+        c = gd.gnorm[ c, p[ '{nm}.body.4.weight' ],
+                      p[ '{nm}.body.4.bias' ], 8 ]
+        sw : GTensor p[ '{nm}.skip.weight' ]
+        s : GTensor [ (sw) ? gd.conv2d_st[ x, sw, null, st, 0, 0 ] : x ]
+        h : i64 [ c.dims[ 2 ] ]
+        return as4[ gd.silu[ gd.add[ as3[ c ], as3[ s ] ] ], h ]
+
+    # pictures [b, 1, 64, 64], 0 .. 1
+    func forward [ x: GTensor ] -> GFindOut
+        nb : i64 [ x.dims[ 0 ] ]
+        st : GTensor gd.conv2d_st[ normalized[ x, nb ],
+            p[ 'stem.0.weight' ], null, 1, 2, 2 ]
+        st = gd.silu[ gd.gnorm[ st, p[ 'stem.1.weight' ],
+                                p[ 'stem.1.bias' ], 8 ] ]
+        full : GTensor block[ st, 'full', 1 ]
+        half : GTensor block[ block[ full, 'at_half.0', 2 ],
+                              'at_half.1', 1 ]
+        quarter : GTensor block[ block[ half, 'at_quarter.0', 2 ],
+                                 'at_quarter.1', 1 ]
+        eighth : GTensor block[ block[ quarter, 'at_eighth.0', 2 ],
+                                'at_eighth.1', 1 ]
+        up : GTensor gd.up2[ gd.conv2d_st[ eighth,
+            p[ 'to_quarter.weight' ], p[ 'to_quarter.bias' ], 1, 0,
+            0 ] ]
+        hq : i64 [ quarter.dims[ 2 ] ]
+        up = block[ as4[ gd.add[ as3[ up ], as3[ quarter ] ], hq ],
+                    'refine_quarter', 1 ]
+        up = gd.up2[ gd.conv2d_st[ up, p[ 'to_half.weight' ],
+                                   p[ 'to_half.bias' ], 1, 0, 0 ] ]
+        hh : i64 [ half.dims[ 2 ] ]
+        feat : GTensor block[ as4[ gd.add[ as3[ up ], as3[ half ] ],
+                                   hh ], 'refine_half', 1 ]
+        heat : GTensor gd.conv2d_st[ feat, p[ 'heat.weight' ],
+                                     p[ 'heat.bias' ], 1, 0, 0 ]
+        cells : i64 [ hh * hh ]
+        scores : GTensor gd.reshape[ heat, vec i64 [] [ nb, cells ] ]
+        prob : GTensor gd.soft_t[ scores, p[ 'log_temp' ] ]
+        grid : vec f32 [ nb * cells * 2 ]
+        for [ b: i64 0, b < nb, b += 1 ]
+            for [ i: i64 0, i < cells, i += 1 ]
+                at : i64 [ (b * cells + i) * 2 ]
+                grid[ at ] = (f32[ i % hh ] + 0.5) / f32[ hh ]
+                grid[ at + 1 ] = (f32[ i / hh ] + 0.5) / f32[ hh ]
+        gt : GTensor gd.temp[ vec i64 [] [ nb, cells, 2 ] ]
+        gd.upload[ gt, grid ]
+        row : GTensor gd.reshape[ prob, vec i64 [] [ nb, 1, cells ] ]
+        pt : GTensor gd.bmm[ row, gt ]
+        nc : i64 [ feat.dims[ 1 ] ]
+        fm : GTensor gd.reshape[ feat, vec i64 [] [ nb, nc, cells ] ]
+        col : GTensor gd.reshape[ prob, vec i64 [] [ nb, cells, 1 ] ]
+        loc : GTensor gd.bmm[ fm, col ]
+        ne : i64 [ eighth.dims[ 1 ] ]
+        ea : i64 [ eighth.dims[ 2 ] * eighth.dims[ 3 ] ]
+        em : GTensor gd.reshape[ eighth, vec i64 [] [ nb * ne, ea ] ]
+        sc : GTensor gd.row_mean[ em, nb * ne ]
+        sc3 : GTensor gd.reshape[ sc, vec i64 [] [ nb, ne, 1 ] ]
+        both : GTensor gd.join[ sc3, loc ]
+        bv : GTensor gd.reshape[ both, vec i64 [] [ nb, ne + nc ] ]
+        hid : GTensor gd.silu[ gd.linear[ bv, p[ 'gap.0.weight' ],
+                                          p[ 'gap.0.bias' ] ] ]
+        gap : GTensor gd.sigmoid[ gd.linear[ hid, p[ 'gap.2.weight' ],
+                                             p[ 'gap.2.bias' ] ] ]
+        return GFindOut [ pt: pt, gap: gap, heat: scores ]
+
+    # train_eyes.py's find_loss, its three parts and their weights:
+    # the point (smooth L1, beta 0.01), the gap's log (beta 0.05,
+    # x 0.1), the heat map against a bump at the truth (x heat).
+    # y: x, y, gap a picture (shares of the picture)
+    func losses [ o: GFindOut, y: vec f32, heat_w: f32 ] -> vec GTensor
+        nb : i64 [ o.pt.dims[ 0 ] ]
+        side : i64 [ i64[ sqrt[ f64[ o.heat.dims[ 1 ] ] ] ] ]
+        ty : vec f32 [ nb * 2 ]
+        tg : vec f32 [ nb ]
+        bump : vec f32 [ nb * side * side ]
+        sigma : f64 [ 1.5 / f64[ side ] ]
+        for [ b: i64 0, b < nb, b += 1 ]
+            ty[ b * 2 ] = y[ b * 3 ]
+            ty[ b * 2 + 1 ] = y[ b * 3 + 1 ]
+            gv : f64 [ fmax[ f64[ y[ b * 3 + 2 ] ], 1.0e-4 ] ]
+            tg[ b ] = f32[ log[ gv ] ]
+            # the bump: a softmax of -d^2 / 2 sigma^2 over the cells
+            top : f64 [ 0.0 ]
+            ws : vec f64 [ side * side ]
+            for [ i: i64 0, i < side * side, i += 1 ]
+                cx : f64 [ (f64[ i % side ] + 0.5) / f64[ side ] ]
+                cy : f64 [ (f64[ i / side ] + 0.5) / f64[ side ] ]
+                dx : f64 [ cx - f64[ y[ b * 3 ] ] ]
+                dy : f64 [ cy - f64[ y[ b * 3 + 1 ] ] ]
+                ws[ i ] = exp[ -(dx * dx + dy * dy)
+                               / (2.0 * sigma * sigma) ]
+                top += ws[ i ]
+            for [ i: i64 0, i < side * side, i += 1 ]
+                bump[ b * side * side + i ] = f32[ ws[ i ] / top ]
+        tpt : GTensor gd.temp[ o.pt.dims ]
+        gd.upload[ tpt, ty ]
+        tgap : GTensor gd.temp[ o.gap.dims ]
+        gd.upload[ tgap, tg ]
+        tb : GTensor gd.temp[ o.heat.dims ]
+        gd.upload[ tb, bump ]
+        out : vec GTensor []
+        out.push[ gd.smooth_l1[ o.pt, tpt, 0.01 ] ]
+        out.push[ gd.smooth_l1[ gd.log_clamp[ o.gap, 1.0e-4 ], tgap,
+                                0.05 ] ]
+        out.push[ gd.soft_ce[ o.heat, tb ] ]
+        return out
+
+# train_gaze.py's GazeNet (dropout left out): each eye clip and face
+# clip to 64 numbers by its encoder, those and the 38 numbers
+# through a layer norm, 256 under ReLU, then the dot
+GNet GGazeNet
+    func encode [ x: GTensor, pre: string, train: bool ] -> GTensor
+        nb : i64 [ x.dims[ 0 ] ]
+        h : GTensor stages[ normalized[ x, nb ], pre, 3, train ]
+        f : GTensor gd.reshape[ h, vec i64 [] [ nb, h.count / nb ] ]
+        return gd.linear[ f, p[ '{pre}.22.weight' ],
+                          p[ '{pre}.22.bias' ] ]
+
+    # eyes [b, 4, 32, 32], faces [b, 2, 32, 32], aux [b, 38]
+    func forward [ eyes: GTensor, faces: GTensor, aux: GTensor,
+                   train: bool ] -> GTensor
+        nb : i64 [ eyes.dims[ 0 ] ]
+        ev : GTensor gd.reshape[ eyes, vec i64 [] [ nb * 4, 1,
+                                                    eyes.dims[ 2 ],
+                                                    eyes.dims[ 3 ] ] ]
+        fv : GTensor gd.reshape[ faces, vec i64 [] [ nb * 2, 1,
+                                                     faces.dims[ 2 ],
+                                                     faces.dims[ 3 ] ] ]
+        e : GTensor gd.reshape[ encode[ ev, 'eye', train ],
+                                vec i64 [] [ nb, 256, 1 ] ]
+        f : GTensor gd.reshape[ encode[ fv, 'face', train ],
+                                vec i64 [] [ nb, 128, 1 ] ]
+        na : i64 [ aux.dims[ 1 ] ]
+        a : GTensor gd.reshape[ aux, vec i64 [] [ nb, na, 1 ] ]
+        all : GTensor gd.join[ gd.join[ e, f ], a ]
+        n : GTensor gd.layer_norm[ all, p[ 'head.0.weight' ],
+                                   p[ 'head.0.bias' ] ]
+        nv : GTensor gd.reshape[ n, vec i64 [] [ nb, n.dims[ 1 ] ] ]
+        h : GTensor gd.leaky[ gd.linear[ nv, p[ 'head.1.weight' ],
+                                         p[ 'head.1.bias' ] ], 0.0 ]
+        return gd.linear[ h, p[ 'head.4.weight' ], p[ 'head.4.bias' ] ]
+
+    # its training loss: smooth L1 (beta 0.02) to the dots
+    func loss [ out: GTensor, y: GTensor ] -> GTensor
+        return gd.smooth_l1[ out, y, 0.02 ]
+
+# one tensor's worst gap to its golden file, a share of the file's
+# largest value (gradients run from 1e-6 to 1e+2 by layer)
+func hyper_gap [ got: vec f32, want: vec f32 ] -> f64
+    if [ got.count != want.count ] return 1.0e30
+    top : f64 [ 1.0e-12 ]
+    for [ v: f32 ] in want
+        if [ fabs[ f64[ v ] ] > top ] top = fabs[ f64[ v ] ]
+    return grad_worst[ got, want ] / top
+
+# a net's step against pytorch's (hyper_gold.py): its losses, every
+# weight's gradient by name, its running statistics after
+func hyper_check [ net: GNet, dir: string, tag: string,
+                   parts: vec GTensor, weights: vec f32 ] -> f64
+    gd : Grad net.gd
+    gd.backward_all[ parts, weights ]
+    gd.rn.finish[]
+    want : vec f32 grad_gold[ dir, '{tag}_loss' ]
+    worst : f64 [ 0.0 ]
+    for [ i: i64 0, i < parts.count, i += 1 ]
+        got : vec f32 gd.download[ parts[ i ] ]
+        e : f64 [ fabs[ f64[ got[ 0 ] ] - f64[ want[ i ] ] ]
+                  / fmax[ fabs[ f64[ want[ i ] ] ], 1.0e-12 ] ]
+        log '{tag} loss {i}: silver {got[ 0 ]}, pytorch {want[ i ]}'
+        if [ e > worst ] worst = e
+    nf : path '{dir}/{tag}.names'
+    tx : string nf.load[ typeid[ string ], null ]
+    names : vec string []
+    for [ nm: string ] in tx.split[ '\n' ]
+        if [ nm.count > 0 ] names.push[ nm ]
+    top : f64 [ 0.0 ]
+    for [ k: i64 0, k < names.count, k += 1 ]
+        for [ v: f32 ] in grad_gold[ dir, '{tag}_g{k}' ]
+            if [ fabs[ f64[ v ] ] > top ] top = fabs[ f64[ v ] ]
+    gw : f64 [ 0.0 ]
+    gn : string ''
+    zero : i64 [ 0 ]
+    # a weight whose true gradient is zero holds float noise on both
+    # sides: it must be near zero here too, a share of the largest
+    zw : f64 [ 0.0 ]
+    for [ k: i64 0, k < names.count, k += 1 ]
+        t : GTensor net.p[ names[ k ] ]
+        if [ !t || !t.gr ]
+            gw = 1.0e30
+            gn = names[ k ]
+            continue
+        got : vec f32 gd.download[ t.gr ]
+        if [ net.still*[ names[ k ] ] ]
+            zero += 1
+            for [ v: f32 ] in got
+                if [ fabs[ f64[ v ] ] / top > zw ]
+                    zw = fabs[ f64[ v ] ] / top
+            continue
+        e : f64 hyper_gap[ got, grad_gold[ dir, '{tag}_g{k}' ] ]
+        if [ e > gw ]
+            gw = e
+            gn = names[ k ]
+    log '{tag} the {zero} zero gradients: largest {zw} of the largest gradient'
+    if [ zw > 0.0001 ] gw = fmax[ gw, zw ]
+    log '{tag} the other {names.count - zero} gradients: worst {gw} of its own largest ({gn})'
+    if [ gw > worst ] worst = gw
+    if [ net.stats.count > 0 ]
+        rs : vec f32 []
+        for [ sn: string ] in net.stats
+            for [ v: f32 ] in gd.download[ net.p[ sn ] ]
+                rs.push[ v ]
+        re : f64 hyper_gap[ rs, grad_gold[ dir, '{tag}_rs' ] ]
+        log '{tag} running statistics: worst {re} of the largest'
+        if [ re > worst ] worst = re
+    return worst
+
+# the forward pass's outputs against pytorch's
+func hyper_out [ got: vec f32, dir: string, tag: string ] -> f64
+    e : f64 hyper_gap[ got, grad_gold[ dir, '{tag}_y' ] ]
+    log '{tag} outputs: worst {e} of the largest'
+    return e
+
+# hyperspace's three networks, one training step each, against
+# pytorch (python3 ai/tests/hyper_gold.py <dir>, then HYPER_GOLD=<dir>)
+expect func t_hyper_nets [] -> bool
+    ge : cstr [ getenv[ 'HYPER_GOLD' ] ]
+    if [ !ge ] return true
+    dir : string [ ge ]
+    vk : vk_context []
+    Au.hold[ vk ]
+    disp : Display [ vk: vk, backbuffer: true, width: 64, height: 64 ]
+    Au.hold[ disp ]
+    worst : vec f64 []
+
+    st : GStageNet [ vk: vk ]
+    st.load[ path '{dir}/stage.pt', true ]
+    st.gd.record = true
+    x : GTensor grad_load[ st.gd, dir, 'stage_x',
+                           vec i64 [] [ 4, 1, 64, 64 ], false ]
+    t : GTensor grad_load[ st.gd, dir, 'stage_t', vec i64 [] [ 4, 10 ],
+                           false ]
+    o : GTensor st.forward[ x, true ]
+    worst.push[ hyper_out[ st.gd.download[ o ], dir, 'stage' ] ]
+    worst.push[ hyper_check[ st, dir, 'stage',
+        vec GTensor [] [ st.loss[ o, t ] ], vec f32 [] [ 1.0 ] ] ]
+
+    fn : GFindNet [ vk: vk ]
+    fn.load[ path '{dir}/find.pt', true ]
+    fn.gd.record = true
+    fx : GTensor grad_load[ fn.gd, dir, 'find_x',
+                            vec i64 [] [ 3, 1, 64, 64 ], false ]
+    fo : GFindOut fn.forward[ fx ]
+    pts : vec f32 fn.gd.download[ fo.pt ]
+    gaps : vec f32 fn.gd.download[ fo.gap ]
+    three : vec f32 []
+    for [ b: i64 0, b < 3, b += 1 ]
+        three.push[ pts[ b * 2 ] ]
+        three.push[ pts[ b * 2 + 1 ] ]
+        three.push[ gaps[ b ] ]
+    worst.push[ hyper_out[ three, dir, 'find' ] ]
+    parts : vec GTensor fn.losses[ fo, grad_gold[ dir, 'find_t' ],
+                                   0.5 ]
+    worst.push[ hyper_check[ fn, dir, 'find', parts,
+                             vec f32 [] [ 1.0, 0.1, 0.5 ] ] ]
+
+    gz : GGazeNet [ vk: vk ]
+    gz.load[ path '{dir}/gaze.pt', true ]
+    gz.gd.record = true
+    e : GTensor grad_load[ gz.gd, dir, 'gaze_e',
+                           vec i64 [] [ 4, 4, 32, 32 ], false ]
+    f : GTensor grad_load[ gz.gd, dir, 'gaze_f',
+                           vec i64 [] [ 4, 2, 32, 32 ], false ]
+    a : GTensor grad_load[ gz.gd, dir, 'gaze_a', vec i64 [] [ 4, 38 ],
+                           false ]
+    d : GTensor grad_load[ gz.gd, dir, 'gaze_t', vec i64 [] [ 4, 2 ],
+                           false ]
+    go : GTensor gz.forward[ e, f, a, true ]
+    worst.push[ hyper_out[ gz.gd.download[ go ], dir, 'gaze' ] ]
+    worst.push[ hyper_check[ gz, dir, 'gaze',
+        vec GTensor [] [ gz.loss[ go, d ] ], vec f32 [] [ 1.0 ] ] ]
+
+    ok : bool [ true ]
+    for [ w: f64 ] in worst
+        if [ w > 0.0001 ] ok = false
+    return ok
+
+# the first step whose loss is 1% or more of the loss away from the
+# exact run's (n when none)
+func hyper_parts [ got: vec f32, want: vec f32 ] -> i64
+    for [ i: i64 0, i < got.count, i += 1 ]
+        e : f64 [ fabs[ f64[ got[ i ] ] - f64[ want[ i ] ] ]
+                  / fmax[ fabs[ f64[ want[ i ] ] ], 1.0e-12 ] ]
+        if [ e >= 0.01 ] return i + 1
+    return got.count
+
+# a run of steps against pytorch's in float64 (hyper_steps.py), and
+# pytorch's own float32 run beside it: true when silver keeps to the
+# exact run at least as long as pytorch's float32 does
+func hyper_track [ tag: string, dir: string, got: vec f32 ] -> bool
+    want : vec f32 grad_gold[ dir, 's_{tag}_loss' ]
+    near : vec f32 grad_gold[ dir, 's_{tag}_loss32' ]
+    n : i64 [ got.count ]
+    picks : vec i64 [] [ 0, 1, 4, 9, 19, 49, n / 2 - 1, n - 1 ]
+    for [ i: i64 ] in picks
+        log '{tag} step {i + 1}: silver {got[ i ]}, pytorch float64 {want[ i ]}, float32 {near[ i ]}'
+    ours : i64 hyper_parts[ got, want ]
+    theirs : i64 hyper_parts[ near, want ]
+    log '{tag}: 1% from the exact run at step {ours} (silver), {theirs} (pytorch float32), of {n}'
+    return ours >= theirs
+
+# the three nets trained some steps on fixed batches, by the scripts'
+# own optimizers and schedules, against pytorch step by step
+expect func t_hyper_steps [] -> bool
+    ge : cstr [ getenv[ 'HYPER_GOLD' ] ]
+    if [ !ge ] return true
+    dir : string [ ge ]
+    mk : path '{dir}/s_count.f32'
+    if [ !mk.exists[] ] return true
+    cnt : vec f32 grad_gold[ dir, 's_count' ]
+    n : i64 [ i64[ cnt[ 0 ] ] ]
+    nk : i64 [ i64[ cnt[ 1 ] ] ]
+    vk : vk_context []
+    Au.hold[ vk ]
+    disp : Display [ vk: vk, backbuffer: true, width: 64, height: 64 ]
+    Au.hold[ disp ]
+    ok : bool [ true ]
+
+    st : GStageNet [ vk: vk ]
+    st.load[ path '{dir}/s_stage.pt', true ]
+    st.gd.record = true
+    got : vec f32 []
+    for [ s: i64 0, s < n, s += 1 ]
+        st.begin_step[]
+        k : i64 [ s % nk ]
+        x : GTensor grad_load[ st.gd, dir, 's_stage_x{k}',
+                               vec i64 [] [ 8, 1, 64, 64 ], false ]
+        t : GTensor grad_load[ st.gd, dir, 's_stage_t{k}',
+                               vec i64 [] [ 8, 10 ], false ]
+        loss : GTensor st.loss[ st.forward[ x, true ], t ]
+        st.gd.backward_all[ vec GTensor [] [ loss ],
+                            vec f32 [] [ 1.0 ] ]
+        got.push[ st.gd.download[ loss ][ 0 ] ]
+        sc : vec f64 one_cycle[ s, n, 0.02 ]
+        st.adamw_step[ f32[ sc[ 0 ] ], f32[ sc[ 1 ] ], 0.01, 0.0 ]
+    if [ !hyper_track[ 'stage', dir, got ] ] ok = false
+
+    fn : GFindNet [ vk: vk ]
+    fn.load[ path '{dir}/s_find.pt', true ]
+    fn.gd.record = true
+    got = vec f32 []
+    for [ s: i64 0, s < n, s += 1 ]
+        fn.begin_step[]
+        k : i64 [ s % nk ]
+        x : GTensor grad_load[ fn.gd, dir, 's_find_x{k}',
+                               vec i64 [] [ 6, 1, 64, 64 ], false ]
+        parts : vec GTensor fn.losses[ fn.forward[ x ],
+            grad_gold[ dir, 's_find_t{k}' ], 0.5 ]
+        wts : vec f32 [] [ 1.0, 0.1, 0.5 ]
+        fn.gd.backward_all[ parts, wts ]
+        tot : f32 [ 0.0 ]
+        for [ i: i64 0, i < 3, i += 1 ]
+            tot += fn.gd.download[ parts[ i ] ][ 0 ] * wts[ i ]
+        got.push[ tot ]
+        sc : vec f64 one_cycle[ s, n, 0.02 ]
+        fn.adamw_step[ f32[ sc[ 0 ] ], f32[ sc[ 1 ] ], 0.01, 0.0 ]
+    if [ !hyper_track[ 'find', dir, got ] ] ok = false
+
+    gz : GGazeNet [ vk: vk ]
+    gz.load[ path '{dir}/s_gaze.pt', true ]
+    gz.gd.record = true
+    got = vec f32 []
+    for [ s: i64 0, s < n, s += 1 ]
+        gz.begin_step[]
+        k : i64 [ s % nk ]
+        e : GTensor grad_load[ gz.gd, dir, 's_gaze_e{k}',
+                               vec i64 [] [ 8, 4, 32, 32 ], false ]
+        f : GTensor grad_load[ gz.gd, dir, 's_gaze_f{k}',
+                               vec i64 [] [ 8, 2, 32, 32 ], false ]
+        a : GTensor grad_load[ gz.gd, dir, 's_gaze_a{k}',
+                               vec i64 [] [ 8, 38 ], false ]
+        d : GTensor grad_load[ gz.gd, dir, 's_gaze_t{k}',
+                               vec i64 [] [ 8, 2 ], false ]
+        loss : GTensor gz.loss[ gz.forward[ e, f, a, true ], d ]
+        gz.gd.backward_all[ vec GTensor [] [ loss ],
+                            vec f32 [] [ 1.0 ] ]
+        got.push[ gz.gd.download[ loss ][ 0 ] ]
+        lr : f64 cosine_rate[ s, n, 0.0003 ]
+        gz.adamw_step[ f32[ lr ], 0.9, 0.01, 1.0 ]
+    if [ !hyper_track[ 'gaze', dir, got ] ] ok = false
+
+    return ok

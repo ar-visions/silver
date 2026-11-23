@@ -1557,6 +1557,14 @@ func orbiter.system_line [ line: string ]
     if [ verb == 'hide' ]
         over_hide[ false ]
         return
+    # job <name> | job stop <name>: a line the module declared (export
+    # jobs), run as the user outside its view; never any other line
+    if [ verb == 'job' && ws.count >= 4 ]
+        stop : bool [ ws[ 3 ] == 'stop' && ws.count >= 5 ]
+        jn : string [ (stop) ? ws[ 4 ] : ws[ 3 ] ]
+        if [ stop ] job_stop[ mod, jn ]
+        el job_start[ mod, jn ]
+        return
     if [ verb == 'windows' ]
         rs : string ''
         for [ i: i32 0, i < editor_slots.count, i += 1 ]
@@ -1632,6 +1640,93 @@ func orbiter.system_line [ line: string ]
     over_hide[ false ]
 
 # a line back to the app that asked, on its own socket
+# every quoted word of an export's line ('key: [ 'a', 'b' ]')
+func source_words [ tx: string, key: string ] -> vec string
+    words : vec string []
+    k : '{key} '
+    at : i32 [ -1 ]
+    if [ tx.starts_with[ k ] ] at = 0
+    el
+        n_ : i32 [ tx.index_of[ '\n{k}' ] ]
+        if [ n_ >= 0 ] at = n_ + 1
+    if [ at < 0 ] return words
+    rest : tx.mid[ at + k.count, tx.count - at - k.count ]
+    e_ : i32 [ rest.index_of[ '\n' ] ]
+    v : string [ (e_ >= 0) ? rest.mid[ 0, e_ ] : rest ]
+    # the split's odd pieces are the quoted ones
+    pieces : vec string v.split[ "'" ]
+    for [ i: i32 1, i < pieces.count, i += 2 ]
+        words.push[ pieces[ i ] ]
+    return words
+
+# a module's job by its name: its line from its export (jobs:
+# ['name the line', ..]), '' none
+func orbiter.job_line [ mod: string, jn: string ] -> string
+    f : path '{install_root[]}/export/silver-{mod}.agi'
+    tx : string f.load[ typeid[ string ], null ]
+    if [ !tx ] return ''
+    for [ w: string ] in source_words[ tx, 'jobs:' ]
+        sp : i32 [ i32[ w.index_of[ ' ' ] ] ]
+        if [ sp > 0 && w.mid[ 0, sp ] == jn ]
+            return w.mid[ sp + 1, w.count - sp - 1 ]
+    return ''
+
+# its jobs' folder, in the app's own home (its view sees it)
+func orbiter.job_dir [ mod: string ] -> path
+    d : path '{install_root[]}/home/{mod}/.local/state/{mod}/jobs'
+    d.make_dir[]
+    return d
+
+# a job run in its module's folder as the user, in its own process
+# group: its words to <name>.log, its pid, its exit code at the end
+func orbiter.job_start [ mod: string, jn: string ]
+    ln : string job_line[ mod, jn ]
+    if [ ln.count == 0 ]
+        log 'orbiter: {mod} has no job {jn}'
+        return
+    d : path job_dir[ mod ]
+    # the module's own folder: its lines run from there
+    ag : path module_ag[ mod ]
+    if [ !ag ] return
+    root : string '{ag.parent_dir[]}'
+    sh : string {
+        echo $$ > "{d}/{jn}.pid"
+        cd "{root}"
+        {ln} > "{d}/{jn}.log" 2>&1
+        echo $? > "{d}/{jn}.done"
+        mkdir -p "{d}/runs"
+        cp "{d}/{jn}.log" "{d}/runs/{jn}-$(date +%Y-%m-%d-%H%M).log"
+    }
+    sf : path '{d}/{jn}.sh'
+    # one run at a time: a doubled click starts it once
+    pf : path '{d}/{jn}.pid'
+    was : string pf.load[ typeid[ string ], null ]
+    if [ was && was.trim[].count > 0 ]
+        alive : command { kill -0 {was.trim[]} 2>/dev/null }
+        if [ alive.exec[ false ] == 0 ] return
+    sf.save[ '{sh.trim[]}\n', null ]
+    done_file : path '{d}/{jn}.done'
+    if [ done_file.exists[] ] done_file.remove[]
+    run : command { setsid sh "{sf}" > /dev/null 2>&1 & }
+    run.exec[ false ]
+    log 'orbiter: {mod} job {jn} started: {ln}'
+
+func orbiter.job_stop [ mod: string, jn: string ]
+    d : path job_dir[ mod ]
+    # its whole process group: setsid made the script's pid the
+    # group's
+    pf : path '{d}/{jn}.pid'
+    pid : string pf.load[ typeid[ string ], null ]
+    if [ !pid || pid.trim[].count == 0 ] return
+    run : command { kill -TERM -{pid.trim[]} 2>/dev/null }
+    if [ run.exec[ false ] != 0 ] return
+    # the log says it ended so, and its state reads stopped
+    lf : path '{d}/{jn}.log'
+    was : string lf.load[ typeid[ string ], null ]
+    lf.save[ '{(was) ? was : ''}stopped\n', null ]
+    df : path '{d}/{jn}.done'
+    df.save[ 'stopped\n', null ]
+
 func orbiter.sys_reply [ who: string, ln: string ]
     l2 : string '{ln}\n'
     agent_sock_send[ who.chars, l2.chars ]

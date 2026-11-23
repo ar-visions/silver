@@ -1,0 +1,998 @@
+extend ai
+
+# hyperspace's training pictures, made here as train_eyes.py makes
+# them: a crop of a face frame (find's, target's, the eye's), its
+# painting, its labels. Pictures are rows of one grey channel
+
+# train_eyes.py's sizes and limits
+HY_FRAME : i64 [ 256 ]
+# a face's numbers: both outer corners, both pupils, the face's
+# middle, its size, and 1 for his own frames (never painted)
+HY_ROW   : i64 [ 12 ]
+HY_FIND  : i64 [ 64 ]
+HY_TURN  : f64 [ 0.2617993877991494 ]
+HY_BEND  : f64 [ 0.3 ]
+HY_SIDE  : i64 [ 64 ]
+HY_EYE   : i64 [ 64 ]
+HY_FACE  : i64 [ 128 ]
+HY_SPAN  : f64 [ 2.3 ]
+HY_EYE_SPAN : f64 [ 0.7 ]
+HY_EYE_TURN : f64 [ 0.10471975511965977 ]
+
+# the random draws: replayed from pytorch's own (a test), else made
+# here. Each draw is a count of numbers, in torch's order
+class HyDraws
+    public vals   : vec f64
+    public counts : vec i64
+    public at     : i64
+    public next   : i64
+    public replay : bool
+    public bad    : bool
+    # made here: a stream of its own (xorshift64*), so threads never
+    # share one; 0 takes a seed from the shared generator once
+    public state  : u64
+
+    func next_u [] -> u64
+        if [ state == 0 ] state = rng_next[] | 1
+        state = state ^ (state >> 12)
+        state = state ^ (state << 25)
+        state = state ^ (state >> 27)
+        return state * 2685821657736338717
+
+    func u01 [] -> f64
+        return f64[ next_u[] >> 11 ] / 9007199254740992.0
+
+    func load [ dir: string ] -> bool
+        return load_as[ dir, 'draws' ]
+
+    func load_as [ dir: string, name: string ] -> bool
+        fp : @FILE [ fopen[ '{dir}/{name}.f64', 'rb' ] ]
+        if [ !fp ] return false
+        fseek[ fp, 0, SEEK_END ]
+        n : i64 [ i64[ ftell[ fp ] ] / 8 ]
+        rewind[ fp ]
+        vals = vec f64 [ n ]
+        fread[ @vals[ 0 ], 8, n, fp ]
+        fclose[ fp ]
+        cf : @FILE [ fopen[ '{dir}/{name}.n', 'rb' ] ]
+        if [ !cf ] return false
+        fseek[ cf, 0, SEEK_END ]
+        k : i64 [ i64[ ftell[ cf ] ] / 8 ]
+        rewind[ cf ]
+        counts = vec i64 [ k ]
+        fread[ @counts[ 0 ], 8, k, cf ]
+        fclose[ cf ]
+        replay = true
+        return true
+
+    # the next recorded draw, which must hold n numbers
+    func take [ n: i64 ] -> vec f64
+        got : vec f64 [ n ]
+        if [ next >= counts.count || counts[ next ] != n ]
+            if [ !bad ]
+                had : i64 [ (next < counts.count) ? counts[ next ]
+                            : -1 ]
+                log 'draw {next}: asked for {n}, pytorch drew {had}'
+            bad = true
+            return got
+        for [ i: i64 0, i < n, i += 1 ]
+            got[ i ] = vals[ at + i ]
+        at += n
+        next += 1
+        return got
+
+    func uniform [ n: i64, lo: f64, hi: f64 ] -> vec f64
+        if [ replay ] return take[ n ]
+        got : vec f64 [ n ]
+        for [ i: i64 0, i < n, i += 1 ]
+            got[ i ] = lo + (hi - lo) * u01[]
+        return got
+
+    func normal [ n: i64 ] -> vec f64
+        if [ replay ] return take[ n ]
+        got : vec f64 [ n ]
+        for [ i: i64 0, i < n, i += 1 ]
+            r : f64 [ sqrt[ -2.0 * log1p[ -u01[] ] ] ]
+            got[ i ] = r * cos[ 6.283185307179586 * u01[] ]
+        return got
+
+    # 0 .. n - 1 in a random order
+    func perm [ n: i64 ] -> vec f64
+        if [ replay ] return take[ n ]
+        got : vec f64 [ n ]
+        for [ i: i64 0, i < n, i += 1 ]
+            got[ i ] = f64[ i ]
+        for [ i: i64 n - 1, i > 0, i -= 1 ]
+            j : i64 [ i64[ u01[] * f64[ i + 1 ] ] ]
+            t : f64 got[ i ]
+            got[ i ] = got[ j ]
+            got[ j ] = t
+        return got
+
+    # whole numbers lo .. hi - 1
+    func ints [ n: i64, lo: i64, hi: i64 ] -> vec f64
+        if [ replay ] return take[ n ]
+        got : vec f64 [ n ]
+        for [ i: i64 0, i < n, i += 1 ]
+            got[ i ] = f64[ lo + i64[ u01[] * f64[ hi - lo ] ] ]
+        return got
+
+# a batch of crops and their points (HY_ROW a crop)
+class HyCrop
+    public n   : i64
+    public s   : i64
+    public win : vec f32
+    public q   : vec f32
+
+# the frames as 0 .. 1, each mirrored where its draw says, and its
+# points with it (flip)
+class HyFrames
+    public n  : i64
+    public s  : i64
+    public x  : vec f32
+    public p  : vec f32
+
+func hy_frames [ bytes: vec u8, pts: vec f32, n: i64, s: i64,
+                 flip: bool, dr: HyDraws ] -> HyFrames
+    f : HyFrames [ n: n, s: s ]
+    f.x = vec f32 [ n * s * s ]
+    f.p = vec f32 [ n * HY_ROW ]
+    m : vec f64 [ n ]
+    if [ flip ] m = dr.uniform[ n, 0.0, 1.0 ]
+    for [ b: i64 0, b < n, b += 1 ]
+        turn : bool [ flip && m[ b ] < 0.5 ]
+        base : i64 [ b * s * s ]
+        for [ i: i64 0, i < s, i += 1 ]
+            for [ j: i64 0, j < s, j += 1 ]
+                from : i64 [ (turn) ? s - 1 - j : j ]
+                f.x[ base + i * s + j ] = f32[ bytes[ base + i * s
+                    + from ] ] / 255.0
+        for [ k: i64 0, k < HY_ROW, k += 1 ]
+            f.p[ b * HY_ROW + k ] = pts[ b * HY_ROW + k ]
+        if [ !turn ] continue
+        for [ k: i64 0, k < 5, k += 1 ]
+            f.p[ b * HY_ROW + k * 2 ] = 1.0 - pts[ b * HY_ROW + k * 2 ]
+        # the two eyes trade places: corners, then pupils
+        for [ k: i64 0, k < 2, k += 1 ]
+            for [ c: i64 0, c < 2, c += 1 ]
+                at : i64 [ b * HY_ROW + k * 4 + c ]
+                v : f32 f.p[ at ]
+                f.p[ at ] = f.p[ at + 2 ]
+                f.p[ at + 2 ] = v
+    return f
+
+# torch.gradient along rows (dy) or columns (dx) of an out x out
+# field: the middle by halves, each edge by its one neighbour
+func hy_slope [ f: vec f32, base: i64, out: i64, i: i64, j: i64,
+                down: bool ] -> f64
+    k : i64 [ (down) ? i : j ]
+    step : i64 [ (down) ? out : 1 ]
+    at : i64 [ base + i * out + j ]
+    if [ k == 0 ] return f64[ f[ at + step ] ] - f64[ f[ at ] ]
+    if [ k == out - 1 ] return f64[ f[ at ] ] - f64[ f[ at - step ] ]
+    return (f64[ f[ at + step ] ] - f64[ f[ at - step ] ]) / 2.0
+
+# a smooth bend of each crop: how far each output pixel's place moves
+# (x then y, in the crop's -1 .. 1), at most `most`, never folded
+func hy_bend_field [ b: i64, out: i64, most: f64, dr: HyDraws ]
+        -> vec f32
+    cells : i64 [ out * out ]
+    phi : vec f32 [ b * cells ]
+    many : vec f64 dr.ints[ b, 3, 9 ]
+    for [ k: i64 0, k < 8, k += 1 ]
+        mx : vec f64 dr.uniform[ b, -1.0, 1.0 ]
+        my : vec f64 dr.uniform[ b, -1.0, 1.0 ]
+        sg : vec f64 dr.uniform[ b, 0.15, 0.5 ]
+        am : vec f64 dr.uniform[ b, -1.0, 1.0 ]
+        for [ n: i64 0, n < b, n += 1 ]
+            if [ f64[ k ] >= many[ n ] ] continue
+            two : f64 [ 2.0 * sg[ n ] * sg[ n ] ]
+            for [ i: i64 0, i < out, i += 1 ]
+                gy : f64 [ -1.0 + 2.0 * f64[ i ] / f64[ out - 1 ] ]
+                for [ j: i64 0, j < out, j += 1 ]
+                    gx : f64 [ -1.0 + 2.0 * f64[ j ] / f64[ out - 1 ] ]
+                    e : f64 [ ((gx - mx[ n ]) * (gx - mx[ n ])
+                        + (gy - my[ n ]) * (gy - my[ n ])) / two ]
+                    at : i64 [ n * cells + i * out + j ]
+                    phi[ at ] += am[ n ] * exp[ -e ]
+    d : vec f32 [ b * 2 * cells ]
+    for [ n: i64 0, n < b, n += 1 ]
+        for [ i: i64 0, i < out, i += 1 ]
+            for [ j: i64 0, j < out, j += 1 ]
+                at : i64 [ (n * 2) * cells + i * out + j ]
+                d[ at ] = hy_slope[ phi, n * cells, out, i, j, false ]
+                d[ at + cells ] = hy_slope[ phi, n * cells, out, i, j,
+                    true ]
+    m : vec f64 dr.uniform[ b, 0.3, 1.0 ]
+    step : f64 [ 2.0 / f64[ out - 1 ] ]
+    for [ n: i64 0, n < b, n += 1 ]
+        peak : f64 [ 1.0e-6 ]
+        for [ c: i64 0, c < 2 * cells, c += 1 ]
+            peak = fmax[ peak, fabs[ f64[ d[ n * 2 * cells + c ] ] ] ]
+        for [ c: i64 0, c < 2 * cells, c += 1 ]
+            at : i64 [ n * 2 * cells + c ]
+            d[ at ] = f64[ d[ at ] ] / peak * m[ n ] * most
+        steep : f64 [ 1.0e-6 ]
+        dx : i64 [ n * 2 * cells ]
+        dy : i64 [ dx + cells ]
+        for [ i: i64 0, i < out, i += 1 ]
+            for [ j: i64 0, j < out, j += 1 ]
+                ga : f64 hy_slope[ d, dx, out, i, j, false ]
+                gb : f64 hy_slope[ d, dy, out, i, j, true ]
+                gc : f64 hy_slope[ d, dx, out, i, j, true ]
+                gd : f64 hy_slope[ d, dy, out, i, j, false ]
+                most : f64 [ fmax[ fmax[ fabs[ ga ], fabs[ gb ] ],
+                                   fmax[ fabs[ gc ], fabs[ gd ] ] ] ]
+                steep = fmax[ steep, most / step ]
+        k : f64 [ fmin[ 0.7 / steep, 1.0 ] ]
+        for [ c: i64 0, c < 2 * cells, c += 1 ]
+            at : i64 [ n * 2 * cells + c ]
+            d[ at ] = f64[ d[ at ] ] * k
+    return d
+
+# one channel of d at (x, y) in -1 .. 1, corners on the pixels'
+# middles (grid_sample, align_corners), zero past the edge
+func hy_corner_sample [ d: vec f32, base: i64, out: i64, x: f64,
+                        y: f64 ] -> f64
+    ix : f64 [ (x + 1.0) / 2.0 * f64[ out - 1 ] ]
+    iy : f64 [ (y + 1.0) / 2.0 * f64[ out - 1 ] ]
+    return hy_bilinear[ d, base, out, ix, iy ]
+
+# bilinear at a pixel place, zero past the edge
+func hy_bilinear [ v: vec f32, base: i64, s: i64, ix: f64,
+                   iy: f64 ] -> f64
+    x0 : f64 [ floor[ ix ] ]
+    y0 : f64 [ floor[ iy ] ]
+    wx : f64 [ ix - x0 ]
+    wy : f64 [ iy - y0 ]
+    sum : f64 [ 0.0 ]
+    for [ c: i64 0, c < 4, c += 1 ]
+        cx : i64 [ i64[ x0 ] + (c & 1) ]
+        cy : i64 [ i64[ y0 ] + (c >> 1) ]
+        if [ cx < 0 || cy < 0 || cx >= s || cy >= s ] continue
+        w : f64 [ ((c & 1) ? wx : 1.0 - wx)
+                  * ((c >> 1) ? wy : 1.0 - wy) ]
+        sum += w * f64[ v[ base + cy * s + cx ] ]
+    return sum
+
+# the share of the bilinear weight inside the picture (grid_sample
+# of ones)
+func hy_inside [ s: i64, ix: f64, iy: f64 ] -> f64
+    x0 : f64 [ floor[ ix ] ]
+    y0 : f64 [ floor[ iy ] ]
+    wx : f64 [ ix - x0 ]
+    wy : f64 [ iy - y0 ]
+    sum : f64 [ 0.0 ]
+    for [ c: i64 0, c < 4, c += 1 ]
+        cx : i64 [ i64[ x0 ] + (c & 1) ]
+        cy : i64 [ i64[ y0 ] + (c >> 1) ]
+        if [ cx < 0 || cy < 0 || cx >= s || cy >= s ] continue
+        sum += ((c & 1) ? wx : 1.0 - wx) * ((c >> 1) ? wy : 1.0 - wy)
+    return sum
+
+# where a point of the plain crop lands in the bent one: o with
+# o + d(o) the point, found by stepping
+func hy_bend_point [ d: vec f32, n: i64, out: i64, x: f64,
+                     y: f64 ] -> vec f64
+    cells : i64 [ out * out ]
+    tx : f64 [ x * 2.0 - 1.0 ]
+    ty : f64 [ y * 2.0 - 1.0 ]
+    ox : f64 tx
+    oy : f64 ty
+    for [ k: i64 0, k < 8, k += 1 ]
+        ax : f64 hy_corner_sample[ d, n * 2 * cells, out, ox, oy ]
+        ay : f64 hy_corner_sample[ d, (n * 2 + 1) * cells, out, ox, oy ]
+        ox = tx - ax
+        oy = ty - ay
+    return vec f64 [] [ (ox + 1.0) / 2.0, (oy + 1.0) / 2.0 ]
+
+# pytorch's cubic weights (A -0.75) for the four taps round t
+func hy_cubic [ t: f64 ] -> vec f64
+    a : f64 [ -0.75 ]
+    near : f64 [ 1.0 - t ]
+    one : f64 [ ((a + 2.0) * t - (a + 3.0)) * t * t + 1.0 ]
+    two : f64 [ ((a + 2.0) * near - (a + 3.0)) * near * near + 1.0 ]
+    u : f64 [ t + 1.0 ]
+    v : f64 [ 2.0 - t ]
+    return vec f64 [] [ ((a * u - 5.0 * a) * u + 8.0 * a) * u - 4.0 * a,
+        one, two, ((a * v - 5.0 * a) * v + 8.0 * a) * v - 4.0 * a ]
+
+# each output's four taps along one axis (s to out): the source
+# places (held to the edge) and pytorch's cubic weights (A -0.75)
+class HyCubicTaps
+    public at : vec i64
+    public wt : vec f64
+
+func hy_cubic_taps [ s: i64, out: i64 ] -> HyCubicTaps
+    t : HyCubicTaps [ at: vec i64 [ out * 4 ], wt: vec f64 [ out * 4 ] ]
+    scale : f64 [ f64[ s ] / f64[ out ] ]
+    for [ o: i64 0, o < out, o += 1 ]
+        real : f64 [ scale * (f64[ o ] + 0.5) - 0.5 ]
+        lo : i64 [ i64[ floor[ real ] ] ]
+        w : vec f64 hy_cubic[ real - f64[ lo ] ]
+        for [ c: i64 0, c < 4, c += 1 ]
+            t.at[ o * 4 + c ] = min[ max[ lo - 1 + c, 0 ], s - 1 ]
+            t.wt[ o * 4 + c ] = w[ c ]
+    return t
+
+# a small grid (s x s) to out x out, bicubic, the corners on the
+# pixels' edges (interpolate, align_corners false): across each
+# source row, then down
+func hy_bicubic [ g: vec f32, base: i64, s: i64, out: i64 ]
+        -> vec f32
+    t : HyCubicTaps hy_cubic_taps[ s, out ]
+    rows : vec f64 [ s * out ]
+    for [ y: i64 0, y < s, y += 1 ]
+        for [ j: i64 0, j < out, j += 1 ]
+            sum : f64 [ 0.0 ]
+            for [ c: i64 0, c < 4, c += 1 ]
+                sum += t.wt[ j * 4 + c ]
+                    * f64[ g[ base + y * s + t.at[ j * 4 + c ] ] ]
+            rows[ y * out + j ] = sum
+    up : vec f32 [ out * out ]
+    for [ i: i64 0, i < out, i += 1 ]
+        for [ j: i64 0, j < out, j += 1 ]
+            sum : f64 [ 0.0 ]
+            for [ a: i64 0, a < 4, a += 1 ]
+                sum += t.wt[ i * 4 + a ]
+                    * rows[ t.at[ i * 4 + a ] * out + j ]
+            up[ i * out + j ] = sum
+    return up
+
+# a crop of each frame: its middle (cx, cy), its width (side), its
+# roll, out pixels a side, bent by at most `bend`; past the frame a
+# background of blotches and grain. The points carried with it
+func hy_window [ f: HyFrames, cx: vec f64, cy: vec f64,
+                 side: vec f64, roll: vec f64, out: i64, bend: f64,
+                 dr: HyDraws ] -> HyCrop
+    b : i64 f.n
+    s : i64 f.s
+    cells : i64 [ out * out ]
+    r : HyCrop [ n: b, s: out ]
+    r.win = vec f32 [ b * cells ]
+    r.q = vec f32 [ b * HY_ROW ]
+    d : vec f32 []
+    if [ bend > 0.0 ] d = hy_bend_field[ b, out, bend, dr ]
+    valid : vec f32 [ b * cells ]
+    for [ n: i64 0, n < b, n += 1 ]
+        c : f64 [ cos[ roll[ n ] ] ]
+        sn : f64 [ sin[ roll[ n ] ] ]
+        for [ i: i64 0, i < out, i += 1 ]
+            for [ j: i64 0, j < out, j += 1 ]
+                mx : f64 [ (2.0 * f64[ j ] + 1.0) / f64[ out ] - 1.0 ]
+                my : f64 [ (2.0 * f64[ i ] + 1.0) / f64[ out ] - 1.0 ]
+                if [ bend > 0.0 ]
+                    mx += f64[ d[ n * 2 * cells + i * out + j ] ]
+                    my += f64[ d[ (n * 2 + 1) * cells + i * out + j ] ]
+                gx : f64 [ side[ n ] * c * mx - side[ n ] * sn * my
+                           + cx[ n ] * 2.0 - 1.0 ]
+                gy : f64 [ side[ n ] * sn * mx + side[ n ] * c * my
+                           + cy[ n ] * 2.0 - 1.0 ]
+                ix : f64 [ ((gx + 1.0) * f64[ s ] - 1.0) / 2.0 ]
+                iy : f64 [ ((gy + 1.0) * f64[ s ] - 1.0) / 2.0 ]
+                at : i64 [ n * cells + i * out + j ]
+                r.win[ at ] = hy_bilinear[ f.x, n * s * s, s, ix, iy ]
+                valid[ at ] = hy_inside[ s, ix, iy ]
+        for [ k: i64 0, k < 5, k += 1 ]
+            dx : f64 [ f64[ f.p[ n * HY_ROW + k * 2 ] ] - cx[ n ] ]
+            dy : f64 [ f64[ f.p[ n * HY_ROW + k * 2 + 1 ] ] - cy[ n ] ]
+            qx : f64 [ (c * dx + sn * dy) / side[ n ] + 0.5 ]
+            qy : f64 [ (-sn * dx + c * dy) / side[ n ] + 0.5 ]
+            if [ bend > 0.0 ]
+                o : vec f64 hy_bend_point[ d, n, out, qx, qy ]
+                qx = o[ 0 ]
+                qy = o[ 1 ]
+            r.q[ n * HY_ROW + k * 2 ] = qx
+            r.q[ n * HY_ROW + k * 2 + 1 ] = qy
+        w : i64 [ n * HY_ROW ]
+        r.q[ w + 10 ] = f64[ f.p[ w + 10 ] ] / side[ n ]
+        r.q[ w + 11 ] = f.p[ w + 11 ]
+    hy_backdrop[ r, valid, dr ]
+    return r
+
+# where the crop ran past the frame: a background of smooth blotches
+# and grain at a random level, new each time
+func hy_backdrop [ r: HyCrop, valid: vec f32, dr: HyDraws ]
+    b : i64 r.n
+    out : i64 r.s
+    cells : i64 [ out * out ]
+    lv : vec f64 dr.uniform[ b, 0.0, 0.45 ]
+    blots : vec f64 dr.uniform[ b * 36, 0.0, 1.0 ]
+    grain : vec f64 dr.normal[ b * cells ]
+    small : vec f32 [ b * 36 ]
+    for [ k: i64 0, k < b * 36, k += 1 ]
+        small[ k ] = blots[ k ]
+    for [ n: i64 0, n < b, n += 1 ]
+        blot : vec f32 hy_bicubic[ small, n * 36, 6, out ]
+        for [ c: i64 0, c < cells, c += 1 ]
+            at : i64 [ n * cells + c ]
+            if [ valid[ at ] > 0.5 ] continue
+            v : f64 [ lv[ n ] * (0.4 + f64[ blot[ c ] ])
+                      + grain[ at ] * 0.015 ]
+            r.win[ at ] = fmin[ fmax[ v, 0.0 ], 1.0 ]
+
+# find's pictures and its labels: the outer corners' midpoint and
+# their distance, in the crop's shares (find_batch, before painting)
+func hy_find_crop [ bytes: vec u8, pts: vec f32, n: i64, aug: bool,
+                    dr: HyDraws ] -> HyCrop
+    f : HyFrames hy_frames[ bytes, pts, n, HY_FRAME, aug, dr ]
+    b : i64 n
+    zoom : vec f64 dr.uniform[ b, -1.1086626245216111,
+                               0.9162907318741551 ]
+    roll : vec f64 [ b ]
+    if [ aug ] roll = dr.uniform[ b, -HY_TURN, HY_TURN ]
+    side : vec f64 [ b ]
+    wx : vec f64 [ b ]
+    wy : vec f64 [ b ]
+    lo_x : vec f64 [ b ]
+    hi_x : vec f64 [ b ]
+    lo_y : vec f64 [ b ]
+    hi_y : vec f64 [ b ]
+    reach : vec f64 [ b ]
+    for [ k: i64 0, k < b, k += 1 ]
+        p : i64 [ k * HY_ROW ]
+        ws : f64 [ f64[ f.p[ p + 10 ] ]
+                   / ((aug) ? exp[ zoom[ k ] ] : 1.0 / 1.8) ]
+        ex0 : f64 [ fmin[ f64[ f.p[ p ] ], f64[ f.p[ p + 2 ] ] ] ]
+        ex1 : f64 [ fmax[ f64[ f.p[ p ] ], f64[ f.p[ p + 2 ] ] ] ]
+        ey0 : f64 [ fmin[ f64[ f.p[ p + 1 ] ], f64[ f.p[ p + 3 ] ] ] ]
+        ey1 : f64 [ fmax[ f64[ f.p[ p + 1 ] ], f64[ f.p[ p + 3 ] ] ] ]
+        ws = fmax[ ws, fmax[ ex1 - ex0, ey1 - ey0 ] / 0.8 ]
+        reach[ k ] = fabs[ cos[ roll[ k ] ] ] + fabs[ sin[ roll[ k ] ] ]
+        ws = fmin[ ws, 1.0 / reach[ k ] ]
+        e : f64 [ ws * reach[ k ] / 2.0 ]
+        h : f64 [ ws * 0.425 ]
+        lo_x[ k ] = fmax[ ex1 - h, e ]
+        hi_x[ k ] = fmax[ fmin[ ex0 + h, 1.0 - e ], lo_x[ k ] ]
+        lo_y[ k ] = fmax[ ey1 - h, e ]
+        hi_y[ k ] = fmax[ fmin[ ey0 + h, 1.0 - e ], lo_y[ k ] ]
+        side[ k ] = ws
+    t : vec f64 [ b ]
+    u : vec f64 [ b ]
+    if [ aug ]
+        t = dr.uniform[ b, 0.0, 1.0 ]
+        u = dr.uniform[ b, 0.0, 1.0 ]
+    for [ k: i64 0, k < b, k += 1 ]
+        if [ !aug ]
+            t[ k ] = 0.5
+            u[ k ] = 0.5
+        e : f64 [ side[ k ] * reach[ k ] / 2.0 ]
+        x : f64 [ lo_x[ k ] + (hi_x[ k ] - lo_x[ k ]) * t[ k ] ]
+        y : f64 [ lo_y[ k ] + (hi_y[ k ] - lo_y[ k ]) * u[ k ] ]
+        wx[ k ] = fmin[ fmax[ x, e ], 1.0 - e ]
+        wy[ k ] = fmin[ fmax[ y, e ], 1.0 - e ]
+    bend : f64 [ (aug) ? HY_BEND : 0.0 ]
+    return hy_window[ f, wx, wy, side, roll, HY_FIND, bend, dr ]
+
+# find's three labels from a crop's points
+func hy_find_labels [ r: HyCrop ] -> vec f32
+    y : vec f32 [ r.n * 3 ]
+    for [ k: i64 0, k < r.n, k += 1 ]
+        q : i64 [ k * HY_ROW ]
+        dx : f64 [ f64[ r.q[ q + 2 ] ] - f64[ r.q[ q ] ] ]
+        dy : f64 [ f64[ r.q[ q + 3 ] ] - f64[ r.q[ q + 1 ] ] ]
+        y[ k * 3 ] = (f64[ r.q[ q ] ] + f64[ r.q[ q + 2 ] ]) / 2.0
+        y[ k * 3 + 1 ] = (f64[ r.q[ q + 1 ] ]
+                          + f64[ r.q[ q + 3 ] ]) / 2.0
+        y[ k * 3 + 2 ] = sqrt[ dx * dx + dy * dy ]
+    return y
+
+# pictures against python's: the worst pixel, the mean, and how
+# many are off by more than 1e-4
+func hy_diff [ tag: string, got: vec f32, want: vec f32 ] -> f64
+    if [ got.count != want.count ]
+        log '{tag}: {got.count} pixels, python {want.count}'
+        return 1.0e30
+    w : f64 [ 0.0 ]
+    sum : f64 [ 0.0 ]
+    over : i64 [ 0 ]
+    for [ i: i64 0, i < got.count, i += 1 ]
+        d : f64 [ fabs[ f64[ got[ i ] ] - f64[ want[ i ] ] ] ]
+        sum += d
+        if [ d > 1.0e-4 ] over += 1
+        if [ d > w ] w = d
+    mean : f64 [ sum / f64[ got.count ] ]
+    log '{tag}: worst {w}, mean {mean}, {over} of {got.count} over 1e-4'
+    return w
+
+func hy_bytes [ dir: string, name: string ] -> vec u8
+    fp : @FILE [ fopen[ '{dir}/{name}', 'rb' ] ]
+    if [ !fp ] return vec u8 []
+    fseek[ fp, 0, SEEK_END ]
+    n : i64 [ i64[ ftell[ fp ] ] ]
+    rewind[ fp ]
+    v : vec u8 [ n ]
+    fread[ @v[ 0 ], 1, n, fp ]
+    fclose[ fp ]
+    return v
+
+# Pillow's bilinear resize of one axis (an 8-bit pass): each output
+# the input's weighted sum over its stretched tent, the weights in
+# 22-bit whole numbers, rounded and cut to 0 .. 255
+class HyTaps
+    public first : vec i64
+    public count : vec i64
+    public wts   : vec i64
+    public most  : i64
+
+func hy_taps [ inn: i64, out: i64 ] -> HyTaps
+    t : HyTaps [ first: vec i64 [ out ], count: vec i64 [ out ] ]
+    scale : f64 [ f64[ inn ] / f64[ out ] ]
+    fs : f64 [ fmax[ scale, 1.0 ] ]
+    support : f64 [ fs ]
+    t.most = i64[ ceil[ support ] ] * 2 + 1
+    t.wts = vec i64 [ out * t.most ]
+    for [ o: i64 0, o < out, o += 1 ]
+        center : f64 [ (f64[ o ] + 0.5) * scale ]
+        lo : i64 [ i64[ center - support + 0.5 ] ]
+        if [ lo < 0 ] lo = 0
+        hi : i64 [ i64[ center + support + 0.5 ] ]
+        if [ hi > inn ] hi = inn
+        n : i64 [ hi - lo ]
+        k : vec f64 [ n ]
+        sum : f64 [ 0.0 ]
+        for [ x: i64 0, x < n, x += 1 ]
+            d : f64 [ fabs[ (f64[ x + lo ] - center + 0.5) / fs ] ]
+            k[ x ] = (d < 1.0) ? 1.0 - d : 0.0
+            sum += k[ x ]
+        for [ x: i64 0, x < n, x += 1 ]
+            v : f64 [ k[ x ] / sum * 4194304.0 ]
+            near : f64 [ (v < 0.0) ? v - 0.5 : v + 0.5 ]
+            t.wts[ o * t.most + x ] = i64[ near ]
+        t.first[ o ] = lo
+        t.count[ o ] = n
+    return t
+
+func hy_cut8 [ v: i64 ] -> i64
+    s : i64 [ (v + 2097152) >> 22 ]
+    if [ s < 0 ] return 0
+    if [ s > 255 ] return 255
+    return s
+
+# a grey picture (w x h, bytes) to out x out as Pillow resizes it:
+# across first, then down
+func hy_resize [ g: vec u8, w: i64, h: i64, out: i64 ] -> vec u8
+    tx : HyTaps hy_taps[ w, out ]
+    ty : HyTaps hy_taps[ h, out ]
+    mid : vec u8 [ h * out ]
+    for [ y: i64 0, y < h, y += 1 ]
+        for [ o: i64 0, o < out, o += 1 ]
+            sum : i64 [ 0 ]
+            for [ x: i64 0, x < tx.count[ o ], x += 1 ]
+                sum += i64[ g[ y * w + tx.first[ o ] + x ] ]
+                    * tx.wts[ o * tx.most + x ]
+            mid[ y * out + o ] = hy_cut8[ sum ]
+    pic : vec u8 [ out * out ]
+    for [ o: i64 0, o < out, o += 1 ]
+        for [ x: i64 0, x < out, x += 1 ]
+            sum : i64 [ 0 ]
+            for [ y: i64 0, y < ty.count[ o ], y += 1 ]
+                sum += i64[ mid[ (ty.first[ o ] + y) * out + x ] ]
+                    * ty.wts[ o * ty.most + y ]
+            pic[ o * out + x ] = hy_cut8[ sum ]
+    return pic
+
+# a face read from FaceSynthetics' own files: its picture grey at
+# HY_FRAME, its row (both outer corners, the pupils by the nearer
+# eye, the face's middle, its size), and its pose (the nose tip's
+# place between eyes and mouth, and off the eyes' middle in sc)
+class HyFace
+    public frame : vec u8
+    public row   : vec f32
+    public pose  : vec f32
+    public valid : bool
+
+func hy_decode [ png: path, marks: path ] -> HyFace
+    f : HyFace []
+    im : Image [ uri: png ]
+    tx : string marks.load[ typeid[ string ], null ]
+    if [ !im || im.width <= 0 || !tx ] return f
+    w : i64 [ i64[ im.width ] ]
+    h : i64 [ i64[ im.height ] ]
+    ps : i64 [ i64[ im.pixel_size ] ]
+    src : @u8 im.vdata[]
+    grey : vec u8 [ w * h ]
+    for [ i: i64 0, i < w * h, i += 1 ]
+        r : i64 [ i64[ src[ i * ps ] ] ]
+        g : i64 [ i64[ src[ i * ps + 1 ] ] ]
+        b : i64 [ i64[ src[ i * ps + 2 ] ] ]
+        grey[ i ] = (r * 19595 + g * 38470 + b * 7471 + 32768) >> 16
+    f.frame = hy_resize[ grey, w, h, HY_FRAME ]
+    xs : vec f64 []
+    ys : vec f64 []
+    for [ ln: string ] in tx.split[ '\n' ]
+        ws : vec string ln.trim[].split[ ' ' ]
+        if [ ws.count < 2 ] continue
+        xs.push[ strtod[ ws[ 0 ].chars, null ] / f64[ w ] ]
+        ys.push[ strtod[ ws[ 1 ].chars, null ] / f64[ h ] ]
+    if [ xs.count < 70 ] return f
+    ax : f64 [ (xs[ 36 ] + xs[ 39 ]) / 2.0 ]
+    ay : f64 [ (ys[ 36 ] + ys[ 39 ]) / 2.0 ]
+    bx : f64 [ (xs[ 42 ] + xs[ 45 ]) / 2.0 ]
+    by : f64 [ (ys[ 42 ] + ys[ 45 ]) / 2.0 ]
+    pa : i64 [ 68 ]
+    pb : i64 [ 69 ]
+    same : f64 [ hypot[ xs[ 68 ] - ax, ys[ 68 ] - ay ]
+                 + hypot[ xs[ 69 ] - bx, ys[ 69 ] - by ] ]
+    swap : f64 [ hypot[ xs[ 68 ] - bx, ys[ 68 ] - by ]
+                 + hypot[ xs[ 69 ] - ax, ys[ 69 ] - ay ] ]
+    if [ same > swap ]
+        pa = 69
+        pb = 68
+    lx : f64 [ 1.0e9 ]
+    ly : f64 [ 1.0e9 ]
+    hx : f64 [ -1.0e9 ]
+    hy : f64 [ -1.0e9 ]
+    for [ k: i64 0, k < 68, k += 1 ]
+        lx = fmin[ lx, xs[ k ] ]
+        ly = fmin[ ly, ys[ k ] ]
+        hx = fmax[ hx, xs[ k ] ]
+        hy = fmax[ hy, ys[ k ] ]
+    sc : f64 [ hypot[ xs[ 36 ] - xs[ 45 ], ys[ 36 ] - ys[ 45 ] ] ]
+    f.row = vec f32 [] [ xs[ 36 ], ys[ 36 ], xs[ 45 ], ys[ 45 ],
+        xs[ pa ], ys[ pa ], xs[ pb ], ys[ pb ], (lx + hx) / 2.0,
+        (ly + hy) / 2.0, fmax[ sc * HY_SPAN, 0.3 ], 0.0 ]
+    ex : f64 [ (xs[ 36 ] + xs[ 45 ]) / 2.0 ]
+    ey : f64 [ (ys[ 36 ] + ys[ 45 ]) / 2.0 ]
+    mx : f64 [ (xs[ 48 ] + xs[ 54 ]) / 2.0 ]
+    my : f64 [ (ys[ 48 ] + ys[ 54 ]) / 2.0 ]
+    f.pose = vec f32 [] [ (ys[ 30 ] - ey) / fmax[ my - ey, 1.0e-4 ],
+        (xs[ 30 ] - ex) / fmax[ sc, 1.0e-4 ] ]
+    f.valid = true
+    return f
+
+# a picture read grey as Pillow's convert('L') makes it
+class HyGrey
+    public w     : i64
+    public h     : i64
+    public bytes : vec u8
+    public valid : bool
+
+func hy_grey [ src: path ] -> HyGrey
+    g : HyGrey []
+    im : Image [ uri: src ]
+    if [ !im || im.width <= 0 ] return g
+    g.w = im.width
+    g.h = im.height
+    ps : i64 [ i64[ im.pixel_size ] ]
+    px : @u8 im.vdata[]
+    g.bytes = vec u8 [ g.w * g.h ]
+    for [ i: i64 0, i < g.w * g.h, i += 1 ]
+        if [ ps < 3 ]
+            g.bytes[ i ] = px[ i * ps ]
+            continue
+        r : i64 [ i64[ px[ i * ps ] ] ]
+        gr : i64 [ i64[ px[ i * ps + 1 ] ] ]
+        b : i64 [ i64[ px[ i * ps + 2 ] ] ]
+        g.bytes[ i ] = (r * 19595 + gr * 38470 + b * 7471 + 32768) >> 16
+    g.valid = true
+    return g
+
+# a frame he marked: its name, its picture, his four points in its
+# pixels (the picture's left outer corner, its right, then the
+# pupils the same way)
+class HyMarked
+    public name : string
+    public pic  : HyGrey
+    public pts  : vec f64
+
+# every frame he marked: mytest's, then the app's annotate view's
+# (lines that are 'skip' left out)
+func hy_own_marked [ cache: string, annotated: string ] -> vec HyMarked
+    out : vec HyMarked []
+    roots : vec string [] [ '{cache}/mytest', annotated ]
+    for [ root: string ] in roots
+        pf : path [ (root == annotated) ? '{root}/annotate/points.txt'
+                    : '{root}/points.txt' ]
+        tx : string pf.load[ typeid[ string ], null ]
+        if [ !tx ] continue
+        for [ ln: string ] in tx.split[ '\n' ]
+            ws : vec string []
+            for [ w: string ] in ln.trim[].split[ ' ' ]
+                if [ w.count > 0 ] ws.push[ w ]
+            if [ ws.count < 9 || ws[ 0 ].starts_with[ '#' ] ] continue
+            src : path '{root}/{ws[ 0 ]}'
+            g : HyGrey hy_grey[ src ]
+            if [ !g.valid ] continue
+            q : vec f64 [ 8 ]
+            for [ k: i64 0, k < 8, k += 1 ]
+                q[ k ] = f32[ strtod[ ws[ k + 1 ].chars, null ] ]
+            # the picture's left first
+            if [ q[ 0 ] > q[ 2 ] ]
+                was : vec f64 [ 8 ]
+                for [ k: i64 0, k < 8, k += 1 ]
+                    was[ k ] = q[ k ]
+                for [ k: i64 0, k < 8, k += 1 ]
+                    from : i64 [ (k < 4) ? (k + 2) % 4
+                                 : 4 + (k + 2) % 4 ]
+                    q[ k ] = was[ from ]
+            out.push[ HyMarked [ name: ws[ 0 ], pic: g, pts: q ] ]
+    return out
+
+# his frames to train on as FaceSynthetics' are kept: HY_FRAME grey
+# and a row (the face's middle a little under the eyes, its size
+# from sc, the twelfth number 1)
+class HyOwnRows
+    public n      : i64
+    public frames : vec u8
+    public rows   : vec f32
+
+func hy_own_rows [ marked: vec HyMarked ] -> HyOwnRows
+    r : HyOwnRows [ n: marked.count ]
+    r.frames = vec u8 []
+    r.rows = vec f32 []
+    for [ m: HyMarked ] in marked
+        for [ v: u8 ] in hy_resize[ m.pic.bytes, m.pic.w, m.pic.h,
+                                    HY_FRAME ]
+            r.frames.push[ v ]
+        q : vec f64 [ 8 ]
+        for [ k: i64 0, k < 8, k += 1 ]
+            wide : i64 [ (k % 2 == 0) ? m.pic.w : m.pic.h ]
+            q[ k ] = m.pts[ k ] / f64[ wide ]
+        ex : f64 [ (q[ 0 ] + q[ 2 ]) / 2.0 ]
+        ey : f64 [ (q[ 1 ] + q[ 3 ]) / 2.0 ]
+        dx : f64 [ q[ 2 ] - q[ 0 ] ]
+        dy : f64 [ q[ 3 ] - q[ 1 ] ]
+        for [ v: f64 ] in q
+            r.rows.push[ v ]
+        r.rows.push[ ex - dy * 0.45 ]
+        r.rows.push[ ey + dx * 0.45 ]
+        r.rows.push[ fmax[ hypot[ dx, dy ] * HY_SPAN, 0.3 ] ]
+        r.rows.push[ 1.0 ]
+    return r
+
+# a share of an epoch's pictures drawn from its faces
+class HyGroup
+    public idx   : vec i64
+    public share : f64
+
+# the faces in pose bins: HY_BINS steps of up and down by HY_BINS of
+# left and right, even over all but the 1% at each end; the last
+# HY_HELD of the faces kept apart to test on
+HY_BINS : i64 [ 6 ]
+HY_HELD : f64 [ 0.05 ]
+HY_PITCH_WEIGHT : f64 [ 10.0 ]
+HY_OWN_SHARE : f64 [ 0.1 ]
+
+class HyBins
+    public train : vec HyGroup
+    public test  : vec HyGroup
+
+func hy_edges [ pose: vec f32, n: i64, k: i64 ] -> vec f64
+    v : vec f64 [ n ]
+    for [ i: i64 0, i < n, i += 1 ]
+        v[ i ] = pose[ i * 2 + k ]
+    s : vec f64 hy_sorted[ v ]
+    lo : f64 hy_quantile[ s, 0.01 ]
+    hi : f64 hy_quantile[ s, 0.99 ]
+    e : vec f64 []
+    for [ i: i64 1, i < HY_BINS, i += 1 ]
+        e.push[ lo + (hi - lo) * f64[ i ] / f64[ HY_BINS ] ]
+    return e
+
+func hy_bin_of [ v: f64, e: vec f64 ] -> i64
+    b : i64 [ 0 ]
+    for [ x: f64 ] in e
+        if [ v >= x ] b += 1
+    return b
+
+func hy_bins [ pose: vec f32, n: i64 ] -> HyBins
+    out : HyBins [ train: vec HyGroup [], test: vec HyGroup [] ]
+    e0 : vec f64 hy_edges[ pose, n, 0 ]
+    e1 : vec f64 hy_edges[ pose, n, 1 ]
+    cut : i64 [ i64[ f64[ n ] * (1.0 - HY_HELD) ] ]
+    cell : vec i64 [ n ]
+    for [ i: i64 0, i < n, i += 1 ]
+        cell[ i ] = hy_bin_of[ pose[ i * 2 ], e0 ] * HY_BINS
+            + hy_bin_of[ pose[ i * 2 + 1 ], e1 ]
+    for [ r: i64 0, r < HY_BINS, r += 1 ]
+        for [ c: i64 0, c < HY_BINS, c += 1 ]
+            tr : vec i64 []
+            te : vec i64 []
+            for [ i: i64 0, i < n, i += 1 ]
+                if [ cell[ i ] != r * HY_BINS + c ] continue
+                if [ i < cut ]
+                    tr.push[ i ]
+                    continue
+                te.push[ i ]
+            if [ tr.count < 10 || te.count < 2 ] continue
+            w : f64 [ (r == 0 || r == HY_BINS - 1) ? HY_PITCH_WEIGHT
+                      : 1.0 ]
+            out.train.push[ HyGroup [ idx: tr, share: w ] ]
+            out.test.push[ HyGroup [ idx: te, share: w ] ]
+    return out
+
+# his frames as a bin of their own: HY_OWN_SHARE of every epoch,
+# whatever the bins weigh
+func hy_add_own [ bins: HyBins, at: i64, count: i64 ]
+    if [ count == 0 ] return
+    tot : f64 [ 0.0 ]
+    for [ g: HyGroup ] in bins.train
+        tot += g.share
+    idx : vec i64 []
+    for [ i: i64 0, i < count, i += 1 ]
+        idx.push[ at + i ]
+    bins.train.push[ HyGroup [ idx: idx, share: tot * HY_OWN_SHARE
+                               / (1.0 - HY_OWN_SHARE) ] ]
+
+# an epoch: size pictures, split among the groups by their shares
+# (drawn again with repeats), each `views` times, shuffled
+func hy_one_pass [ groups: vec HyGroup, views: i64, size: i64,
+                   dr: HyDraws ] -> vec i64
+    tot : f64 [ 0.0 ]
+    for [ g: HyGroup ] in groups
+        tot += g.share
+    one : vec i64 []
+    for [ g: HyGroup ] in groups
+        k : i64 [ i64[ f64[ size ] * g.share / tot ] ]
+        pick : vec f64 dr.ints[ k, 0, g.idx.count ]
+        for [ p: f64 ] in pick
+            one.push[ g.idx[ i64[ p ] ] ]
+    all : vec i64 []
+    for [ v: i64 0, v < views, v += 1 ]
+        for [ i: i64 ] in one
+            all.push[ i ]
+    perm : vec f64 dr.perm[ all.count ]
+    out : vec i64 [ all.count ]
+    for [ i: i64 0, i < all.count, i += 1 ]
+        out[ i ] = all[ i64[ perm[ i ] ] ]
+    return out
+
+func hy_ints_file [ dir: string, name: string ] -> vec i64
+    raw : vec u8 hy_bytes[ dir, name ]
+    v : vec i64 [ raw.count / 8 ]
+    if [ v.count > 0 ] memcpy[ @v[ 0 ], @raw[ 0 ], v.count * 8 ]
+    return v
+
+# a zip's members, read whole into memory (stored or deflated)
+class HyZip
+    public raw     : vec u8
+    public names   : vec string
+    public methods : vec i64
+    public heads   : vec i64
+    public packed  : vec i64
+    public sizes   : vec i64
+
+    func short_at [ at: i64 ] -> i64
+        return i64[ raw[ at ] ] | (i64[ raw[ at + 1 ] ] << 8)
+
+    func word_at [ at: i64 ] -> i64
+        return short_at[ at ] | (short_at[ at + 2 ] << 16)
+
+    # the central directory, from the end record
+    func open [ src: path ] -> bool
+        f : path src
+        dir : string '{f.parent_dir[]}'
+        raw = hy_bytes[ dir, '{f.filename[]}' ]
+        names = vec string []
+        methods = vec i64 []
+        heads = vec i64 []
+        packed = vec i64 []
+        sizes = vec i64 []
+        if [ raw.count < 22 ] return false
+        end : i64 [ -1 ]
+        for [ at: i64 raw.count - 22, at >= 0 && end < 0, at -= 1 ]
+            if [ word_at[ at ] == 101010256 ] end = at
+        if [ end < 0 ] return false
+        many : i64 short_at[ end + 10 ]
+        at : i64 word_at[ end + 16 ]
+        for [ k: i64 0, k < many, k += 1 ]
+            if [ word_at[ at ] != 33639248 ] return false
+            name_n : i64 short_at[ at + 28 ]
+            extra_n : i64 short_at[ at + 30 ]
+            note_n : i64 short_at[ at + 32 ]
+            nm : vec u8 [ name_n + 1 ]
+            memcpy[ @nm[ 0 ], @raw[ at + 46 ], name_n ]
+            names.push[ string [ cast cstr [ @nm[ 0 ] ] ] ]
+            methods.push[ short_at[ at + 10 ] ]
+            packed.push[ word_at[ at + 20 ] ]
+            sizes.push[ word_at[ at + 24 ] ]
+            heads.push[ word_at[ at + 42 ] ]
+            at += 46 + name_n + extra_n + note_n
+        return true
+
+    func find [ nm: string ] -> i64
+        for [ k: i64 0, k < names.count, k += 1 ]
+            if [ names[ k ] == nm ] return k
+        return -1
+
+    # a member's bytes
+    func member [ k: i64 ] -> vec u8
+        h : i64 heads[ k ]
+        from : i64 [ h + 30 + short_at[ h + 26 ] + short_at[ h + 28 ] ]
+        out : vec u8 [ sizes[ k ] ]
+        if [ methods[ k ] == 0 ]
+            if [ out.count > 0 ]
+                memcpy[ @out[ 0 ], @raw[ from ], out.count ]
+            return out
+        zs : z_stream []
+        zs.next_in = @raw[ from ]
+        zs.avail_in = packed[ k ]
+        zs.next_out = @out[ 0 ]
+        zs.avail_out = out.count
+        size : i32 [ i32[ sizeof[ z_stream ] ] ]
+        inflateInit2_[ @zs, -15, ZLIB_VERSION, size ]
+        inflate[ @zs, Z_FINISH ]
+        inflateEnd[ @zs ]
+        return out
+
+# a grey picture from jpeg bytes, as Pillow's convert('L') makes it
+func hy_grey_jpeg [ bytes: vec u8 ] -> HyGrey
+    g : HyGrey []
+    d : JpegDec []
+    d.bytes = @bytes[ 0 ]
+    d.size = bytes.count
+    if [ d.jp_markers[] != 0 || d.width <= 0 ] return g
+    im : Image [ width: d.width, height: d.height, format: Pixel.rgba8,
+                 channels: 4 ]
+    d.to_rgba[ im.vdata[] ]
+    g.w = im.width
+    g.h = im.height
+    px : @u8 im.vdata[]
+    g.bytes = vec u8 [ g.w * g.h ]
+    for [ i: i64 0, i < g.w * g.h, i += 1 ]
+        r : i64 [ i64[ px[ i * 4 ] ] ]
+        gr : i64 [ i64[ px[ i * 4 + 1 ] ] ]
+        b : i64 [ i64[ px[ i * 4 + 2 ] ] ]
+        g.bytes[ i ] = (r * 19595 + gr * 38470 + b * 7471 + 32768) >> 16
+    g.valid = true
+    return g
+
+# names in byte order (python's sorted), by insertion
+func hy_sort_names [ names: vec string ] -> vec string
+    n : i64 names.count
+    at : vec i64 [ n ]
+    for [ i: i64 0, i < n, i += 1 ]
+        at[ i ] = i
+    for [ i: i64 1, i < n, i += 1 ]
+        k : i64 at[ i ]
+        j : i64 [ i - 1 ]
+        while [ j >= 0 && strcmp[ names[ at[ j ] ].chars,
+                                  names[ k ].chars ] > 0 ]
+            at[ j + 1 ] = at[ j ]
+            j -= 1
+        at[ j + 1 ] = k
+    out : vec string []
+    for [ i: i64 ] in at
+        out.push[ names[ i ] ]
+    return out
+
+# a numpy array's bytes in a zip (np.savez): the data after its
+# header
+func hy_npy [ z: HyZip, nm: string ] -> vec u8
+    k : i64 z.find[ '{nm}.npy' ]
+    if [ k < 0 ] return vec u8 []
+    m : vec u8 z.member[ k ]
+    hl : i64 [ i64[ m[ 8 ] ] | (i64[ m[ 9 ] ] << 8) ]
+    out : vec u8 [ m.count - 10 - hl ]
+    if [ out.count > 0 ] memcpy[ @out[ 0 ], @m[ 10 + hl ], out.count ]
+    return out
+
+# a face's file stem: its number in six digits
+func hy_six [ k: i64 ] -> string
+    t : string '{k}'
+    while [ t.count < 6 ]
+        t = '0{t}'
+    return t
+
+# his own camera frames (<cache>/<which>/cam*/*.png, `which` a
+# folder name or a start of one), grey at side, in path order
+func hy_own_bank [ cache: string, which: string, side: i64,
+                   exact: bool ] -> vec f32
+    files : vec string []
+    top : path cache
+    for [ d: path ] in top.ls[ null, false ]
+        dn : string d.filename[]
+        if [ (exact) ? dn != which : !dn.starts_with[ which ] ] continue
+        for [ c: path ] in d.ls[ null, false ]
+            if [ !c.filename[].starts_with[ 'cam' ] ] continue
+            for [ f: path ] in c.ls[ null, false ]
+                if [ f.ext[] == 'png' ] files.push[ '{f}' ]
+    out : vec f32 []
+    for [ nm: string ] in hy_sort_names[ files ]
+        fp : path nm
+        g : HyGrey hy_grey[ fp ]
+        if [ !g.valid ] continue
+        for [ v: u8 ] in hy_resize[ g.bytes, g.w, g.h, side ]
+            out.push[ f32[ v ] / 255.0 ]
+    return out

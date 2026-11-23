@@ -950,7 +950,9 @@ class AppView
     # the app told where its picture sits on the monitor, in pixels:
     # this window's place, plus where it draws the picture
     func tell_place [ cv: Canvas, bounds: rect ]
-        if [ slot < 0 ] return
+        # told once it shows a frame: before that its window may not
+        # be listening, and a word sent then is lost
+        if [ slot < 0 || !have_frame ] return
         sc : f32 [ cv.transform_scale[] ]
         if [ sc <= 0.0 ] sc = 1.0
         m : rect screen_rect[]
@@ -1138,6 +1140,11 @@ class AppView
     func start []
         started = true
         lang_told = -1
+        # a new process hears its place and monitor afresh
+        told_x = -1
+        told_y = -1
+        told_w = 0
+        told_h = 0
         did_build = false
         build_ms  = 0
         mod : string module_name[]

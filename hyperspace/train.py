@@ -190,7 +190,7 @@ class Encoder(nn.Module):
 # a fully connected head: side x side grey in, `outputs` numbers out
 # the stage networks' first conv kernel (3 or 5; the app's C code
 # reads either)
-FIRST = 3
+FIRST = 5
 
 
 # first: the first conv's kernel (5 sees an edge; 3 after it)

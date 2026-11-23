@@ -4,16 +4,23 @@ export panels ['HyperspacePanel']
 export menus ['HyperspaceApps']
 export contains ['.local/state/hyperspace']
 export cameras ['v4l2']
+# its training, run by name from this folder (in orbiter, orbiter
+# runs the line)
+export jobs ['eyes python3 -u train_eyes.py',
+    'export python3 -u export_eyes.py',
+    'gaze python3 -u train_gaze.py --steps 6000']
 
 import vec
 import img
 import trinity
+import devices
 import tray
 
 import Mounts
 import Menus
 import Panel
 import Eyes
+import Jobs
 
 # the app's storage, one folder for the app and its panel: in its
 # view (a hosted slot) its own home's; drawn by orbiter (the panel),
@@ -24,6 +31,10 @@ MOVE_MS : i64 [ 1600 ]
 GAZE_MOVE_MS : i64 [ 6400 ]
 # the record run's times round the grid
 ROUNDS : i32 [ 4 ]
+# edges: the dot this far in from the screen's sides, a share of it,
+# once round them at one speed in this many ms
+EDGE_IN : f32 [ 0.02 ]
+EDGE_MS : i64 [ 120000 ]
 
 func hs_dir [] -> path
     d : path path.path_storage[ 'hyperspace' ]
@@ -63,6 +74,10 @@ element hyperspace : trinity
     public [ Launch ] view : string [ 'testbed' ]
     # record's folder: records (the eye nets' data) or gaze
     public [ Launch ] into : string [ 'records' ]
+    # record's dot: grid (over the screen) or edges (round its sides)
+    public [ Launch ] route : string [ 'grid' ]
+    # orbiter's socket (it runs the training jobs for this app)
+    public [ Launch ] opener : string
     intern devices : vec string
     intern rig : HsRig
     intern command_at : i64
@@ -85,6 +100,8 @@ element hyperspace : trinity
     intern cancelled : bool
     # Escape gave the screen back: the run goes on in its window
     intern left_full : bool
+    # the view left_full was set in (another view goes full again)
+    intern full_view : string
     intern full_on : bool
     # annotate: the frames (names under the app's storage), the one
     # shown, its clicks so far (x, y as shares of the picture)
@@ -97,6 +114,11 @@ element hyperspace : trinity
     intern ann_done : i32
     # testbed: the gaze from both cameras
     intern hub : GazeHub
+    # a fixed dot for checking the testbed's placement: the monitor's
+    # -0.5..0.5, shown until aim_until (ms)
+    intern aim_x : f32
+    intern aim_y : f32
+    intern aim_until : i64
 
     func ann_dir [] -> path
         d : path '{hs_dir[]}/annotate'
@@ -252,10 +274,14 @@ element hyperspace : trinity
         rig_poll[]
         command_poll[]
         if [ view == 'record' ] record_step[]
-        # record takes the whole screen while its dot runs
+        # record takes the whole screen while its dot runs, the
+        # testbed always (its dot plotted as record's is)
         n : i32 [ (points) ? i32[ points.count ] / 2 : 0 ]
-        on : bool [ view == 'record' && !cancelled && !left_full
-                    && (n == 0 || at < n) ]
+        if [ full_view != view ]
+            full_view = view
+            left_full = false
+        on : bool [ !left_full && ((view == 'record' && !cancelled
+                    && (n == 0 || at < n)) || view == 'testbed') ]
         if [ ux && on != full_on ]
             full_on = on
             ux.set_fullscreen[ on ]
@@ -290,7 +316,8 @@ element hyperspace : trinity
     func record_start []
         points = vec f32 []
         seed : i64 epoch_millis[]
-        for [ rd: i32 0, rd < ROUNDS, rd += 1 ]
+        if [ route == 'edges' ] edge_points[]
+        for [ rd: i32 0, rd < ROUNDS && route != 'edges', rd += 1 ]
             seed = (seed * 1103515245 + 12345) % 2147483648
             nx : f32 [ f32[ seed % 61 ] / 1000.0 - 0.03 ]
             seed = (seed * 1103515245 + 12345) % 2147483648
@@ -316,6 +343,32 @@ element hyperspace : trinity
         rec_ids = vec string []
         left_us = epoch_micros[]
 
+    # edges: one stop for the run's count; the dot's place is by time
+    func edge_points []
+        points += 0.5
+        points += 0.5
+
+    # edges: the dot's place on its way round the sides, clockwise
+    # from the top left, the same pixels a second all the way
+    func edge_at [] -> vec2f
+        lo : f32 EDGE_IN
+        span : f32 [ 1.0 - 2.0 * EDGE_IN ]
+        bw : f32 [ (bounds && bounds.w > 0.0) ? bounds.w : 1.0 ]
+        bh : f32 [ (bounds && bounds.h > 0.0) ? bounds.h : 1.0 ]
+        # each side's length in pixels; the share of the run gone
+        sw : f32 [ span * bw ]
+        sh : f32 [ span * bh ]
+        f : f32 [ f32[ epoch_micros[] - left_us ]
+                  / (f32[ EDGE_MS ] * 1000.0) ]
+        d : f32 [ min[ max[ f, 0.0 ], 1.0 ] * 2.0 * (sw + sh) ]
+        if [ d < sw ] return vec2f [ lo + d / bw, lo ]
+        d -= sw
+        if [ d < sh ] return vec2f [ lo + span, lo + d / bh ]
+        d -= sh
+        if [ d < sw ] return vec2f [ lo + span - d / bw, lo + span ]
+        d -= sw
+        return vec2f [ lo, lo + span - d / bh ]
+
     # each point: MOVE_MS to it, then still. record takes one frame
     # 0.6 s into the stop; gaze every lit frame, the dot moving too
     func record_step []
@@ -333,7 +386,10 @@ element hyperspace : trinity
         el [ into != 'gaze' && el_ms >= mv && !pending
              && el_ms < mv + 100 ]
             ask_capture[ 600 ]
-        if [ el_ms >= mv + 1100 ]
+        # edges: one run round the sides, at its end the last stop
+        done : bool [ (route == 'edges') ? el_ms >= EDGE_MS
+                      : el_ms >= mv + 1100 ]
+        if [ done ]
             at += 1
             # the last point: the cameras close (render again)
             if [ at >= points.count / 2 && ux ] ux.restyle = true
@@ -355,6 +411,7 @@ element hyperspace : trinity
 
     # the dot's place now, eased from the last point to this one
     func dot_at [] -> vec2f
+        if [ route == 'edges' ] return edge_at[]
         n : i32 [ i32[ points.count ] / 2 ]
         k : i32 [ min[ at, n - 1 ] ]
         if [ k < 0 ] return vec2f [ 0.5, 0.5 ]
@@ -368,28 +425,35 @@ element hyperspace : trinity
         f = f * f * f * (f * (f * 6.0 - 15.0) + 10.0)
         return vec2f [ q.x + (p.x - q.x) * f, q.y + (p.y - q.y) * f ]
 
-    # testbed: the gaze as a dot where the eyes look: on the monitor
-    # (the model's -0.5 to 0.5), then this window's place on it, then
-    # this view's in the window; off the view, not drawn
+    # the testbed's dot fixed at a point (-0.5..0.5 from the view's
+    # middle) for 10 s, in place of the gaze: its placement checked
+    action func aim [ x: f32, y: f32 ]
+        aim_x = x
+        aim_y = y
+        aim_until = epoch_millis[] + 10000
+
+    # testbed: the gaze as a dot where the eyes look, the model's
+    # -0.5 to 0.5 over the view (full screen, as record's dot)
     func gaze_draw [ w: Window, cv: Canvas ]
         cv.fill_color[ rgba [ '#050508' ] ]
         cv.rect_to[ 0.0, 0.0, bounds.w, bounds.h ]
         cv.paint[]
         if [ !hub ] return
         hub.step[]
+        hub.ease[ w.frame_factor ]
         if [ hub.missing ]
             hs_text[ cv, 'no gaze model: run train_gaze.py', 20.0,
                 16.0, 600.0, 24.0, 17.0, '#ffffff80' ]
             return
-        if [ !hub.has ] return
-        m : rect w.on_monitor[]
-        if [ m.w <= 0.0 || m.h <= 0.0 ] return
-        sc : f32 [ cv.transform_scale[] ]
-        if [ sc <= 0.0 ] sc = 1.0
-        x : f32 [ floor[ ((hub.x + 0.5) * m.w - m.x - cv.transform_tx[])
-                         / sc ] ]
-        y : f32 [ floor[ ((hub.y + 0.5) * m.h - m.y - cv.transform_ty[])
-                         / sc ] ]
+        gx : f32 hub.x
+        gy : f32 hub.y
+        aiming : bool [ epoch_millis[] < aim_until ]
+        if [ aiming ]
+            gx = aim_x
+            gy = aim_y
+        el [ !hub.has ] return
+        x : f32 [ floor[ (gx + 0.5) * bounds.w ] ]
+        y : f32 [ floor[ (gy + 0.5) * bounds.h ] ]
         if [ x < 0.0 || y < 0.0 || x > bounds.w || y > bounds.h ] return
         cv.fill_color[ rgba [ '#806bff60' ] ]
         cv.arc[ x, y, 22.0, 0.0, 6.2832 ]
@@ -404,9 +468,18 @@ element hyperspace : trinity
         # annotate and training need none
         rn : i32 [ (points) ? i32[ points.count ] / 2 : 0 ]
         done : bool [ cancelled || (rn > 0 && at >= rn) ]
+        # training: a button a job, Stop, and the last job's words
         if [ view == 'training' ]
-            e[ 'train' ] = PageButton [ label: 'Train',
-                area: Region { l1 t3.2 w6 h1.3 } ]
+            x : f32 [ 1.0 ]
+            for [ jn: string ] in hs_job_names[]
+                e[ 'job_{jn}' ] = PageButton [
+                    label: hs_job_label[ jn ],
+                    area: Region [ 'l{x} t1 w6 h1.3' ] ]
+                x += 6.5
+            e[ 'job_stop' ] = PageButton [ label: 'Stop',
+                area: Region [ 'l{x} t1 w4 h1.3' ] ]
+            e[ 'joblog' ] = JobLog [ animated: true,
+                area: Region { l1 t3 r1 b1 } ]
             return e
         if [ view == 'annotate' || (view == 'record' && done) ]
             return e
@@ -467,21 +540,9 @@ element hyperspace : trinity
                 hs_text[ cv, 'recorded {taken} frames: open training',
                     20.0, 16.0, 600.0, 24.0, 17.0, '#ffffff80' ]
         el [ view == 'training' ]
-            u : f32 [ 22.0 ]
-            hs_text[ cv, 'training', u, u, 400.0, 30.0, 24.0,
-                '#e4e4ea' ]
-            hs_text[ cv, '{hs_record_count[]} records', u, 2.0 * u,
-                400.0, 24.0, 17.0, '#ffffff80' ]
-            lf : path '{hs_dir[]}/train.log'
-            tx : string lf.load[ typeid[ string ], null ]
-            if [ tx ]
-                ls : vec string tx.trim[].split[ '\n' ]
-                y : f32 [ 8.0 * u ]
-                from : i32 [ max[ i32[ ls.count ] - 16, 0 ] ]
-                for [ i: i32 from, i < ls.count, i += 1 ]
-                    hs_text[ cv, ls[ i ], u, y, bounds.w - 2.0 * u,
-                        20.0, 14.0, '#ffffff99' ]
-                    y += 20.0
+            cv.fill_color[ rgba [ '#050508' ] ]
+            cv.rect_to[ 0.0, 0.0, bounds.w, bounds.h ]
+            cv.paint[]
 
     # annotate: the frame as large as the window holds, the clicks
     # made on it, and what to click next
@@ -537,7 +598,8 @@ element hyperspace : trinity
     # backspace takes the last click back; space passes a frame with
     # no eyes to mark
     public func on_key [ ev: Event ]
-        if [ view == 'record' && ev.key.state && ev.key.unicode == 256 ]
+        if [ (view == 'record' || view == 'testbed') && ev.key.state
+             && ev.key.unicode == 256 ]
             left_full = true
         if [ view != 'annotate' || !ev.key.state || !ann_img ] return
         if [ ev.key.unicode == 259 && ann_clicks.count >= 2 ]
@@ -550,7 +612,12 @@ element hyperspace : trinity
 
     public func on_click [ ev: Event ]
         item : cast element [ ev.origin ]
-        if [ item && item.id == 'train' ] hs_train[]
+        if [ !item || !item.id ] return
+        if [ item.id == 'job_stop' ]
+            jl : string hs_job_last[]
+            if [ jl.count > 0 ] hs_job_stop[ jl, opener ]
+        el [ item.id.starts_with[ 'job_' ] ]
+            hs_job_go[ item.id.mid[ 4, item.id.count - 4 ], opener ]
 
 # the base models (find, target) from Microsoft's FaceSynthetics:
 # rendered faces at every angle, the pupils labelled (non-commercial

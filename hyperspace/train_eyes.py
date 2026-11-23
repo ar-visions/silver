@@ -222,6 +222,8 @@ BLOW = 0.8
 ROUGH = 0.5
 # the learning rate at the top of its cycle
 LR = 2e-2
+# the heat map's own loss beside the point's (was 0.01)
+HEAT_WEIGHT = 0.5
 # his marked frames' share of every epoch
 OWN_SHARE = 0.1
 # the rows looking up and down most: each of their bins this many
@@ -425,7 +427,9 @@ def find_loss(model, x, y):
     gap_loss = F.smooth_l1_loss(
         out[:, 2].clamp(min=1e-4).log(),
         y[:, 2].clamp(min=1e-4).log(), beta=0.05)
-    return point_loss + gap_loss * 0.1 + heat_loss * 0.01
+    # the map itself weighs half: one sharp peak on the truth, none
+    # on a lookalike that would nudge the weighted point
+    return point_loss + gap_loss * 0.1 + heat_loss * HEAT_WEIGHT
 
 
 # a smooth random weight map of a few blobs; its slope moves the

@@ -1,0 +1,176 @@
+extend hyperspace
+
+# the training jobs, as the export names them (jobs: in
+# install/export/silver-hyperspace.agi); each one's button label
+func hs_job_names [] -> vec string
+    return vec string [] [ 'eyes', 'export', 'gaze' ]
+
+func hs_job_label [ jn: string ] -> string
+    if [ jn == 'eyes' ] return 'Train eyes'
+    if [ jn == 'export' ] return 'Export eyes'
+    return 'Train gaze'
+
+# each job's words, pid and exit code, in the app's own state
+func hs_jobs_dir [] -> path
+    d : path '{hs_dir[]}/jobs'
+    if [ !d.exists[] ] d.make_dir[]
+    return d
+
+# a job's line from the module's own export, '' none
+func hs_job_line [ jn: string ] -> string
+    f : path '{path.path_install[]}/export/silver-hyperspace.agi'
+    tx : string f.load[ typeid[ string ], null ]
+    if [ !tx ] return ''
+    at : i32 [ i32[ tx.index_of[ 'jobs: ' ] ] ]
+    if [ at < 0 ] return ''
+    rest : tx.mid[ at, tx.count - at ]
+    e_ : i32 [ i32[ rest.index_of[ '\n' ] ] ]
+    v : string [ (e_ >= 0) ? rest.mid[ 0, e_ ] : rest ]
+    pieces : vec string v.split[ "'" ]
+    for [ i: i32 1, i < pieces.count, i += 2 ]
+        w : string pieces[ i ]
+        sp : i32 [ i32[ w.index_of[ ' ' ] ] ]
+        if [ sp > 0 && w.mid[ 0, sp ] == jn ]
+            return w.mid[ sp + 1, w.count - sp - 1 ]
+    return ''
+
+# this instance's slot in orbiter (0: run alone)
+func hs_slot [] -> i32
+    return host_slot[]
+
+func hs_job_stop [ jn: string, opener: string ]
+    slot : i32 hs_slot[]
+    if [ slot > 0 && opener && opener.count > 0 ]
+        ln : string 'app system hyperspace {slot} job stop {jn}\n'
+        agent_path_send[ opener.chars, ln.chars ]
+        return
+    d : path hs_jobs_dir[]
+    # its whole process group: setsid made the script's pid the
+    # group's
+    pf : path '{d}/{jn}.pid'
+    pid : string pf.load[ typeid[ string ], null ]
+    if [ !pid || pid.trim[].count == 0 ] return
+    run : command { kill -TERM -{pid.trim[]} 2>/dev/null }
+    if [ run.exec[ false ] != 0 ] return
+    # the log says it ended so, and its state reads stopped
+    lf : path '{d}/{jn}.log'
+    was : string lf.load[ typeid[ string ], null ]
+    lf.save[ '{(was) ? was : ''}stopped\n', null ]
+    df : path '{d}/{jn}.done'
+    df.save[ 'stopped\n', null ]
+
+# a job started: in orbiter, orbiter runs it (outside this app's
+# view: the face set and torch are the user's); alone, run here
+func hs_job_go [ jn: string, opener: string ]
+    slot : i32 hs_slot[]
+    if [ slot > 0 && opener && opener.count > 0 ]
+        ln : string 'app system hyperspace {slot} job {jn}\n'
+        agent_path_send[ opener.chars, ln.chars ]
+        return
+    line : string hs_job_line[ jn ]
+    if [ line.count == 0 ] return
+    d : path hs_jobs_dir[]
+    # this module's own folder: the first line of its source record
+    sr : path '{path.path_install[]}/build/silver-hyperspace.source'
+    st : string sr.load[ typeid[ string ], null ]
+    if [ !st ] return
+    nl : i32 [ i32[ st.index_of[ '\n' ] ] ]
+    ag : path [ (nl > 0) ? st.mid[ 0, nl ] : st.trim[] ]
+    root : string '{ag.parent_dir[]}'
+    sh : string {
+        echo $$ > "{d}/{jn}.pid"
+        cd "{root}"
+        {line} > "{d}/{jn}.log" 2>&1
+        echo $? > "{d}/{jn}.done"
+        mkdir -p "{d}/runs"
+        cp "{d}/{jn}.log" "{d}/runs/{jn}-$(date +%Y-%m-%d-%H%M).log"
+    }
+    sf : path '{d}/{jn}.sh'
+    # one run at a time: a doubled click starts it once
+    pf : path '{d}/{jn}.pid'
+    was : string pf.load[ typeid[ string ], null ]
+    if [ was && was.trim[].count > 0 ]
+        alive : command { kill -0 {was.trim[]} 2>/dev/null }
+        if [ alive.exec[ false ] == 0 ] return
+    sf.save[ '{sh.trim[]}\n', null ]
+    done_file : path '{d}/{jn}.done'
+    if [ done_file.exists[] ] done_file.remove[]
+    run : command { setsid sh "{sf}" > /dev/null 2>&1 & }
+    run.exec[ false ]
+
+# a job's state: '' never run, 'running', 'stopped', or 'ended
+# <code>'
+func hs_job_state [ jn: string ] -> string
+    d : path hs_jobs_dir[]
+    lf : path '{d}/{jn}.log'
+    if [ !lf.exists[] ] return ''
+    df : path '{d}/{jn}.done'
+    if [ !df.exists[] ] return 'running'
+    tx : string df.load[ typeid[ string ], null ]
+    code : string [ (tx) ? tx.trim[] : '' ]
+    if [ code == 'stopped' ] return 'stopped'
+    return 'ended {code}'
+
+# the job whose words changed last ('' none)
+func hs_job_last [] -> string
+    d : path hs_jobs_dir[]
+    best : string ''
+    at : i64 [ 0 ]
+    for [ jn: string ] in hs_job_names[]
+        lf : path '{d}/{jn}.log'
+        if [ !lf.exists[] ] continue
+        mt : i64 lf.modified_time[]
+        if [ mt > at ]
+            at = mt
+            best = jn
+    return best
+
+# the last job's words as they come, in a fixed-width face so its
+# tables keep their columns; read twice a second
+element JobLog
+    intern read_ms : i64
+    intern lines   : vec string
+    intern head    : string
+
+    func refresh []
+        jn : string hs_job_last[]
+        lines = vec string []
+        if [ jn.count == 0 ]
+            head = 'no job run yet'
+            return
+        head = '{hs_job_label[ jn ]}: {hs_job_state[ jn ]}'
+        d : path hs_jobs_dir[]
+        lf : path '{d}/{jn}.log'
+        tx : string lf.load[ typeid[ string ], null ]
+        if [ tx ] lines = tx.split[ '\n' ]
+
+    func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        now : i64 epoch_millis[]
+        if [ now - read_ms > 500 ]
+            read_ms = now
+            refresh[]
+        cv : Canvas w.screen
+        cv.fill_color[ rgba [ '#0a0a12' ] ]
+        cv.rect_to[ 0.0, 0.0, bounds.w, bounds.h ]
+        cv.paint[]
+        hs_text[ cv, head, 12.0, 6.0, bounds.w - 24.0, 24.0, 17.0,
+            '#e4e4ea' ]
+        if [ !lines ] return
+        mono : string 'fonts/GoogleSansCode-VariableFont_MONO.ttf'
+        cv.set_font[ shared_font[ cv, mono, label_px[ cv, 13.0 ] ] ]
+        cv.fill_color[ rgba [ '#ffffffb0' ] ]
+        lh : f32 [ 17.0 ]
+        fit : i32 [ i32[ (bounds.h - 40.0) / lh ] ]
+        n : i32 [ i32[ lines.count ] ]
+        # the last line is the one being written: none when empty
+        if [ n > 0 && lines[ n - 1 ].count == 0 ] n -= 1
+        from : i32 [ max[ n - fit, 0 ] ]
+        y : f32 [ 36.0 ]
+        for [ i: i32 from, i < n, i += 1 ]
+            cv.draw_text[ lines[ i ],
+                rect [ x: 12.0, y: y, w: bounds.w - 24.0, h: lh ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
+                null, true ]
+            y += lh
+        cv.paint[]

@@ -11,9 +11,17 @@ ifdef [ apple ]
 import random
 import vec
 import trinity
+import img
+import <zlib.h>
 import <vulkan/vulkan.h>
 import <ai.h>
 import grad
+import Find
+import Hyper
+import HyperData
+import HyperPaint
+import HyperGaze
+import HyperTrain
     -lvulkan
 
 intern func fnv1a_hash [ @u8, size_t, u64 ] -> u64

@@ -17512,3 +17512,100 @@ not the synthetic 3D face.
    optical-axis arrow; 0 degrees follows z toward the user.
 9. DONE replace the generic cube with a simple Hyperspace
    camera-lens mark; no robot form or busy machinery.
+10. DONE (Nov 21) eye tracking and gaze, measured. Errors as a
+   share of the outer corners' distance (his ~88 px; 0.01 ~ 0.9
+   px), on frames never trained on: synthetic (4,998) / his 22.
+   - find (rewritten: residual blocks, a heat map; trained on the
+     corners' midpoint and their distance): x 0.048 / 0.034,
+     y 0.058 / 0.041, gap 0.088 / 0.048.
+   - target: points 0.035-0.041 / 0.023-0.041.
+   - eye stage, the whole chain on his frames: pupils x 0.014,
+     y 0.013 (~1.2 px); corners 0.022 (~1.9 px). Was 5.8 px mean.
+   - settings: FIND 64, SIDE 64, EYE 64, first conv 3x3 (FIRST in
+     train.py; C reads 3 or 5), LR 2e-2, 40 epochs, half the
+     faces normal (ROUGH 0.5), a third of the burnt ones washed out.
+   - C (hyperspace.c): find equal to PyTorch to 8e-7; the chain
+     within 0.24 px of Python; 54 ms a frame (find 39).
+   - detection judged sound: camera 1 83%, camera 2 81% (were 77%,
+     64%).
+   - gaze (one 10 min session, 8,769 captures; every 5th 7 s piece
+     never trained on, 1,680): mean 0.087, median 0.063 of the
+     screen (~3.8 cm, ~3.5 degrees); training 0.028 (it
+     memorizes); calibrated per session 0.096 (no gain: scatter);
+     points alone 0.232, the middle always 0.354. In C: same
+     error, 6.8 ms. The testbed draws the dot mapped monitor ->
+     window -> view (HM.place, HM.monitor from orbiter).
+   - every training job's full output is kept dated in hyperspace's
+     jobs/runs/ (the training view's jobs).
+11. DONE (Nov 21) training is an app view (training): Train eyes,
+   Export eyes, Train gaze, Stop, the job's output live. In
+   orbiter, orbiter runs the module's declared lines only (export
+   jobs; app system <mod> <slot> job <name>).
+12. IN PROGRESS (Nov 22) the eye and gaze training on our stack
+   (ai/grad, ai/Hyper.ag), each part checked against pytorch:
+   a. DONE grad ops: smooth L1, cross entropy against soft
+      targets, batch norm in training (running statistics too),
+      2x2 max pool; with gradients, within 1.5e-6
+      (ai/tests/find_gold.py, t_grad_train_ops).
+   b. DONE the nets on one batch: GStageNet (target, eye stage),
+      GFindNet, GGazeNet from the .pt files; outputs, losses,
+      every weight's gradient within 7e-6 of each one's largest,
+      the 21 true-zero gradients (a bias under a norm or the
+      map's softmax) near zero (ai/tests/hyper_gold.py,
+      t_hyper_nets).
+   c. DONE 200 steps on fixed batches by the scripts' own AdamW,
+      one-cycle (its beta cycling too) and cosine schedules, gaze's
+      clip: silver holds to pytorch's float64 run as long as or
+      longer than pytorch's float32 does (1% apart at step 16 vs
+      5, 71 vs 39, 23 vs 23; ai/tests/hyper_steps.py,
+      t_hyper_steps). HYPER_GOLD=<dir> silver --test ai.
+   d. DONE the data (ai/HyperData.ag, HyperPaint.ag, HyperGaze.ag),
+      checked against python with the same random draws (every
+      torch draw kept in order by ai/tests/data_gold.py;
+      HYPER_DATA=<dir> silver --test ai, t_hyper_data and
+      t_hyper_gaze_data):
+      - FaceSynthetics' files read as Pillow reads them (grey by
+        its 16-bit sums, its 22-bit whole-number resize): 0 of
+        1,048,576 grey levels differ; rows and poses within 9e-8.
+      - find's, target's and the eye stage's pictures, plain and
+        trained (crop, roll, bend, the backdrop, hair, his hair,
+        canvas, lids, IR look, covers, hands, his frames, the
+        mouth hand, burns, the dark, the contrast stretch): means
+        1e-7 to 6e-7, worst 2.6e-4 (bent crops: float32 places);
+        each stage alone checked (HyCheck); all 1,131 draws
+        taken in torch's order. His frames (12th number) unpainted.
+      - his 101 marked frames: the same split (22 test, 79
+        train), 0 grey levels differ; the 33 pose bins and an
+        epoch's order: 0 of 5,944 differ.
+      - gaze: the clip bank within one grey level (19 of 331,776
+        bytes, a sample on a half level), the training windows,
+        their numbers and the shake within 1.5e-6.
+      - the eye chain on the captures (find, target, the eye stage
+        twice, the soundness check), on the trained nets: points
+        within 0.031 px on 340 px frames, the 48 judgements the
+        same. Target alone on python's crops 1.2e-7: the rest is
+        find's float32 output (3e-6) moving the crop.
+      - the banks (t_hyper_banks, against train_eyes.py's caches):
+        hair from FaceSynthetics' part maps, his frames, his hair
+        frames: exact. HanCo's hands (read from its zip by our own
+        reader and zlib, its jpegs by img's decoder): masks within
+        one grey level, pictures mean 0.06 level but up to 134
+        levels at colour edges: img's jpeg decoder takes chroma by
+        nearest sample, libjpeg blends (OPEN, img's decoder).
+      - the app's .hsn files written by silver (GNet write_stages,
+        write_find) equal export_eyes.py's (worst 7e-8).
+      Speed: a batch of 128 on 16 threads (hy_batch: each thread
+      its own random stream, its own lists): find 153 ms, target
+      116 ms, the eye stage 372 ms (one thread was 5 to 7 times
+      slower; the bicubic resize had made two lists a pixel).
+      Next (e): nets made fresh (GNet fresh_stages, fresh: pytorch's
+      default starts), the training loop and eval tables, a
+      FaceSynthetics cache of silver's own.
+      Found: a test failure ends the runner with SIGTRAP after its
+      report (OPEN, silver's expect runner).
+   e. OPEN a whole training in silver against the pytorch run's
+      eval tables.
+   Gaze is the two-number head again (the 48 x 27 map head
+   memorized: 0.073 median unseen against 0.063), its clip
+   encoders' first conv 5 x 5 (no change: 0.063); gaze.hsg is
+   HSG3 (the kernel in its header).

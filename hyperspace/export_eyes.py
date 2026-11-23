@@ -67,8 +67,9 @@ def find_floats(model):
 
 
 # the gaze net: each encoder's convs (batch norm folded) and dense
-# layer, the eye encoder first; the head's layer norm, two layers
-GAZE_MAGIC = 0x31475348
+# layer, the eye encoder first; the head's layer norm, two layers;
+# HSG4, the encoders' first conv kernel, the cameras read, the first
+GAZE_MAGIC = 0x34475348
 
 
 def gaze_floats(model):
@@ -92,7 +93,10 @@ def gaze_floats(model):
 
 def write_gaze(model, path):
     with open(path, 'wb') as f:
-        f.write(struct.pack('<3i', GAZE_MAGIC, 32, 2))
+        k = model.eye[0].kernel_size[0]
+        # the cameras it reads: how many, then the first
+        cams = getattr(model, 'cams', [0, 1])
+        f.write(struct.pack('<4i', GAZE_MAGIC, k, len(cams), cams[0]))
         f.write(gaze_floats(model).astype('<f4').tobytes())
 
 
