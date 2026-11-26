@@ -4,13 +4,16 @@ import trinity
 import ai
 import <stdlib.h>
 
-# hyperspace's eye training in silver (ai/HyperTrain.ag): find, then
-# target, then the eye stage, as train_eyes.py trains them; the
-# three .hsn files the app reads written to the run's folder
+# hyperspace's training in silver: the eyes (ai/HyperTrain.ag: find,
+# target, the eye stage), the gaze (ai/HyperGazeFit.ag) and the hands
+# (ai/HyperHands.ag), each written where the app reads it; all: each
+# in turn, its own process
 element hytrain : trinity
     public epochs  : i64 [ 40 ]
     public size    : i64 [ 20000 ]
     public batch   : i64 [ 128 ]
+    # the peak learning rate (0: by the batch, the square root rule)
+    public lr      : f64 [ 0.0 ]
     public share   : f64 [ 1.0 ]
     public threads : i64 [ 16 ]
     # stop after this many epochs of the schedule (0: all)
@@ -20,6 +23,24 @@ element hytrain : trinity
     public store   : string
     # a folder of pytorch's .pt nets: score them, train nothing
     public judge   : string
+    # the hand training (ai/HyperHands.ag) in place of the eyes'
+    public hands   : bool
+    # the hand point training (ai/HyperHands.ag)
+    public point : bool
+    # the hand finder's training (ai/HyperHands.ag)
+    public handfind : bool
+    # the eye training (the default when no other is asked)
+    public eyes : bool
+    # the gaze training (ai/HyperGazeFit.ag), on the eye models
+    public gaze : bool
+    # its steps, the head's slew and distance in training, and the
+    # camera it reads (1 or 2; 0 both)
+    public steps  : i64 [ 24000 ]
+    public slew   : f64 [ 0.2 ]
+    public depth  : f64 [ 0.15 ]
+    public camera : i64 [ 1 ]
+    # every training in turn: eyes, gaze, hand finder, hands, point
+    public all : bool
     intern disp    : Display
 
     func init []
@@ -27,14 +48,46 @@ element hytrain : trinity
         au_live_set_reload[ 0 ]
         home : cstr [ getenv[ 'HOME' ] ]
         cache : string '{string[ home ]}/.cache/hyperspace'
-        dest : string [ (out && out.count > 0) ? out
-                        : '{cache}/runs/silver-eyes' ]
+        ins : string '{path.path_install[]}'
+        st : string '{ins}/home/hyperspace/.local/state/hyperspace'
+        if [ all ]
+            # a new launch, not this one's hosted app: none of the
+            # host's channel
+            me : command {
+                env -u SILVER_ISOLATE_CHILD -u SILVER_SHM_FD
+                    -u SILVER_SUPERVISOR -u SILVER_APP_SLOT
+                    {ins}/bin/hytrain --hidden true
+            }
+            hand : string '--epochs 30 --size 8000 --batch 64'
+            for [ job: string ] in vec string [] [ '--eyes true',
+                    '--gaze true', '--handfind true {hand}',
+                    '--hands true {hand}', '--point true {hand}' ]
+                log 'hytrain: {job}'
+                run : command [ '{me} {job}' ]
+                if [ run.exec[ false ] != 0 ]
+                    log 'hytrain: {job} failed; stopped'
+                    exit[ 1 ]
+            exit[ 0 ]
+        dest : string [ (out && out.count > 0) ? out : '{st}/models' ]
         dev : vk_context []
         Au.hold[ dev ]
         disp = Display [ vk: dev, backbuffer: true, width: 64,
                          height: 64 ]
         Au.hold[ disp ]
-        a : HyArgs [ epochs: epochs, size: size, batch: batch,
+        if [ gaze ]
+            fine : bool [ hg_train[ st, dest, steps, slew, depth,
+                                    camera, dev ] ]
+            exit[ (fine) ? 0 : 1 ]
+        if [ hands || point || handfind ]
+            to : string [ (out && out.count > 0) ? out
+                          : '{st}/models/hands' ]
+            fine : bool [ (handfind)
+                ? hf_train[ st, to, epochs, size, batch, lr, dev ]
+                : (point)
+                ? hp_train[ st, to, epochs, size, batch, lr, dev ]
+                : hh_train[ st, to, epochs, size, batch, lr, dev ] ]
+            exit[ (fine) ? 0 : 1 ]
+        a : HyArgs [ epochs: epochs, size: size, batch: batch, lr: lr,
                      share: share, threads: threads, stop: stop, cache: cache,
                      store: (store && store.count > 0) ? store
                             : '{cache}/silver', out: dest ]

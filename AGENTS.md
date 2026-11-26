@@ -371,6 +371,43 @@ work yourself, one file at a time.
 
 ---
 
+## Star Reader — live list (Nov 26 2026)
+
+Goal: a grid of real 3D stars. A problem is on the front. The star
+turns 180 degrees around the y axis to show its answer, then bursts.
+The approved design picture is the specification at every step:
+compare the visible silhouette, point length, face curvature, edge
+thickness, lettering, highlight position, rim colors, turn profile
+and burst timing before moving on. Stars are objects, never
+characters. Each star has one glossy gold material with strong
+subsurface scattering. Cyan and lavender come only from lights.
+
+1. DONE use the user's ~/star.blend star. Its applied level-2 mesh is
+   models/star.gltf: one material, 4,945 shared vertices, 8,192
+   triangles and smooth normals. Runtime scale is uniform on all axes.
+2. DONE draw Canvas text with two original fonts traced from the
+   approved preview: Star Reader Title for the logo and Star Reader
+   Math for the problem and answer. Flat Canvas text fades to zero
+   alpha at the turn's edge view, switches from `7 × 8` to `56`,
+   then fades in.
+3. DONE one custom runtime material: depth-driven subsurface ivory,
+   gold absorption, warm tangent light, a narrow Fresnel edge, broad
+   and tight white gloss, cyan and violet side rims that fade softly
+   from the silhouette across the front curve, and a warm lower light.
+4. DONE compare front, edge and answer views through the app socket.
+5. TODO build the white-gold flash, light ring, sparks, colored trails
+   and flying 3D pieces, then compare the full burst and its timing.
+6. DONE focused geometry test and clean module build pass.
+7. IN PROGRESS draw the approved 3 by 4 grid of stars. The star
+   nearest the gaze point grows and brightens; the other eleven stay
+   small. Only the selected star carries the Canvas problem text.
+8. OPEN read the live screen gaze from the running Hyperspace service;
+   do not open a second camera or run a second eye pipeline.
+9. OPEN start Star Reader full-screen. Escape returns it to its normal
+   window and does not make it enter full-screen again.
+
+---
+
 ## orbiter-os — live list (Sep 3 2026)
 
 Goal: orbiter-os (Linux + orbiter as init) running inside the `qemu`
@@ -7651,6 +7688,7 @@ silver --release trinity    # release build
 silver --build orbiter      # compile only, no launch
 silver --test expectest     # run the module's expect tests, exit
 silver orbiter --width 1920 # --width goes to orbiter, not silver
+hytrain --hidden --eyes       # a bool flag alone is true
 
 # Primary development workflow (bare launch builds AND runs)
 silver --clean orbiter
@@ -16063,6 +16101,21 @@ GRAD_GOLD=<dir> silver --test ai reads them).
    checkpoints, grouped by author) as a second training signal;
    the "unattributed" outcome; a validated allocation rule from
    scores to shares.
+4. IN PROGRESS (Nov 23) replace the rejected scratch proof with a
+   full pretrained LLM: OLMo 3 7B Instruct in 4-bit form, a frozen
+   neutral sentence adapter, and query-selected shared author LoRA
+   experts. The 43.3M scratch proof data was deleted. The design is
+   agi/FULL_LLM_DESIGN.md.
+5. OPEN the product target: the user supplies only a subject or
+   question, never authors or source text; the model writes exactly
+   one fluent sentence of 45 to 120 words and enumerates the authors
+   that measurably contributed. Record the query route, every token's
+   route and expert effects, the whole response's author-off effects,
+   and the matched independently trained author-omission result.
+6. OPEN build provenance-grounded subject / one-sentence pairs, train
+   every full-LLM stage, run the paired causal controls for several
+   authors and shuffled labels, and write the proof paper only from
+   the saved measurements.
 
 ## Reference: Contact's wormhole look (Nov 6 2026)
 
@@ -17609,3 +17662,16 @@ not the synthetic 3D face.
    memorized: 0.073 median unseen against 0.063), its clip
    encoders' first conv 5 x 5 (no change: 0.063); gaze.hsg is
    HSG3 (the kernel in its header).
+13. IN PROGRESS (Nov 26) the hands, on hytrain (ai/HyperHands.ag):
+   a. OPEN the point: held-back error 0.202, his goal about 0.1.
+      Every 64 px picture is 32 now (face find, target, eye stage,
+      hand finder: HY_FIND, HY_SIDE, HY_EYE, HF_SIDE); the retrain
+      on them is his: `hytrain --hidden true --all true`.
+   b. OPEN the pointing direction: 334 held-back points, 44% within
+      45 degrees, mean 61 degrees off (lag 0); 37%, 81 degrees with
+      100 ms of lag.
+   c. DONE hytrain trains everything (--all: eyes, gaze, hand
+      finder, hands, point, each its own process, the host's
+      channel variables unset so each really starts).
+   d. OPEN the base models (hs_base_model, hyperspace.ag) still
+      build by train_eyes.py: the last python in the training.

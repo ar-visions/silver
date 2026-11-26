@@ -1,0 +1,646 @@
+# Star Reader: a question turns into its answer
+export software ['games']
+
+import vec
+import img
+import gltf
+import trinity
+import <stdlib.h>
+
+class StarData
+    public pos : vec f32
+    public nrm : vec f32
+    public uv  : vec f32
+    public idx : vec u32
+
+func star_curve [ outline: vec vec2f, shape: vec vec2f,
+                  at: i32 ]
+    count : i32 [ i32[ shape.count ] ]
+    before : vec2f [ shape[ (at + count - 1) % count ] ]
+    point : vec2f [ shape[ at ] ]
+    after : vec2f [ shape[ (at + 1) % count ] ]
+    ahead : vec2f [ shape[ (at + 2) % count ] ]
+    first_x : f32 [ (after.x - before.x) * 0.5 ]
+    first_y : f32 [ (after.y - before.y) * 0.5 ]
+    last_x : f32 [ (ahead.x - point.x) * 0.5 ]
+    last_y : f32 [ (ahead.y - point.y) * 0.5 ]
+    for [ sample: i32 0, sample < 4, sample += 1 ]
+        t : f32 [ f32[ sample ] / 4.0 ]
+        square : f32 [ t * t ]
+        cube : f32 [ square * t ]
+        point_weight : f32 [ 2.0 * cube - 3.0 * square + 1.0 ]
+        first_weight : f32 [ cube - 2.0 * square + t ]
+        after_weight : f32 [ -2.0 * cube + 3.0 * square ]
+        last_weight : f32 [ cube - square ]
+        curve : vec2f [ point.x * point_weight
+                        + first_x * first_weight
+                        + after.x * after_weight
+                        + last_x * last_weight,
+                        point.y * point_weight
+                        + first_y * first_weight
+                        + after.y * after_weight
+                        + last_y * last_weight ]
+        outline.push[ curve ]
+
+func star_smooth [ source: vec vec2f ] -> vec vec2f
+    result : vec vec2f []
+    count : i32 [ i32[ source.count ] ]
+    for [ i: i32 0, i < count, i += 1 ]
+        before : vec2f [ source[ (i + count - 1) % count ] ]
+        point : vec2f [ source[ i ] ]
+        after : vec2f [ source[ (i + 1) % count ] ]
+        x : f32 [ (before.x + point.x * 2.0 + after.x) * 0.25 ]
+        y : f32 [ (before.y + point.y * 2.0 + after.y) * 0.25 ]
+        result.push[ vec2f [ x, y ] ]
+    return result
+
+func star_scale_point [ shape: vec vec2f, at: i32,
+                        x_scale: f32, y_scale: f32 ]
+    point : vec2f [ shape[ at ] ]
+    shape[ at ] = vec2f [ point.x * x_scale, point.y * y_scale ]
+
+func star_outline [] -> vec vec2f
+    shape : vec vec2f []
+    shape.push[ vec2f [ 0.0000, 0.8542 ] ]
+    shape.push[ vec2f [ -0.1277, 0.7243 ] ]
+    shape.push[ vec2f [ -0.2348, 0.6451 ] ]
+    shape.push[ vec2f [ -0.3158, 0.5470 ] ]
+    shape.push[ vec2f [ -0.3836, 0.4572 ] ]
+    shape.push[ vec2f [ -0.4636, 0.3890 ] ]
+    shape.push[ vec2f [ -0.5548, 0.3203 ] ]
+    shape.push[ vec2f [ -0.7154, 0.2604 ] ]
+    shape.push[ vec2f [ -0.9569, 0.1687 ] ]
+    shape.push[ vec2f [ -0.8665, 0.0000 ] ]
+    shape.push[ vec2f [ -0.7529, -0.1328 ] ]
+    shape.push[ vec2f [ -0.6651, -0.2421 ] ]
+    shape.push[ vec2f [ -0.6604, -0.3813 ] ]
+    shape.push[ vec2f [ -0.6810, -0.5715 ] ]
+    shape.push[ vec2f [ -0.6428, -0.7660 ] ]
+    shape.push[ vec2f [ -0.4987, -0.8638 ] ]
+    shape.push[ vec2f [ -0.3041, -0.8354 ] ]
+    shape.push[ vec2f [ -0.1351, -0.7662 ] ]
+    shape.push[ vec2f [ 0.0000, -0.7200 ] ]
+    shape.push[ vec2f [ 0.1351, -0.7662 ] ]
+    shape.push[ vec2f [ 0.3041, -0.8354 ] ]
+    shape.push[ vec2f [ 0.4987, -0.8638 ] ]
+    shape.push[ vec2f [ 0.6428, -0.7660 ] ]
+    shape.push[ vec2f [ 0.6810, -0.5715 ] ]
+    shape.push[ vec2f [ 0.6604, -0.3813 ] ]
+    shape.push[ vec2f [ 0.6651, -0.2421 ] ]
+    shape.push[ vec2f [ 0.7529, -0.1328 ] ]
+    shape.push[ vec2f [ 0.8665, 0.0000 ] ]
+    shape.push[ vec2f [ 0.9569, 0.1687 ] ]
+    shape.push[ vec2f [ 0.7154, 0.2604 ] ]
+    shape.push[ vec2f [ 0.5548, 0.3203 ] ]
+    shape.push[ vec2f [ 0.4636, 0.3890 ] ]
+    shape.push[ vec2f [ 0.3836, 0.4572 ] ]
+    shape.push[ vec2f [ 0.3158, 0.5470 ] ]
+    shape.push[ vec2f [ 0.2348, 0.6451 ] ]
+    shape.push[ vec2f [ 0.1277, 0.7243 ] ]
+    shape = star_smooth[ shape ]
+    star_scale_point[ shape, 35, 1.0, 1.03 ]
+    star_scale_point[ shape, 0, 1.0, 1.06 ]
+    star_scale_point[ shape, 1, 1.0, 1.03 ]
+    star_scale_point[ shape, 7, 1.05, 1.0 ]
+    star_scale_point[ shape, 8, 1.08, 1.0 ]
+    star_scale_point[ shape, 9, 1.05, 1.0 ]
+    star_scale_point[ shape, 14, 1.0, 1.02 ]
+    star_scale_point[ shape, 15, 1.0, 1.03 ]
+    star_scale_point[ shape, 16, 1.0, 1.03 ]
+    shape[ 18 ] = vec2f [ 0.0000, -0.7200 ]
+    star_scale_point[ shape, 20, 1.0, 1.03 ]
+    star_scale_point[ shape, 21, 1.0, 1.03 ]
+    star_scale_point[ shape, 22, 1.0, 1.02 ]
+    star_scale_point[ shape, 27, 1.05, 1.0 ]
+    star_scale_point[ shape, 28, 1.08, 1.0 ]
+    star_scale_point[ shape, 29, 1.05, 1.0 ]
+    outline : vec vec2f []
+    for [ i: i32 0, i < shape.count, i += 1 ]
+        star_curve[ outline, shape, i ]
+    reach : f32 [ 0.0 ]
+    for [ point: vec2f ] in outline
+        reach = max[ reach,
+                     sqrt[ point.x * point.x + point.y * point.y ] ]
+    for [ i: i32 0, i < outline.count, i += 1 ]
+        point : vec2f [ outline[ i ] ]
+        outline[ i ] = vec2f [ point.x / reach, point.y / reach ]
+    return outline
+
+func star_vertex [ data: StarData, point: vec2f, scale: f32,
+                   z: f32, back: bool ]
+    x : f32 [ point.x * scale ]
+    y : f32 [ point.y * scale ]
+    data.pos.push[ x ]
+    data.pos.push[ y ]
+    data.pos.push[ z ]
+    data.nrm.push[ 0.0 ]
+    data.nrm.push[ 0.0 ]
+    data.nrm.push[ 0.0 ]
+    u : f32 [ x * 0.5 + 0.5 ]
+    data.uv.push[ (back) ? u : 1.0 - u ]
+    data.uv.push[ 0.5 - y * 0.5 ]
+
+func star_triangle [ data: StarData, a: i32, b: i32, c: i32 ]
+    data.idx.push[ u32[ a ] ]
+    data.idx.push[ u32[ b ] ]
+    data.idx.push[ u32[ c ] ]
+
+func star_face [ data: StarData, outline: vec vec2f, back: bool,
+                 rings: i32, half: f32, crown: f32 ] -> i32
+    sign : f32 [ (back) ? -1.0 : 1.0 ]
+    center : i32 [ i32[ data.pos.count / 3 ] ]
+    star_vertex[ data, vec2f [ 0.0, 0.0 ], 0.0,
+                 sign * (half + crown), back ]
+    base : i32 [ i32[ data.pos.count / 3 ] ]
+    for [ ring: i32 1, ring <= rings, ring += 1 ]
+        t : f32 [ f32[ ring ] / f32[ rings ] ]
+        z : f32 [ sign * (half + crown
+                           * sqrt[ 1.0 - t * t ]) ]
+        for [ point: vec2f ] in outline
+            radius : f32 [ sqrt[ point.x * point.x
+                                 + point.y * point.y ] ]
+            blend : f32 [ t * t * (3.0 - 2.0 * t) ]
+            center_radius : f32 [ 0.48 ]
+            x : f32 [ point.x / radius * t * center_radius
+                      * (1.0 - blend) + point.x * t * blend ]
+            y : f32 [ point.y / radius * t * center_radius
+                      * (1.0 - blend) + point.y * t * blend ]
+            star_vertex[ data, vec2f [ x, y ], 1.0, z, back ]
+    count : i32 [ i32[ outline.count ] ]
+    for [ i: i32 0, i < count, i += 1 ]
+        next : i32 [ (i + 1) % count ]
+        if [ back ]
+            star_triangle[ data, center, base + next, base + i ]
+        el
+            star_triangle[ data, center, base + i, base + next ]
+    for [ ring: i32 1, ring < rings, ring += 1 ]
+        inner : i32 [ base + (ring - 1) * count ]
+        outer : i32 [ inner + count ]
+        for [ i: i32 0, i < count, i += 1 ]
+            next : i32 [ (i + 1) % count ]
+            if [ back ]
+                star_triangle[ data, inner + i, outer + next,
+                               outer + i ]
+                star_triangle[ data, inner + i, inner + next,
+                               outer + next ]
+            el
+                star_triangle[ data, inner + i, outer + i,
+                               outer + next ]
+                star_triangle[ data, inner + i, outer + next,
+                               inner + next ]
+    return base + (rings - 1) * count
+
+func star_side [ data: StarData, front: i32, back: i32,
+                 count: i32 ]
+    for [ i: i32 0, i < count, i += 1 ]
+        next : i32 [ (i + 1) % count ]
+        star_triangle[ data, front + i, back + next,
+                       front + next ]
+        star_triangle[ data, front + i, back + i, back + next ]
+
+func star_normals [ data: StarData ]
+    for [ at: i32 0, at < data.idx.count, at += 3 ]
+        ia : i32 [ i32[ data.idx[ at ] ] ]
+        ib : i32 [ i32[ data.idx[ at + 1 ] ] ]
+        ic : i32 [ i32[ data.idx[ at + 2 ] ] ]
+        ax : f32 [ data.pos[ ia * 3 ] ]
+        ay : f32 [ data.pos[ ia * 3 + 1 ] ]
+        az : f32 [ data.pos[ ia * 3 + 2 ] ]
+        bx : f32 [ data.pos[ ib * 3 ] ]
+        by : f32 [ data.pos[ ib * 3 + 1 ] ]
+        bz : f32 [ data.pos[ ib * 3 + 2 ] ]
+        cx : f32 [ data.pos[ ic * 3 ] ]
+        cy : f32 [ data.pos[ ic * 3 + 1 ] ]
+        cz : f32 [ data.pos[ ic * 3 + 2 ] ]
+        abx : f32 [ bx - ax ]
+        aby : f32 [ by - ay ]
+        abz : f32 [ bz - az ]
+        acx : f32 [ cx - ax ]
+        acy : f32 [ cy - ay ]
+        acz : f32 [ cz - az ]
+        nx : f32 [ aby * acz - abz * acy ]
+        ny : f32 [ abz * acx - abx * acz ]
+        nz : f32 [ abx * acy - aby * acx ]
+        for [ vertex: i32 ] in vec i32 [] [ ia, ib, ic ]
+            data.nrm[ vertex * 3 ] += nx
+            data.nrm[ vertex * 3 + 1 ] += ny
+            data.nrm[ vertex * 3 + 2 ] += nz
+    count : i32 [ i32[ data.pos.count / 3 ] ]
+    for [ i: i32 0, i < count, i += 1 ]
+        nx : f32 [ data.nrm[ i * 3 ] ]
+        ny : f32 [ data.nrm[ i * 3 + 1 ] ]
+        nz : f32 [ data.nrm[ i * 3 + 2 ] ]
+        length : f32 [ sqrt[ nx * nx + ny * ny + nz * nz ] ]
+        if [ length < 0.000001 ] length = 1.0
+        data.nrm[ i * 3 ] = nx / length
+        data.nrm[ i * 3 + 1 ] = ny / length
+        data.nrm[ i * 3 + 2 ] = nz / length
+
+func star_data [] -> StarData
+    data : StarData [ pos: vec f32 [], nrm: vec f32 [],
+                      uv: vec f32 [], idx: vec u32 [] ]
+    outline : star_outline[]
+    rings : i32 [ 32 ]
+    half : f32 [ 0.0 ]
+    crown : f32 [ 0.42 ]
+    front : i32 [ star_face[ data, outline, false, rings,
+                             half, crown ] ]
+    back : i32 [ star_face[ data, outline, true, rings,
+                            half, crown ] ]
+    star_side[ data, front, back, i32[ outline.count ] ]
+    star_normals[ data ]
+    return data
+
+func make_star_model [] -> GltfModel
+    data : star_data[]
+    vertices : i32 [ i32[ data.pos.count / 3 ] ]
+    pos_bytes : i32 [ vertices * 12 ]
+    uv_bytes : i32 [ vertices * 8 ]
+    idx_bytes : i32 [ i32[ data.idx.count ] * 4 ]
+    total : i32 [ pos_bytes + pos_bytes + uv_bytes + idx_bytes ]
+    bytes : new u8 [ total ]
+    floats : @f32 [ bytes ]
+    for [ i: i32 0, i < vertices * 3, i += 1 ]
+        floats[ i ] = data.pos[ i ]
+        floats[ vertices * 3 + i ] = data.nrm[ i ]
+    for [ i: i32 0, i < vertices * 2, i += 1 ]
+        floats[ vertices * 6 + i ] = data.uv[ i ]
+    indices : @u32 [ @bytes[ pos_bytes + pos_bytes + uv_bytes ] ]
+    for [ i: i32 0, i < data.idx.count, i += 1 ]
+        indices[ i ] = data.idx[ i ]
+    buffers : vec GltfBuffer []
+    buffers += GltfBuffer [ byteLength: u64[ total ], data: bytes ]
+    views : vec BufferView []
+    views += BufferView [ buffer: 0, byteOffset: 0,
+                          byteLength: pos_bytes ]
+    views += BufferView [ buffer: 0, byteOffset: pos_bytes,
+                          byteLength: pos_bytes ]
+    views += BufferView [ buffer: 0,
+        byteOffset: pos_bytes + pos_bytes, byteLength: uv_bytes ]
+    views += BufferView [ buffer: 0,
+        byteOffset: pos_bytes + pos_bytes + uv_bytes,
+        byteLength: idx_bytes ]
+    accessors : vec Accessor []
+    accessors += Accessor [ bufferView: 0,
+        componentType: ComponentType.FLOAT,
+        type: CompoundType.VEC3, count: vertices ]
+    accessors += Accessor [ bufferView: 1,
+        componentType: ComponentType.FLOAT,
+        type: CompoundType.VEC3, count: vertices ]
+    accessors += Accessor [ bufferView: 2,
+        componentType: ComponentType.FLOAT,
+        type: CompoundType.VEC2, count: vertices ]
+    accessors += Accessor [ bufferView: 3,
+        componentType: ComponentType.UNSIGNED_INT,
+        type: CompoundType.SCALAR, count: i32[ data.idx.count ] ]
+    attributes : map i64 [ string ] []
+    attributes[ 'POSITION' ] = 0
+    attributes[ 'NORMAL' ] = 1
+    attributes[ 'TEXCOORD_0' ] = 2
+    primitives : vec Primitive []
+    primitives += Primitive [ name: 'star', attributes: attributes,
+        indices: 3, material: 0, mode: Mode.TRIANGLES ]
+    meshes : vec Mesh []
+    meshes += Mesh [ name: 'star', primitives: primitives ]
+    nodes : vec Node []
+    nodes += Node [ name: 'star', mesh: 0 ]
+    scene_nodes : vec i64 []
+    scene_nodes += 0
+    scenes : vec Scene []
+    scenes += Scene [ name: 'scene', nodes: scene_nodes ]
+    return GltfModel [ nodes: nodes, meshes: meshes, scenes: scenes,
+        scene: 0, buffers: buffers, bufferViews: views,
+        accessors: accessors ]
+
+ModelViewProject StarLit
+    mutable eye     : vec4f
+    mutable tint    : vec4f
+    mutable gain    : f32
+
+    attrib a_pos    : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_normal : VertexInput [ type:typeid[ vec3f ] ]
+
+    attrib v_world_pos : VertexOutput [ type:typeid[ vec3f ] ]
+    attrib v_normal    : VertexOutput [ type:typeid[ vec3f ] ]
+    attrib v_local_n   : VertexOutput [ type:typeid[ vec3f ] ]
+    attrib v_local_pos : VertexOutput [ type:typeid[ vec3f ] ]
+
+    attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
+
+    func init []
+        model = mat4f.identity[]
+        view = mat4f.identity[]
+        proj = mat4f.identity[]
+        eye = vec4f [ 0.0, 0.0, 4.0, 1.0 ]
+        tint = vec4f [ 1.0, 0.38, 0.035, 1.0 ]
+        gain = 1.0
+
+    func vertex [] -> GLSL none {
+        vec4 world = ubo.model * vec4(a_pos, 1.0);
+        vec3 local_normal = normalize(a_normal);
+        v_world_pos = world.xyz;
+        v_normal = mat3(transpose(inverse(ubo.model))) * local_normal;
+        v_local_n = local_normal;
+        v_local_pos = a_pos;
+        gl_Position = ubo.proj * ubo.view * world;
+    }
+
+    func fragment [] -> GLSL none {
+        vec3 N = normalize(v_normal);
+        vec3 V = normalize(ubo.eye.xyz - v_world_pos);
+        vec3 key = normalize(vec3(0.58, 0.70, 0.92));
+        vec3 fill = normalize(vec3(-0.18, -0.24, 1.0));
+        vec3 warm = normalize(vec3(0.08, -0.82, 0.48));
+        vec3 cyan = normalize(vec3(0.90, 0.38, 0.22));
+        vec3 violet = normalize(vec3(-0.88, 0.36, 0.20));
+        vec3 lower = normalize(vec3(0.12, -0.92, 0.18));
+        float nv = clamp(dot(N, V), 0.0, 1.0);
+        float edge = 1.0 - nv;
+        float fresnel = pow(edge, 5.0);
+        float depth = clamp(abs(v_local_pos.z) / 0.42,
+                            0.0, 1.0);
+        depth = smoothstep(0.08, 0.94, depth);
+        float core = 1.0 - smoothstep(0.08, 0.96,
+                                      length(v_local_pos.xy));
+        float key_dot = dot(N, key);
+        float key_wrap = clamp((key_dot + 0.72) / 1.72,
+                               0.0, 1.0);
+        float fill_wrap = clamp((dot(N, fill) + 0.58) / 1.58,
+                                0.0, 1.0);
+        float warm_wrap = clamp((dot(N, warm) + 0.42) / 1.42,
+                                0.0, 1.0);
+        float milk = depth * pow(key_wrap, 0.62);
+        milk *= core * (0.58 + 0.42 * fill_wrap);
+        float transmit = pow(max(-key_dot, 0.0), 1.18);
+        transmit *= pow(edge, 0.52) * (1.0 - depth * 0.48);
+        vec3 key_half = normalize(key + V);
+        vec3 fill_half = normalize(fill + V);
+        vec3 cyan_half = normalize(cyan + V);
+        vec3 violet_half = normalize(violet + V);
+        float broad = pow(max(dot(N, key_half), 0.0), 18.0);
+        float gloss = pow(max(dot(N, key_half), 0.0), 110.0);
+        float fill_gloss = pow(max(dot(N, fill_half), 0.0), 34.0);
+        float cyan_gloss = pow(max(dot(N, cyan_half), 0.0), 48.0);
+        float violet_gloss = pow(max(dot(N, violet_half), 0.0),
+                                 48.0);
+        float cyan_lit = max(dot(N, cyan), 0.0);
+        float violet_lit = max(dot(N, violet), 0.0);
+        float lower_lit = max(dot(N, lower), 0.0);
+        float cyan_angle = pow(cyan_lit, 0.72);
+        float violet_angle = pow(violet_lit, 0.72);
+        float cyan_sheen = pow(edge, 1.35) * cyan_angle;
+        float violet_sheen = pow(edge, 1.35) * violet_angle;
+        float lower_sheen = pow(edge, 3.20) * lower_lit;
+        vec3 deep_gold = ubo.tint.rgb * vec3(0.92, 0.78, 0.72);
+        vec3 lit_gold = vec3(1.0, 0.48, 0.045);
+        vec3 ivory = vec3(1.0, 0.93, 0.70);
+        vec3 base = mix(deep_gold, lit_gold, key_wrap * 0.78);
+        base *= 0.34 + key_wrap * 0.48 + fill_wrap * 0.24;
+        base += vec3(1.0, 0.34, 0.018) * warm_wrap * 0.16;
+        base = mix(base, ivory, clamp(milk * 0.48, 0.0, 0.46));
+        base += vec3(1.0, 0.22, 0.018) * transmit * 1.42;
+        float key_tangent = 1.0 - abs(dot(N, key));
+        float fill_tangent = 1.0 - abs(dot(N, fill));
+        float tangent_glow = pow(fill_tangent, 5.0);
+        tangent_glow = max(tangent_glow,
+                           pow(key_tangent, 7.0) * 0.62);
+        tangent_glow *= smoothstep(0.06, 0.44, nv);
+        base += vec3(1.0, 0.48, 0.025) * tangent_glow * 0.78;
+        float cyan_rim = clamp(cyan_sheen * 0.86
+                               + cyan_gloss * 0.28
+                               + fresnel * (0.14
+                               + cyan_angle * 0.78),
+                               0.0, 0.82);
+        float violet_rim = clamp(violet_sheen * 0.82
+                                 + violet_gloss * 0.26
+                                 + fresnel * (0.12
+                                 + violet_angle * 0.72),
+                                 0.0, 0.76);
+        float lower_rim = clamp(lower_sheen * 0.52, 0.0, 0.36);
+        base = mix(base, vec3(0.05, 0.74, 1.18), cyan_rim);
+        base = mix(base, vec3(0.84, 0.24, 1.16), violet_rim);
+        base = mix(base, vec3(0.92, 0.30, 1.08), lower_rim);
+        base += vec3(1.0, 0.93, 0.76) * fresnel * 0.34;
+        base += vec3(1.0, 0.97, 0.86) * broad * 0.52;
+        base += vec3(1.0, 0.99, 0.94) * gloss * 1.70;
+        base += vec3(0.80, 0.90, 1.0) * fill_gloss * 0.22;
+        base *= ubo.gain;
+        base = pow(clamp(base, vec3(0.0), vec3(1.0)),
+                   vec3(0.4545));
+        fragColor = vec4(base, 1.0);
+    }
+
+func ease [ value: f32 ] -> f32
+    t : f32 [ clamp[ value, 0.0, 1.0 ] ]
+    return t * t * (3.0 - 2.0 * t)
+
+element StarView
+    style : CSS {
+        area: l0 t0 r0 b0
+    }
+    mutable star_shaders : vec StarLit
+    mutable star_render  : Render
+    mutable star_models  : vec Model
+    mutable spark_shaders : vec StarLit
+    mutable spark_models  : vec Model
+    mutable geometry : GltfModel
+    mutable chosen_star : i32 [ 6 ]
+    public preview_time : f32 [ -1.0 ]
+
+    func setup [ cv: Canvas, w: Window ]
+        geometry = GltfModel.open[ path 'models/star.gltf' ]
+        expect geometry, 'star.gltf did not load'
+        models : vec Model []
+        star_shaders = vec StarLit []
+        star_models = vec Model []
+        for [ i: i32 0, i < 12, i += 1 ]
+            shader : StarLit [ vk: cv.vk,
+                               name: 'star-grid-{i}' ]
+            model : Model [ vk: cv.vk, w: w, id: geometry,
+                            s: shader, cull_none: true ]
+            star_shaders.push[ shader ]
+            star_models.push[ model ]
+            models.push[ model ]
+        spark_shaders = vec StarLit []
+        spark_models = vec Model []
+        for [ i: i32 0, i < 12, i += 1 ]
+            shader : StarLit [ vk: cv.vk, name: 'star-spark' ]
+            model : Model [ vk: cv.vk, w: w, id: geometry,
+                            s: shader, cull_none: true ]
+            spark_shaders.push[ shader ]
+            spark_models.push[ model ]
+            models.push[ model ]
+        star_render = Render [ vk: cv.vk, w: w, wscale: 2.0,
+            use_depth: true, tag: 'star-reader',
+            clear_color: vec4f [ 0.008, 0.012, 0.055, 1.0 ],
+            models: models ]
+        star_render.owner = a
+        w.element_targets[ 'star_reader_{id}' ] = star_render
+
+    func grid_at [ index: i32 ] -> vec3f
+        col : f32 [ f32[ index % 4 ] - 1.5 ]
+        row : f32 [ 1.0 - f32[ index / 4 ] ]
+        return vec3f [ col * 0.62, row * 0.60, 0.0 ]
+
+    func grid_screen [ index: i32 ] -> vec2f
+        at : vec3f grid_at[ index ]
+        aspect : f32 [ (bounds.h > 0.0)
+            ? bounds.w / bounds.h : 1.6 ]
+        visible_h : f32 [ 8.0 * tan[ radians[ 16.0 ] ] ]
+        return vec2f [ bounds.w * (0.5
+                       + at.x / (visible_h * aspect)),
+                       bounds.h * (0.5 - at.y / visible_h) ]
+
+    func place_sparks [ view: mat4f, projection: mat4f, t: f32,
+                        center: vec3f ]
+        burst : f32 [ ease[ (t - 5.0) / 1.35 ] ]
+        life : f32 [ clamp[ (t - 5.0) / 1.8, 0.0, 1.0 ] ]
+        size : f32 [ sin[ life * 3.14159265 ] * 0.20 ]
+        if [ t < 5.0 ] size = 0.001
+        for [ i: i32 0, i < spark_shaders.count, i += 1 ]
+            angle : f32 [ f32[ i ] * 0.5235988 + 0.16 ]
+            reach : f32 [ burst * (1.55 + f32[ i % 4 ] * 0.16) ]
+            z : f32 [ f32[ (i % 5) - 2 ] * 0.13 * burst ]
+            at : vec3f [ center.x + cos[ angle ] * reach,
+                         center.y + sin[ angle ] * reach, z ]
+            spin : vec4f [ sin[ angle ], cos[ angle ], 0.6,
+                           burst * (1.4 + f32[ i ] * 0.17) ]
+            matrix : mat4f.identity[]
+            matrix = matrix.translate[ at ]
+            matrix = matrix.rotate[ quatf [ spin ] ]
+            matrix = matrix.scale[ vec3f [ size, size, size ] ]
+            shader : spark_shaders[ i ]
+            shader.model = matrix
+            shader.view = view
+            shader.proj = projection
+            shader.eye = vec4f [ 0.0, 0.0, 4.0, 1.0 ]
+            shader.gain = 1.0 + (1.0 - life) * 0.8
+
+    func animate [ w: Window ] -> f32
+        seconds : f32 [ ux.time * 1000.0 ]
+        t : f32 [ seconds - floor[ seconds / 7.2 ] * 7.2 ]
+        if [ preview_time >= 0.0 ] t = preview_time
+        aspect : f32 [ (bounds.h > 0.0) ? bounds.w / bounds.h : 1.6 ]
+        eye : vec3f [ 0.0, 0.0, 4.0 ]
+        target : vec3f [ 0.0, 0.0, 0.0 ]
+        up : vec3f [ 0.0, -1.0, 0.0 ]
+        view : mat4f.look_at[ eye, target, up ]
+        projection : mat4f.perspective[ radians[ 32.0 ], aspect,
+                                         0.05, 20.0 ]
+        turn : f32 [ ease[ (t - 2.0) / 1.25 ] * 3.14159265 ]
+        burst : f32 [ ease[ (t - 5.0) / 0.22 ] ]
+        for [ i: i32 0, i < star_shaders.count, i += 1 ]
+            chosen : bool [ i == chosen_star ]
+            size : f32 [ (chosen) ? 0.40 : 0.25 ]
+            if [ chosen ] size *= 1.0 - burst
+            if [ size < 0.001 ] size = 0.001
+            at : vec3f grid_at[ i ]
+            rotation : vec4f [ 0.0, 1.0, 0.0,
+                               (chosen) ? turn : 0.0 ]
+            matrix : mat4f.identity[]
+            matrix = matrix.translate[ vec3f [ at.x, at.y,
+                (chosen) ? 0.08 : 0.0 ] ]
+            matrix = matrix.rotate[ quatf [ rotation ] ]
+            matrix = matrix.scale[ vec3f [ size, size, size ] ]
+            shader : star_shaders[ i ]
+            shader.model = matrix
+            shader.view = view
+            shader.proj = projection
+            shader.eye = vec4f [ eye.x, eye.y, eye.z, 1.0 ]
+            shader.gain = (chosen) ? 1.12 + burst * 2.0 : 0.78
+        place_sparks[ view, projection, t, grid_at[ chosen_star ] ]
+        star_render.update[]
+        return t
+
+    func draw_problem [ cv: Canvas, t: f32 ]
+        turn : f32 [ ease[ (t - 2.0) / 1.25 ] * 3.14159265 ]
+        face_alpha : f32 [ abs[ cos[ turn ] ] ]
+        if [ face_alpha < 0.001 ] return
+        text : string [ (turn < 1.57079633) ? '7 × 8' : '56' ]
+        center : vec2f grid_screen[ chosen_star ]
+        cv.save[]
+        cv.set_font[ shared_font[ cv,
+            'fonts/StarReader-Math.ttf', 80 ] ]
+        cv.font_size[ 80 ]
+        cv.fill_color[ rgba [ r: 0.208, g: 0.149,
+                              b: 0.435, a: face_alpha ] ]
+        cv.draw_text[ text,
+            rect [ x: center.x - 140.0, y: center.y - 60.0,
+                   w: 280.0, h: 120.0 ],
+            vec2f [ 0.5, 0.5 ], vec2f [ 0.5, 0.5 ],
+            Overflow.visible, null, false ]
+        cv.paint[]
+        cv.set_font[ null ]
+        cv.restore[]
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen ] return
+        cv : Canvas [ w.screen ]
+        if [ !star_render ] setup[ cv, w ]
+        t : f32 [ animate[ w ] ]
+        cv.draw_image[ star_render.color,
+            rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ] ]
+        draw_problem[ cv, t ]
+        cv.fill_color[ '#fff3d9' ]
+        cv.set_font[ shared_font[ cv,
+            'fonts/StarReader-Title.ttf', 56 ] ]
+        cv.font_size[ 56.0 ]
+        cv.draw_text[ 'Star Reader',
+            rect [ x: 0.0, y: 8.0, w: bounds.w, h: 70.0 ],
+            vec2f [ 0.5, 0.5 ], vec2f [ 0.5, 0.5 ],
+            Overflow.visible, null, false ]
+        cv.paint[]
+        cv.set_font[ null ]
+
+element main : trinity
+    width  : i32 [ 1280 ]
+    height : i32 [ 800 ]
+    public title : string [ 'Star Reader' ]
+    public test_geometry : bool
+    public preview : f32 [ -1.0 ]
+
+    func init []
+        if [ !test_geometry ] return
+        if [ star_geometry_valid[] ]
+            log 'star-reader: focused geometry test passed'
+            exit[ 0 ]
+        log 'star-reader: focused geometry test failed'
+        exit[ 1 ]
+
+    public func render [] -> Elements
+        elements : Elements []
+        elements[ 'star' ] = StarView [ animated: true,
+                                        preview_time: preview ]
+        return elements
+
+func star_geometry_valid [] -> bool
+    data : star_data[]
+    vertices : i32 [ i32[ data.pos.count / 3 ] ]
+    if [ vertices != 9218 ] return false
+    if [ data.nrm.count != data.pos.count ] return false
+    if [ data.uv.count != i64[ vertices ] * 2 ] return false
+    if [ data.idx.count != 55296 ] return false
+    min_z : f32 [ data.pos[ 2 ] ]
+    max_z : f32 [ min_z ]
+    max_r : f32 [ 0.0 ]
+    seam_vertices : i32 [ 0 ]
+    for [ i: i32 0, i < vertices, i += 1 ]
+        x : f32 [ data.pos[ i * 3 ] ]
+        y : f32 [ data.pos[ i * 3 + 1 ] ]
+        z : f32 [ data.pos[ i * 3 + 2 ] ]
+        min_z = min[ min_z, z ]
+        max_z = max[ max_z, z ]
+        if [ abs[ z ] < 0.0001 ] seam_vertices += 1
+        max_r = max[ max_r, sqrt[ x * x + y * y ] ]
+        nx : f32 [ data.nrm[ i * 3 ] ]
+        ny : f32 [ data.nrm[ i * 3 + 1 ] ]
+        nz : f32 [ data.nrm[ i * 3 + 2 ] ]
+        length : f32 [ sqrt[ nx * nx + ny * ny + nz * nz ] ]
+        if [ abs[ length - 1.0 ] > 0.0001 ] return false
+    if [ abs[ min_z + 0.42 ] > 0.0001 ] return false
+    if [ abs[ max_z - 0.42 ] > 0.0001 ] return false
+    if [ seam_vertices != 288 ] return false
+    return abs[ max_r - 1.0 ] < 0.0001
+
+expect func t_star_geometry [] -> bool
+    return star_geometry_valid[]

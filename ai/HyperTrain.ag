@@ -5,8 +5,16 @@ extend ai
 # epoch scored on the faces never trained on and on his own frames;
 # the best epoch's weights kept and written as the app reads them
 
-HY_LR      : f64 [ 0.02 ]
+# the peak learning rate, tuned at batch HY_LR_BATCH
+HY_LR       : f64 [ 0.02 ]
+HY_LR_BATCH : i64 [ 128 ]
 HY_FACES   : i64 [ 100000 ]
+
+# the peak rate for a batch: lr when given, else base scaled by the
+# square root of the batch against the one it was tuned at
+func hy_rate [ base: f64, tuned: i64, batch: i64, lr: f64 ] -> f64
+    if [ lr > 0.0 ] return lr
+    return base * sqrt[ f64[ batch ] / f64[ tuned ] ]
 
 class HyArgs
     public epochs  : i64 [ 40 ]
@@ -16,6 +24,8 @@ class HyArgs
     public threads : i64 [ 16 ]
     # stop after this many epochs of the schedule (0 all): a check
     public stop    : i64 [ 0 ]
+    # the peak learning rate (0: HY_LR by the batch, hy_rate)
+    public lr      : f64 [ 0.0 ]
     # FaceSynthetics, the banks' sources and his frames
     public cache   : string
     # silver's own copy of the faces, and the run's output
@@ -386,23 +396,29 @@ func hy_fit [ nets: HyNets, set: HySet, a: HyArgs, name: string ]
     kept : vec HyKept []
     step : i64 [ 0 ]
     runs : i64 [ (a.stop > 0) ? min[ a.stop, a.epochs ] : a.epochs ]
+    peak : f64 hy_rate[ HY_LR, HY_LR_BATCH, a.batch, a.lr ]
+    log '{name}: batch {a.batch}, peak learning rate {hy_num[ peak, 5 ]}'
     for [ ep: i64 0, ep < runs, ep += 1 ]
         t0 : i64 [ Au.epoch_millis[] ]
         order : vec i64 hy_one_pass[ set.bins.train, 1, a.size, dr ]
         lost : f64 [ 0.0 ]
         steps : i64 [ 0 ]
         for [ k: i64 0, k < per, k += 1 ]
-            take : vec i64 []
             last : i64 [ min[ (k + 1) * a.batch, order.count ] ]
+            if [ k * a.batch >= last ] continue
+            # this runs inside init: no frame drains the pool
+            mk : i32 [ Au.auto_mark[] ]
+            take : vec i64 []
             for [ i: i64 k * a.batch, i < last, i += 1 ]
                 take.push[ order[ i ] ]
-            if [ take.count == 0 ] continue
             hb : HyBatch hy_batch[ nets.kind, set.frames, set.pts, take,
                                    true, set.bk, dr, a.threads ]
-            sc : vec f64 one_cycle[ step, total, HY_LR ]
+            sc : vec f64 one_cycle[ step, total, peak ]
             lost += nets.step[ hb, sc[ 0 ], sc[ 1 ] ]
+            Au.auto_free_to[ mk ]
             steps += 1
             step += 1
+        em : i32 [ Au.auto_mark[] ]
         err : vec f64 hy_measure[ nets, set, a ]
         mine : vec f64 hy_own_score[ nets, set ]
         log '{name} {ep + 1}/{a.epochs}   train loss {hy_num[ lost / f64[ max[ steps, 1 ] ], 5 ]}   ({(Au.epoch_millis[] - t0) / 1000} s)'
@@ -415,6 +431,7 @@ func hy_fit [ nets: HyNets, set: HySet, a: HyArgs, name: string ]
             log '  {hy_pad_right[ labels[ c ], 36 ]} {hy_pad[ hy_num[ err[ c ], 3 ], 10 ]} {hy_pad[ u, 10 ]}'
             score += err[ c ]
         score = score / f64[ max[ err.count, 1 ] ]
+        Au.auto_free_to[ em ]
         if [ best < 0.0 || score < best ]
             best = score
             kept = hy_snapshot[ g ]
@@ -430,6 +447,7 @@ func hy_train_eyes [ a: HyArgs, vk: vk_context ] -> bool
     if [ !od.exists[] ] od.make_dir[]
     fn : GFindNet [ vk: vk, work_mb: 6144, scratch_mb: 2048 ]
     fn.fresh[]
+    fn.side = HY_FIND
     tn : GStageNet [ vk: vk, work_mb: 2048, scratch_mb: 1024 ]
     tn.fresh_stages[ HY_SIDE, 10, 5 ]
     en : GStageNet [ vk: vk, work_mb: 2048, scratch_mb: 1024 ]

@@ -42,6 +42,11 @@ class GNet
     public work_mb : i64 [ 512 ]
     # conv's column buffers in the backward pass
     public scratch_mb : i64 [ 512 ]
+    # numbers joined to the flattened stages before the dense layer
+    # (the point model's box: middle x, y and side)
+    public extra : i64
+    # the side of the pictures a stage net reads
+    public side : i64
 
     func load [ src: path, train: bool ] -> bool
         if [ !gd ]
@@ -131,21 +136,32 @@ class GNet
     # pytorch's StageConv(side, outputs) fresh: four stages (16 32
     # 64 128, the first conv first x first), the 128 dense layer,
     # the outputs
-    func fresh_stages [ side: i64, outputs: i64, first: i64 ]
+    func fresh_stages [ sd: i64, outputs: i64, first: i64 ]
+        fresh_trunk[ first ]
+        side = sd
+        flat : i64 [ 128 * (sd / 16) * (sd / 16) + extra ]
+        fresh_layer[ 'head.0', vec i64 [] [ 128, flat ], flat, true ]
+        fresh_layer[ 'head.2', vec i64 [] [ outputs, 128 ], 128, true ]
+
+    # the four stages alone, fresh (16 32 64 128, the first conv
+    # first x first)
+    func fresh_trunk [ first: i64 ]
         begin_fresh[]
+        fresh_convs[ 'trunk', 4, first ]
+
+    # n stages (16 32 64 128) under a prefix, the first conv first
+    # x first
+    func fresh_convs [ pre: string, n: i64, first: i64 ]
         chans : vec i64 [] [ 1, 16, 32, 64, 128 ]
-        for [ s: i64 0, s < 4, s += 1 ]
+        for [ s: i64 0, s < n, s += 1 ]
             for [ k: i64 0, k < 2, k += 1 ]
                 at : i64 [ s * 7 + k * 3 ]
                 cin : i64 [ (k == 0) ? chans[ s ] : chans[ s + 1 ] ]
                 cout : i64 chans[ s + 1 ]
                 kk : i64 [ (s == 0 && k == 0) ? first : 3 ]
                 dims : vec i64 [] [ cout, cin, kk, kk ]
-                fresh_layer[ 'trunk.{at}', dims, cin * kk * kk, true ]
-                fresh_norm[ 'trunk.{at + 1}', cout, true ]
-        flat : i64 [ 128 * (side / 16) * (side / 16) ]
-        fresh_layer[ 'head.0', vec i64 [] [ 128, flat ], flat, true ]
-        fresh_layer[ 'head.2', vec i64 [] [ outputs, 128 ], 128, true ]
+                fresh_layer[ '{pre}.{at}', dims, cin * kk * kk, true ]
+                fresh_norm[ '{pre}.{at + 1}', cout, true ]
 
     # its floats as the app reads them (export_eyes.py's), each
     # batch norm folded into its conv: a stage net's .hsn (magic
@@ -154,19 +170,35 @@ class GNet
         v : vec f32 gd.download[ ps[ nm ] ]
         fwrite[ @v[ 0 ], 4, v.count, fp ]
 
-    func write_stages [ to: path, side: i32, outputs: i32 ] -> bool
+    # with extra numbers: magic HSA1, side, outputs, extra
+    func write_stages [ to: path, sd: i32, outputs: i32 ] -> bool
         fp : @FILE [ fopen[ '{to}'.chars, 'wb' ] ]
         if [ !fp ] return false
-        head : vec i32 [] [ 827216712, side, outputs ]
-        fwrite[ @head[ 0 ], 4, 3, fp ]
-        for [ s: i64 0, s < 4, s += 1 ]
+        head : vec i32 [] [ 827216712, sd, outputs ]
+        if [ extra > 0 ]
+            head = vec i32 [] [ 826364744, sd, outputs, i32[ extra ] ]
+        fwrite[ @head[ 0 ], 4, head.count, fp ]
+        put_trunk[ fp ]
+        for [ nm: string ] in vec string [] [ 'head.0.weight',
+                'head.0.bias', 'head.2.weight', 'head.2.bias' ]
+            put_floats[ fp, nm ]
+        fclose[ fp ]
+        return true
+
+    # the four stages' convs, each batch norm folded into its conv
+    func put_trunk [ fp: @FILE ]
+        put_convs[ fp, 'trunk', 4 ]
+
+    # n stages' convs under a prefix, each batch norm folded in
+    func put_convs [ fp: @FILE, pre: string, n: i64 ]
+        for [ s: i64 0, s < n, s += 1 ]
             for [ k: i64 0, k < 2, k += 1 ]
                 at : i64 [ s * 7 + k * 3 ]
-                w : vec f32 gd.download[ ps[ 'trunk.{at}.weight' ] ]
-                b : vec f32 gd.download[ ps[ 'trunk.{at}.bias' ] ]
-                g : vec f32 gd.download[ ps[ 'trunk.{at + 1}.weight' ] ]
-                sh : vec f32 gd.download[ ps[ 'trunk.{at + 1}.bias' ] ]
-                rs : vec f32 gd.download[ ps[ 'trunk.{at + 1}.rs' ] ]
+                w : vec f32 gd.download[ ps[ '{pre}.{at}.weight' ] ]
+                b : vec f32 gd.download[ ps[ '{pre}.{at}.bias' ] ]
+                g : vec f32 gd.download[ ps[ '{pre}.{at + 1}.weight' ] ]
+                sh : vec f32 gd.download[ ps[ '{pre}.{at + 1}.bias' ] ]
+                rs : vec f32 gd.download[ ps[ '{pre}.{at + 1}.rs' ] ]
                 c : i64 b.count
                 per : i64 [ w.count / c ]
                 for [ o: i64 0, o < c, o += 1 ]
@@ -178,14 +210,71 @@ class GNet
                         + f64[ sh[ o ] ]
                 fwrite[ @w[ 0 ], 4, w.count, fp ]
                 fwrite[ @b[ 0 ], 4, b.count, fp ]
+
+    # a stage net's .hsn read back to run (its first conv 3 x 3):
+    # each conv takes its folded weights, each batch norm passes them
+    # on unchanged (scale 1, shift 0, mean 0, variance 1 less eps)
+    func read_stages [ from: path ] -> bool
+        fp : @FILE [ fopen[ '{from}'.chars, 'rb' ] ]
+        if [ !fp ] return false
+        head : vec i32 [ 4 ]
+        fread[ @head[ 0 ], 4, 3, fp ]
+        if [ head[ 0 ] == 826364744 ] fread[ @head[ 3 ], 4, 1, fp ]
+        el [ head[ 0 ] != 827216712 ]
+            fclose[ fp ]
+            return false
+        extra = head[ 3 ]
+        # the first conv's kernel: 3, else 5 (16 x 16 more weights)
+        begin : i64 [ i64[ ftell[ fp ] ] ]
+        fseek[ fp, 0, SEEK_END ]
+        left : i64 [ (i64[ ftell[ fp ] ] - begin) / 4 ]
+        fseek[ fp, begin, SEEK_SET ]
+        fresh_stages[ head[ 1 ], head[ 2 ], 3 ]
+        if [ left == stage_floats[] + 256 ]
+            fresh_stages[ head[ 1 ], head[ 2 ], 5 ]
+        if [ !valid ]
+            fclose[ fp ]
+            return false
+        names : vec string []
+        for [ s: i64 0, s < 4, s += 1 ]
+            for [ k: i64 0, k < 2, k += 1 ]
+                at : i64 [ s * 7 + k * 3 ]
+                names.push[ 'trunk.{at}.weight' ]
+                names.push[ 'trunk.{at}.bias' ]
+                c : i64 ps[ 'trunk.{at}.bias' ].count
+                one : vec f32 [ c ]
+                rs : vec f32 [ c * 2 ]
+                for [ i: i64 0, i < c, i += 1 ]
+                    one[ i ] = 1.0
+                    rs[ c + i ] = 1.0 - 1.0e-5
+                gd.upload[ ps[ 'trunk.{at + 1}.weight' ], one ]
+                gd.upload[ ps[ 'trunk.{at + 1}.bias' ], vec f32 [ c ] ]
+                gd.upload[ ps[ 'trunk.{at + 1}.rs' ], rs ]
         for [ nm: string ] in vec string [] [ 'head.0.weight',
                 'head.0.bias', 'head.2.weight', 'head.2.bias' ]
-            put_floats[ fp, nm ]
+            names.push[ nm ]
+        fine : bool [ true ]
+        for [ nm: string ] in names
+            t : GTensor ps[ nm ]
+            v : vec f32 [ t.count ]
+            if [ fread[ @v[ 0 ], 4, t.count, fp ] != t.count ]
+                fine = false
+            gd.upload[ t, v ]
         fclose[ fp ]
-        return true
+        return fine
 
     func p [ nm: string ] -> GTensor
         return (ps.contains[ nm ]) ? ps[ nm ] : null
+
+    # the floats a stage net's .hsn holds after its header: every
+    # weight but the batch norms' (folded into their convs)
+    func stage_floats [] -> i64
+        n : i64 [ 0 ]
+        for [ nm: string ] in learns
+            cut : i64 [ (nm.ends_with[ '.bias' ]) ? 5 : 7 ]
+            if [ !ps.contains[ '{nm.mid[ 0, nm.count - cut ]}.rs' ] ]
+                n += ps[ nm ].count
+        return n
 
     # pictures [n, 1, s, s] (or any [n, ...]) each made mean 0,
     # deviation 1
@@ -319,6 +408,20 @@ GNet GStageNet
                                  p[ 'head.0.bias' ] ], 0.0 ]
         return gd.linear[ f, p[ 'head.2.weight' ], p[ 'head.2.bias' ] ]
 
+    # with extra numbers nums [nb, extra]: joined to the flattened
+    # stages before the dense layer
+    func forward_aux [ x: GTensor, nums: GTensor,
+                       train: bool ] -> GTensor
+        nb : i64 [ x.dims[ 0 ] ]
+        h : GTensor stages[ normalized[ x, nb ], 'trunk', 4, train ]
+        fl : i64 [ h.count / nb ]
+        f : GTensor gd.reshape[ h, vec i64 [] [ nb, fl, 1 ] ]
+        az : GTensor gd.reshape[ nums, vec i64 [] [ nb, extra, 1 ] ]
+        f = gd.reshape[ gd.join[ f, az ], vec i64 [] [ nb, fl + extra ] ]
+        f = gd.leaky[ gd.linear[ f, p[ 'head.0.weight' ],
+                                 p[ 'head.0.bias' ] ], 0.0 ]
+        return gd.linear[ f, p[ 'head.2.weight' ], p[ 'head.2.bias' ] ]
+
     # its training loss: smooth L1 (beta 0.01) to the targets
     func loss [ out: GTensor, y: GTensor ] -> GTensor
         return gd.smooth_l1[ out, y, 0.01 ]
@@ -376,8 +479,37 @@ GNet GFindNet
     func write_find [ to: path ] -> bool
         fp : @FILE [ fopen[ '{to}'.chars, 'wb' ] ]
         if [ !fp ] return false
-        head : vec i32 [] [ 826692424, 64, 3 ]
+        head : vec i32 [] [ 826692424, i32[ (side > 0) ? side : 64 ],
+                              3 ]
         fwrite[ @head[ 0 ], 4, 3, fp ]
+        for [ nm: string ] in find_names[]
+            put_floats[ fp, nm ]
+        fclose[ fp ]
+        return true
+
+    # its .hsn read back (HSF1: side, 3, then find_names' floats)
+    func read_find [ from: path ] -> bool
+        fp : @FILE [ fopen[ '{from}'.chars, 'rb' ] ]
+        if [ !fp ] return false
+        head : vec i32 [ 3 ]
+        fread[ @head[ 0 ], 4, 3, fp ]
+        if [ head[ 0 ] != 826692424 ]
+            fclose[ fp ]
+            return false
+        fresh[]
+        side = head[ 1 ]
+        fine : bool [ valid ]
+        for [ nm: string ] in find_names[]
+            t : GTensor ps[ nm ]
+            v : vec f32 [ t.count ]
+            if [ fread[ @v[ 0 ], 4, t.count, fp ] != t.count ]
+                fine = false
+            gd.upload[ t, v ]
+        fclose[ fp ]
+        return fine
+
+    # its weights in the order hs_find_run reads them
+    func find_names [] -> vec string
         names : vec string [] [ 'stem.0.weight', 'stem.1.weight',
                                 'stem.1.bias' ]
         blocks : vec string [] [ 'full', 'at_half.0', 'at_half.1',
@@ -399,10 +531,7 @@ GNet GFindNet
                 'heat.bias', 'log_temp', 'gap.0.weight', 'gap.0.bias',
                 'gap.2.weight', 'gap.2.bias' ]
             names.push[ k ]
-        for [ nm: string ] in names
-            put_floats[ fp, nm ]
-        fclose[ fp ]
-        return true
+        return names
 
     func as3 [ x: GTensor ] -> GTensor
         return gd.reshape[ x, vec i64 [] [ x.dims[ 0 ], x.dims[ 1 ],
@@ -525,10 +654,49 @@ GNet GFindNet
         out.push[ gd.soft_ce[ o.heat, tb ] ]
         return out
 
-# train_gaze.py's GazeNet (dropout left out): each eye clip and face
-# clip to 64 numbers by its encoder, those and the 38 numbers
-# through a layer norm, 256 under ReLU, then the dot
+# train_gaze.py's GazeNet: each eye clip and face clip to 64
+# numbers by its encoder, those and each camera's 19 numbers through
+# a layer norm, 256 under ReLU (dropout 0.2 in training), the dot
 GNet GGazeNet
+    # the cameras it reads (1 or 2), and the first conv's kernel
+    public cams  : i64 [ 2 ]
+    public first : i64 [ 5 ]
+    # dropout's keep mask for the next training forward (each 0 or
+    # 1 / 0.8, [b, 256]); none: no dropout
+    public keep  : vec f32
+
+    # pytorch's GazeNet fresh: two encoders of three stages and a
+    # 64 dense layer, the head
+    func fresh []
+        begin_fresh[]
+        for [ pre: string ] in vec string [] [ 'eye', 'face' ]
+            fresh_convs[ pre, 3, first ]
+            fresh_layer[ '{pre}.22', vec i64 [] [ 64, 1024 ], 1024, true ]
+        width : i64 [ 3 * cams * 64 + cams * 19 ]
+        fresh_norm[ 'head.0', width, false ]
+        fresh_layer[ 'head.1', vec i64 [] [ 256, width ], width, true ]
+        fresh_layer[ 'head.4', vec i64 [] [ 2, 256 ], 256, true ]
+
+    # as the app reads it (hs_gaze_run): HSG4, the first kernel, the
+    # cameras, the first camera; each encoder's convs (batch norms
+    # folded) and dense layer, eye first, then the head's three
+    func write_gaze [ to: path, cam: i64 ] -> bool
+        fp : @FILE [ fopen[ '{to}'.chars, 'wb' ] ]
+        if [ !fp ] return false
+        head : vec i32 [] [ 877089608, i32[ first ], i32[ cams ],
+                            i32[ cam ] ]
+        fwrite[ @head[ 0 ], 4, 4, fp ]
+        for [ pre: string ] in vec string [] [ 'eye', 'face' ]
+            put_convs[ fp, pre, 3 ]
+            put_floats[ fp, '{pre}.22.weight' ]
+            put_floats[ fp, '{pre}.22.bias' ]
+        for [ nm: string ] in vec string [] [ 'head.0.weight',
+                'head.0.bias', 'head.1.weight', 'head.1.bias',
+                'head.4.weight', 'head.4.bias' ]
+            put_floats[ fp, nm ]
+        fclose[ fp ]
+        return true
+
     func encode [ x: GTensor, pre: string, train: bool ] -> GTensor
         nb : i64 [ x.dims[ 0 ] ]
         h : GTensor stages[ normalized[ x, nb ], pre, 3, train ]
@@ -536,20 +704,20 @@ GNet GGazeNet
         return gd.linear[ f, p[ '{pre}.22.weight' ],
                           p[ '{pre}.22.bias' ] ]
 
-    # eyes [b, 4, 32, 32], faces [b, 2, 32, 32], aux [b, 38]
+    # eyes [b, 2 cams, s, s], faces [b, cams, s, s], aux [b, 19 cams]
     func forward [ eyes: GTensor, faces: GTensor, aux: GTensor,
                    train: bool ] -> GTensor
         nb : i64 [ eyes.dims[ 0 ] ]
-        ev : GTensor gd.reshape[ eyes, vec i64 [] [ nb * 4, 1,
+        ev : GTensor gd.reshape[ eyes, vec i64 [] [ nb * 2 * cams, 1,
                                                     eyes.dims[ 2 ],
                                                     eyes.dims[ 3 ] ] ]
-        fv : GTensor gd.reshape[ faces, vec i64 [] [ nb * 2, 1,
+        fv : GTensor gd.reshape[ faces, vec i64 [] [ nb * cams, 1,
                                                      faces.dims[ 2 ],
                                                      faces.dims[ 3 ] ] ]
         e : GTensor gd.reshape[ encode[ ev, 'eye', train ],
-                                vec i64 [] [ nb, 256, 1 ] ]
+                                vec i64 [] [ nb, 128 * cams, 1 ] ]
         f : GTensor gd.reshape[ encode[ fv, 'face', train ],
-                                vec i64 [] [ nb, 128, 1 ] ]
+                                vec i64 [] [ nb, 64 * cams, 1 ] ]
         na : i64 [ aux.dims[ 1 ] ]
         a : GTensor gd.reshape[ aux, vec i64 [] [ nb, na, 1 ] ]
         all : GTensor gd.join[ gd.join[ e, f ], a ]
@@ -558,6 +726,11 @@ GNet GGazeNet
         nv : GTensor gd.reshape[ n, vec i64 [] [ nb, n.dims[ 1 ] ] ]
         h : GTensor gd.leaky[ gd.linear[ nv, p[ 'head.1.weight' ],
                                          p[ 'head.1.bias' ] ], 0.0 ]
+        if [ train && keep && keep.count == nb * 256 ]
+            m : GTensor gd.temp[ vec i64 [] [ nb, 256, 1 ] ]
+            gd.upload[ m, keep ]
+            h3 : GTensor gd.reshape[ h, vec i64 [] [ nb, 256, 1 ] ]
+            h = gd.reshape[ gd.mul[ h3, m ], vec i64 [] [ nb, 256 ] ]
         return gd.linear[ h, p[ 'head.4.weight' ], p[ 'head.4.bias' ] ]
 
     # its training loss: smooth L1 (beta 0.02) to the dots

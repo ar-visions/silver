@@ -1836,7 +1836,14 @@ abstract live_app media_app
                 name : 'app'
                 if [ aa ]
                     header : Au.header[ aa ]
-                    name = string [ header.au.ident ]
+                    # a view (--as a subclass): the app's own name
+                    at : Au_t header.au
+                    while [ at && ((at.traits >> 60) & 1) == 0
+                            && at.context ]
+                        at = at.context
+                    if [ !at || ((at.traits >> 60) & 1) == 0 ]
+                        at = header.au
+                    name = string [ at.ident ]
                 # hosted: one socket PER INSTANCE, or the newest
                 # instance of a module would answer for every other one
                 sl : i32 [ host_slot[] ]
@@ -1970,6 +1977,24 @@ abstract live_app media_app
                     ps : string props_spec[]
                     agent_sock_reply[ (ps
                         && ps.count > 0) ? '{ps}\n' : '\n\n' ]
+                    continue
+                # history [n]: the console's last n commands with
+                # their output; lines [n]: its last n lines; a line
+                # [end] ends the answer (the output has blank lines)
+                el [ cmd == 'history' || cmd == 'lines' ]
+                    con : Console console_in[ wn.focus ]
+                    if [ !con ] con = console_in[ wn.root ]
+                    cn : i32 [ (parts.count >= 2)
+                        ? i32[ parts[1].integer_value[] ] : 0 ]
+                    tx : string ''
+                    if [ con && cmd == 'history' ]
+                        tx = con.session[].transcript[
+                            (cn > 0) ? cn : 20 ]
+                    el [ con ]
+                        tx = con.session[].tail_lines[
+                            (cn > 0) ? cn : 200 ]
+                    agent_sock_reply[ (con) ? '{tx}\n[end]\n'
+                        : 'no console\n[end]\n' ]
                     continue
                 # stats: the last second's frame and gpu counters
                 # each asks the next two seconds' GPU time per pass
@@ -9704,7 +9729,8 @@ element TButtons
             if [ rest_hover && !off ]
                 fcol = (rest_fill) ? rest_fill : rgba [ '#ff7a7a1c' ]
                 gc   = rgba [ '#fcc1' ]
-                gpx  = 13.0
+                # hovered, a wider inner glow for the pointer's light
+                gpx  = (i == hover_ix) ? 20.0 : 13.0
             # hover brightens first, at half strength (rest_hover: no
             # lift of its own, its hover is the pointer's light)...
             # a row with its own fill keeps it: hover is the pointer's
@@ -9744,19 +9770,17 @@ element TButtons
                             tr, br, bl ]
                     cv.fill_color[ rgba [ '#0000' ] ]
                     cv.box_shadow[ gc, 0.0, 0.0, gpx, 0.0, true ]
-                    # the lit segment: the instance row's blue pointer
-                    # light; a hovered one grey at full; the rest faint
+                    # the pointer's light in the inner glow, one colour:
+                    # stronger on the hovered segment, never another
+                    # (a fainter one read as darker); an own-fill row
+                    # lit takes little
                     if [ rest_hover || rest_fill ]
                         hv : bool [ i == hover_ix && !lit ]
                         w.near_light_reach[ cv, a, 0.0, 0.0, seg_reach ]
-                        # an own-fill row: a faint grey near light on
-                        # hover, none lit
                         lt : f32 [ (rest_fill) ? 0.2 : 3.0 ]
                         cv.near_style[ 0.0,
-                            (hv) ? ((rest_fill) ? 3.0 : 5.0)
-                            : ((lit) ? lt : 0.2),
-                            (hv)
-                            ? rgba [ (rest_fill) ? '#fff6' : '#fff9' ] : rgba [ '#c890ffff' ], w.near_y_fade ]
+                            (hv) ? 8.0 : ((lit) ? lt : 2.0),
+                            rgba [ '#c890ffff' ], w.near_y_fade ]
                     cv.rounded[ (gl > 0.0) ? tl : 0.0,
                                 (gr > 0.0) ? tr : 0.0,
                                 (gr > 0.0) ? br : 0.0,
@@ -9838,12 +9862,21 @@ element TButtons
                     cv.draw_svg[ xs, cx - cr * 0.6, cy - cr * 0.6,
                                  cr * 1.2, cr * 1.2 ]
             cv.set_opacity[ op ]
+        # the lines' and the outline's light reaches 1.5 strips'
+        # heights (times seg_reach): lit near the pointer only, a
+        # round falloff along them (a full reach lit each line end to
+        # end); the segments' reach kept for the repaint test
+        far : f32 a.near_far
+        dr : f32 [ bounds.h * 1.5 * seg_reach
+            / max[ w.near_reach * ux_unit[ w ], 1.0 ] ]
         if [ seg_line && !collapse ]
             for [ i: i32 1, i < n, i += 1 ]
                 lx : f32 [ roundf[ seg_x[ i ] ] + 0.5 ]
                 cv.save[]
-                w.near_light_on[ cv, a, 0.0, 0.0 ]
-                cv.near_style[ 1.0, 0.0, null, w.near_y_fade ]
+                # twice the outline's reach and light: a faint line
+                # takes it weakly
+                w.near_light_reach[ cv, a, 0.0, 0.0, dr * 2.0 ]
+                cv.near_style[ 2.0, 0.0, null, w.near_y_fade ]
                 cv.fill_color[ rgba [ '#0000' ] ]
                 cv.stroke_color[ seg_line ]
                 cv.stroke_width[ 1.0 ]
@@ -9852,6 +9885,7 @@ element TButtons
                 cv.line_to[ lx, bounds.h ]
                 cv.paint[ ]
                 cv.restore[]
+            a.near_far = max[ far, dr * 2.0 ]
         # a disabled segment takes no light; neighbours share one line
         if [ seg_near && !collapse ]
             for [ i: i32 0, i < n, i += 1 ]
@@ -9900,6 +9934,9 @@ element TButtons
         # coverage
         dw  : f32 [ round[ bounds.w * sc ] / sc ]
         dh  : f32 [ round[ bounds.h * sc ] / sc ]
+        cv.save[]
+        w.near_light_reach[ cv, a, 0.0, 0.0, dr ]
+        cv.near_style[ 1.0, 0.0, null, w.near_y_fade ]
         cv.fill_color[ rgba [ '#0000' ] ]
         cv.set_stroke_size[ 1.0 ]
         cv.stroke_sides[ 1.0, 1.0, 1.0, 1.0 ]
@@ -9910,6 +9947,8 @@ element TButtons
             (ok) ? corners.x : seg_radius, (ok) ? corners.y : seg_radius,
             (ok) ? corners.z : seg_radius, (ok) ? corners.w : seg_radius ]
         cv.paint[ ]
+        cv.restore[]
+        a.near_far = max[ far, dr ]
         cv.set_stroke_size[ 0.0 ]
         cv.stroke_sides[ 0.0, 0.0, 0.0, 0.0 ]
         cv.stroke_offset[ 0.0 ]

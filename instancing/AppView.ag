@@ -828,8 +828,11 @@ class AppView
         host_watch[ slot ]
         tell_place[ cv, bounds ]
         ft : front[]
-        # the new size not drawn yet: the old picture at its own size
+        # the new size not drawn yet: the old picture at its own size,
+        # the app still asked each frame (its new size comes sooner)
         if [ !ft && was_tex && have_frame ]
+            request_frame[ cv ]
+            req_drawn = true
             ow : f32 [ f32[ was_w ] / ((ascale > 0.0) ? ascale : 1.0) ]
             oh : f32 [ f32[ was_h ] / ((ascale > 0.0) ? ascale : 1.0) ]
             if [ locked && was_h > 0 ]

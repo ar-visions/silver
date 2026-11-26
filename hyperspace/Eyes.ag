@@ -14,6 +14,12 @@ func hs_gaze_uses [ net: handle, c: i32 ] -> i32
 func hs_gaze_run [ net: handle, clips0: @f32, aux0: @f32, sound0: i32,
                    clips1: @f32, aux1: @f32, sound1: i32,
                    out: @f32 ] -> i32
+# the hand nets on a thread: hands.hsn, point.hsn, handfind.hsn
+func hs_hand_open [ dir: cstr ] -> handle
+func hs_hand_has [ hand: handle ] -> i32
+func hs_hand_put [ hand: handle, grey: @u8, w: i32, h: i32 ]
+func hs_hand_get [ hand: handle, out: @f32, ms: @f32 ] -> i32
+func hs_hand_free [ hand: handle ]
 
 # the gaze from both cameras: their workers' clips, numbers and
 # checks to the gaze net (models/gaze.hsg)
@@ -39,27 +45,38 @@ class GazeHub
     func dealloc []
         if [ net ] hs_gaze_free[ net ]
 
+    # the gaze net, read once (none: missing)
+    func load []
+        if [ tried ] return
+        tried = true
+        p : string '{hs_models[]}/gaze.hsg'
+        net = hs_gaze_load[ p.chars ]
+        missing = !net
+        clips = vec f32 []
+        aux = vec f32 []
+        clips2 = vec f32 []
+        aux2 = vec f32 []
+        for [ i: i32 0, i < 3 * 32 * 32, i += 1 ]
+            clips.push[ 0.0 ]
+            clips2.push[ 0.0 ]
+        for [ i: i32 0, i < 18, i += 1 ]
+            aux.push[ 0.0 ]
+            aux2.push[ 0.0 ]
+
+    # a camera the gaze net reads (no net: the first alone): only
+    # those look for eyes
+    func reads [ slot: i32 ] -> bool
+        load[]
+        if [ !net ] return slot == 0
+        return hs_gaze_uses[ net, slot ] != 0
+
     func put [ slot: i32, worker: handle ]
         if [ slot == 0 ] first = worker
         el [ slot == 1 ] second = worker
 
     # a new dot when either camera has a new answer
     func step []
-        if [ !tried ]
-            tried = true
-            p : string '{hs_models[]}/gaze.hsg'
-            net = hs_gaze_load[ p.chars ]
-            missing = !net
-            clips = vec f32 []
-            aux = vec f32 []
-            clips2 = vec f32 []
-            aux2 = vec f32 []
-            for [ i: i32 0, i < 3 * 32 * 32, i += 1 ]
-                clips.push[ 0.0 ]
-                clips2.push[ 0.0 ]
-            for [ i: i32 0, i < 18, i += 1 ]
-                aux.push[ 0.0 ]
-                aux2.push[ 0.0 ]
+        load[]
         if [ !net ] return
         # only the cameras the net reads (one, or both)
         one : bool [ hs_gaze_uses[ net, 0 ] != 0 ]
@@ -110,9 +127,20 @@ CameraView EyeView
     intern grey   : vec u8
     intern pic    : Texture
     intern drawn  : i32
+    # the hand nets (the bottom camera's) and their last answer
+    intern hand   : handle
+    intern hand_tried : bool
+    intern hand_out : vec f32
+    intern hand_at : i64
+    # where the hand points on the screen (from its middle, shares
+    # of its width and height), when a hand is there
+    public pt_on : bool
+    public pt_x : f32
+    public pt_y : f32
 
     func dealloc []
         if [ worker ] hs_worker_free[ worker ]
+        if [ hand ] hs_hand_free[ hand ]
 
     # a square of a colour, centred on a point of the frame
     func mark [ cv: Canvas, x: f32, y: f32, size: f32, color: string ]
@@ -131,6 +159,85 @@ CameraView EyeView
         if [ paint_off ] return
         cv : Canvas w.screen
         full : rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ]
+        # the eyes only on a camera the gaze reads; the hands on the
+        # bottom one
+        if [ !hub || hub.reads[ slot ] ] eyes_draw[ cv, full ]
+        el
+            cv.draw_image[ camera.image, full ]
+            cv.paint[]
+        if [ slot == 1 ] hand_draw[ cv ]
+
+    # the bottom camera's hand nets: fed each new frame, their answer
+    # drawn over it (the bends and spread as bars, the finder's box);
+    # the point kept for the screen
+    func hand_draw [ cv: Canvas ]
+        if [ !hand_tried ]
+            hand_tried = true
+            dir : string '{hs_models[]}/hands'
+            hand = hs_hand_open[ dir.chars ]
+            hand_out = vec f32 [ 14 ]
+        if [ !hand ]
+            hs_text[ cv, 'no hand models in {hs_models[]}/hands', 12.0,
+                bounds.h - 28.0, bounds.w, 20.0, 14.0, '#ffffffa0' ]
+            return
+        if [ camera.taken != hand_at ]
+            hand_at = camera.taken
+            img : Image frame_image[]
+            if [ img ]
+                px : @u8 img.vdata[]
+                hs_hand_put[ hand, px, camera.width, camera.height ]
+        ms : f32 [ 0.0 ]
+        if [ hs_hand_get[ hand, @hand_out[ 0 ], @ms ] == 0 ] return
+        has : i32 hs_hand_has[ hand ]
+        o : vec f32 hand_out
+        # the bends and spread only while the hand model sees a hand
+        if [ (has & 1) != 0 && o[ 0 ] > 0.5 ]
+            names : vec string [] [ 'hand', 'thumb', 'index', 'middle',
+                'ring', 'little', 'spread' ]
+            for [ i: i32 0, i < 7, i += 1 ]
+                y : f32 [ 32.0 + 18.0 * f32[ i ] ]
+                v : f32 [ min[ max[ o[ i ], 0.0 ], 1.0 ] ]
+                cv.fill_color[ rgba [ '#00000080' ] ]
+                cv.rect_to[ 70.0, y + 4.0, 100.0, 10.0 ]
+                cv.paint[]
+                cv.fill_color[ rgba [ (i == 0) ? '#46ff6e' : '#806bff' ] ]
+                cv.rect_to[ 70.0, y + 4.0, 100.0 * v, 10.0 ]
+                cv.paint[]
+                hs_text[ cv, names[ i ], 12.0, y, 56.0, 18.0, 13.0,
+                    '#ffffffc0' ]
+        pt_on = (has & 2) != 0 && o[ 7 ] > 0.5
+        pt_x = o[ 8 ]
+        pt_y = o[ 9 ]
+        if [ (has & 4) != 0 && o[ 10 ] > 0.5 ]
+            # the finder's box, and the crop the point model reads
+            # (a quarter larger: every joint inside)
+            bx : f32 [ o[ 11 ] * bounds.w ]
+            by : f32 [ o[ 12 ] * bounds.h ]
+            for [ g: i32 0, g < 2, g += 1 ]
+                hs : f32 [ o[ 13 ] * bounds.w / 2.0
+                           * ((g == 0) ? 1.0 : 1.25) ]
+                cv.save[]
+                cv.fill_color[ rgba [ '#0000' ] ]
+                cv.stroke_color[ rgba [ (g == 0) ? '#4aff6e'
+                                                 : '#4aff6e60' ] ]
+                cv.stroke_width[ 2.0 ]
+                cv.rect_to[ bx - hs, by - hs, hs * 2.0, hs * 2.0 ]
+                cv.paint[]
+                cv.restore[]
+            # and a circle round the hand, the box's width across
+            cv.save[]
+            cv.fill_color[ rgba [ '#0000' ] ]
+            cv.stroke_color[ rgba [ '#4aff6e' ] ]
+            cv.stroke_width[ 2.0 ]
+            cv.arc[ bx, by, o[ 13 ] * bounds.w / 2.0, 0.0, 6.2832 ]
+            cv.paint[]
+            cv.restore[]
+        hs_text[ cv, 'hand {i32[ ms ]} ms', 12.0, bounds.h - 28.0,
+            bounds.w, 20.0, 14.0, '#ffffffa0' ]
+
+    # the eye nets: fed each new frame, the eyes drawn over the frame
+    # their answer came from
+    func eyes_draw [ cv: Canvas, full: rect ]
         if [ !tried ]
             tried = true
             dir : string '{hs_models[]}'

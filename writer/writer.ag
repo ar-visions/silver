@@ -1854,31 +1854,19 @@ element WriterBar
             area: l0 b1px r0 h1px
     }
 
-    # a segment's share: one, more for a longer mark
-    func weight [ m: string ] -> f32
-        return max[ 1.0, f32[ m.count ] * 0.42 + 0.3 ]
-
-    # a group's width at seg a share
-    func marks_w [ marks: vec string, seg: f32 ] -> f32
-        n : f32 [ 0.0 ]
-        for [ m: string ] in marks
-            n += weight[ m ]
-        return round[ n * seg ]
-
-    func group [ ids: vec string, marks: vec string, lit: i32,
+    # a group of icon buttons (writer/images, Material Symbols), a
+    # segment each, seg wide
+    func group [ ids: vec string, icons: vec string, lit: i32,
                  x: f32, seg: f32, h: f32 ] -> TButtons
         ty : f32 [ (wide - h) * 0.5 ]
-        w : f32 marks_w[ marks, seg ]
-        weights : vec f32 []
-        for [ m: string ] in marks
-            weights.push[ weight[ m ] ]
-        return TButtons [ buttons: ids, labels: marks, icons: false,
-            seg_weights: weights,
-            manual: true, sel_mask: lit, label_px: 14.0,
+        w : f32 [ round[ f32[ ids.count ] * seg ] ]
+        return TButtons [ buttons: ids, icon_ids: icons,
+            manual: true, sel_mask: lit, icon_scale: 0.62,
             seg_radius: 7.0, rest_fill: rgba [ '#ffffff08' ],
             lit_fill: rgba [ '#4d3dbcaa' ],
             rest_glow: rgba [ '#806bff22' ], rest_px: 6.0,
             seg_line: rgba [ '#ffffff10' ], rest_hover: true,
+            seg_reach: 0.5,
             area: Region [ 'l{x}px t{ty}px w{w}px h{h}px' ] ]
 
     public func render [] -> Elements
@@ -1894,47 +1882,47 @@ element WriterBar
         hl : i32 [ 0 ]
         if [ k == 0 ] hl = 1
         el [ k >= 1 && k <= 3 ] hl = 1 << k
-        km : vec string [] [ "¶", "#", "##", "###" ]
         t['w_kinds'] = group[
-            vec string [] [ 'w_p', 'w_h1', 'w_h2', 'w_h3' ], km, hl, x,
-            sw, h ]
-        x += marks_w[ km, sw ] + gp
-        mm : vec string [] [ "**", "*", "~~", "`", "[]()" ]
+            vec string [] [ 'w_p', 'w_h1', 'w_h2', 'w_h3' ],
+            vec string [] [ 'format_paragraph', 'format_h1',
+                            'format_h2', 'format_h3' ], hl, x, sw, h ]
+        x += 4.0 * sw + gp
         t['w_marks'] = group[
             vec string [] [ 'w_bold', 'w_ital', 'w_strike', 'w_code',
-                            'w_link' ], mm, 0, x, sw, h ]
-        x += marks_w[ mm, sw ] + gp
+                            'w_link' ],
+            vec string [] [ 'format_bold', 'format_italic',
+                            'format_strikethrough', 'code', 'link' ],
+            0, x, sw, h ]
+        x += 5.0 * sw + gp
         ll : i32 [ 0 ]
         if [ k == 8 ] ll = 1
         el [ k == 9 ] ll = 2
         el [ k == 12 ] ll = 4
         el [ k == 10 ] ll = 8
-        lm : vec string [] [ "-", "1.", "[ ]", ">" ]
         t['w_lists'] = group[
-            vec string [] [ 'w_ul', 'w_ol', 'w_task', 'w_quote' ], lm,
-            ll, x, sw, h ]
-        x += marks_w[ lm, sw ] + gp
-        bm : vec string [] [ "```", "---", "|" ]
+            vec string [] [ 'w_ul', 'w_ol', 'w_task', 'w_quote' ],
+            vec string [] [ 'format_list_bulleted',
+                            'format_list_numbered', 'checklist',
+                            'format_quote' ], ll, x, sw, h ]
+        x += 4.0 * sw + gp
         t['w_blocks'] = group[
-            vec string [] [ 'w_fence', 'w_rule', 'w_table' ], bm,
+            vec string [] [ 'w_fence', 'w_rule', 'w_table' ],
+            vec string [] [ 'code_blocks', 'horizontal_rule', 'table' ],
             (k == 7) ? 1 : 0, x, sw, h ]
-        # save, lit while there is something to save
+        # save, lit while there is something to save; dim when the
+        # file cannot be written
         rx : f32 [ round[ 16.0 * un ] ]
-        sw2 : f32 [ round[ 76.0 * un ] ]
         sy : f32 [ (wide - h) * 0.5 ]
-        st : string 'saved'
-        if [ doc.dirty ] st = 'save'
-        if [ doc.refused ] st = 'read only'
         t['w_saves'] = TButtons [
             buttons: vec string [] [ 'w_save' ],
-            labels: vec string [] [ st ],
-            icons: false, manual: true, sel_mask: (doc.dirty) ? 1 : 0,
-            label_px: 14.0, seg_radius: 7.0,
+            icon_ids: vec string [] [ 'save' ], icon_scale: 0.62,
+            manual: true, sel_mask: (doc.dirty) ? 1 : 0,
+            disable_mask: (doc.refused) ? 1 : 0, seg_radius: 7.0,
             rest_fill: rgba [ '#ffffff08' ],
             lit_fill: rgba [ '#ff84ff55' ],
             rest_glow: rgba [ '#806bff22' ], rest_px: 6.0,
             rest_hover: true,
-            area: Region [ 'r{rx}px t{sy}px w{sw2}px h{h}px' ] ]
+            area: Region [ 'r{rx}px t{sy}px w{sw}px h{h}px' ] ]
         return t
 
     # the file's name and its words, right of the buttons
@@ -1949,7 +1937,7 @@ element WriterBar
         bf : string 'fonts/BarlowCondensed-Regular.ttf'
         cv.set_font[ shared_font[ cv, bf, label_px[ cv, 17.0 ] ] ]
         cv.fill_color[ '#9a94c4' ]
-        rw : f32 [ round[ 108.0 * un ] ]
+        rw : f32 [ round[ 62.0 * un ] ]
         cv.draw_text[ info,
             rect [ x: 0.0, y: 0.0, w: bounds.w - rw,
                    h: bounds.h ],

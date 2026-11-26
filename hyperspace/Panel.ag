@@ -7,6 +7,9 @@ element HyperspacePanel
     # the file as last saved: a change differs from it
     intern saved : string
     intern note : string
+    intern del_ms : i64
+    intern job_ms : i64
+    intern seen_ms : i64
 
     func init []
         rig = hs_rig_load[ '/dev/video0' ]
@@ -14,6 +17,11 @@ element HyperspacePanel
 
     # a valid change saves itself; the service reads the file
     public func tick [ w: Window ]
+        # training's states and the models' times read each second
+        now : i64 epoch_millis[]
+        if [ now - seen_ms > 1000 ]
+            seen_ms = now
+            pristine = false
         if [ !rig || !elements || !elements.contains[ 'fov' ] ] return
         was : string problem
         if [ !apply[] ]
@@ -48,6 +56,21 @@ element HyperspacePanel
         seed[ 'mount_z', '{mount.z_m}' ]
         seed[ 'tilt', '{mount.tilt_deg}' ]
         seed[ 'fov', '{mount.fov_deg}' ]
+
+    # a job's state in a word: never run, running, ended n, stopped
+    func job_word [ jn: string ] -> string
+        st : string hs_job_state[ jn ]
+        return (st.count > 0) ? st : 'never run'
+
+    # a job's button: Stop while it runs
+    func job_label [ jn: string, word: string ] -> string
+        return (hs_job_state[ jn ] == 'running') ? 'Stop' : word
+
+    # a model's time, or missing
+    func model_word [ nm: string ] -> string
+        f : path '{hs_models[]}/{nm}'
+        if [ !f.exists[] ] return 'missing'
+        return hs_when[ f.modified_time[] ]
 
     func device_ok [ device: string ] -> bool
         return device.count > 0 && device.index_of[ ' ' ] < 0
@@ -97,25 +120,41 @@ element HyperspacePanel
             out[ 'camera_{i}' ] = PageButton [
                 label: 'camera {i + 1}', selected: i == chosen,
                 area: Region [ 'l{0.7 + f32[i] * 3.5} '
-                    + 't8.65 w3.2 h1.05' ] ]
+                    + 't6.3 w3.2 h1.05' ] ]
         out['add_camera'] = PageButton [ label: '+ camera',
-            area: Region { r0.7 t8.65 w4 h1.05 } ]
+            area: Region { r0.7 t6.3 w4 h1.05 } ]
         out['screen_width'] = input[ 'screen_width',
-            '{rig.screen_width_m}', 'l0.7 t11.0 w4.8 h1.3' ]
+            '{rig.screen_width_m}', 'l0.7 t8.4 w4.8 h1.15' ]
         out['screen_height'] = input[ 'screen_height',
-            '{rig.screen_height_m}', 'l5.8 t11.0 w4.8 h1.3' ]
+            '{rig.screen_height_m}', 'l5.8 t8.4 w4.8 h1.15' ]
         out['device'] = input[ 'device', mount.device,
-            'l10.9 t11.0 r0.7 h1.3' ]
+            'l10.9 t8.4 r0.7 h1.15' ]
         out['mount_x'] = input[ 'mount_x', '{mount.x_m}',
-            'l0.7 t13.7 w4.8 h1.3' ]
+            'l0.7 t10.6 w4.8 h1.15' ]
         out['mount_y'] = input[ 'mount_y', '{mount.y_m}',
-            'l5.8 t13.7 w4.8 h1.3' ]
+            'l5.8 t10.6 w4.8 h1.15' ]
         out['mount_z'] = input[ 'mount_z', '{mount.z_m}',
-            'l10.9 t13.7 w4.8 h1.3' ]
+            'l10.9 t10.6 w4.8 h1.15' ]
         out['tilt'] = input[ 'tilt', '{mount.tilt_deg}',
-            'l0.7 t16.4 w4.8 h1.3' ]
+            'l0.7 t12.8 w4.8 h1.15' ]
         out['fov'] = input[ 'fov', '{mount.fov_deg}',
-            'l5.8 t16.4 w4.8 h1.3' ]
+            'l5.8 t12.8 w4.8 h1.15' ]
+        # training, a section each: the eye detector (find, target,
+        # the eye stage) and gaze; ctrl / cmd or shift shows Delete
+        dele : bool [ ux && (ux.cmd || ux.shift) ]
+        # a running job's own button is its Stop
+        out[ 'job_eyes' ] = PageButton [
+            label: job_label[ 'eyes', 'Train' ],
+            area: Region { l0.7 t16.3 w2.8 h1.05 } ]
+        if [ dele ]
+            out[ 'del_eyes' ] = RecDelete [ label: 'Delete',
+                area: Region { l3.7 t16.3 w2.6 h1.05 } ]
+        out[ 'job_gaze' ] = PageButton [
+            label: job_label[ 'gaze', 'Train' ],
+            area: Region { l12.5 t16.3 w2.8 h1.05 } ]
+        if [ dele ]
+            out[ 'del_gaze' ] = RecDelete [ label: 'Delete',
+                area: Region { l15.5 t16.3 w2.6 h1.05 } ]
         return out
 
     func text [ cv: Canvas, label: string, x: f32, y: f32,
@@ -180,7 +219,7 @@ element HyperspacePanel
         front_x : f32 [ 0.7 * unit ]
         front_y : f32 [ 0.45 * unit ]
         front_w : f32 [ 13.8 * unit ]
-        front_h : f32 [ 7.7 * unit ]
+        front_h : f32 [ 5.6 * unit ]
         side_x : f32 [ 15.2 * unit ]
         side_w : f32 [ 8.1 * unit ]
         text[ cv, 'front: x right, y up', front_x, front_y,
@@ -219,27 +258,48 @@ element HyperspacePanel
             camera_y : f32 [ center_y - mount.y_m * scale ]
             camera_shape[ cv, mount, i, camera_x, camera_y ]
             tilt_shape[ cv, mount, i, camera_x, camera_y, unit ]
-        text[ cv, 'screen width (meters)', 0.7 * unit, 10.0 * unit,
+        text[ cv, 'screen width (meters)', 0.7 * unit, 7.6 * unit,
             4.8 * unit, unit, 13.0, '#ffffff80' ]
         text[ cv, 'screen height (meters)', 5.8 * unit,
-            10.0 * unit, 4.8 * unit, unit, 13.0, '#ffffff80' ]
-        text[ cv, 'camera device', 10.9 * unit, 10.0 * unit,
+            7.6 * unit, 4.8 * unit, unit, 13.0, '#ffffff80' ]
+        text[ cv, 'camera device', 10.9 * unit, 7.6 * unit,
             8.5 * unit, unit, 13.0, '#ffffff80' ]
-        text[ cv, 'x right (meters)', 0.7 * unit, 12.7 * unit,
+        text[ cv, 'x right (meters)', 0.7 * unit, 9.8 * unit,
             4.8 * unit, unit, 13.0, '#ffffff80' ]
-        text[ cv, 'y up (meters)', 5.8 * unit, 12.7 * unit,
+        text[ cv, 'y up (meters)', 5.8 * unit, 9.8 * unit,
             4.8 * unit, unit, 13.0, '#ffffff80' ]
         text[ cv, 'z toward user (meters)', 10.9 * unit,
-            12.7 * unit, 6.5 * unit, unit, 13.0, '#ffffff80' ]
-        text[ cv, 'tilt (degrees)', 0.7 * unit, 15.4 * unit,
+            9.8 * unit, 6.5 * unit, unit, 13.0, '#ffffff80' ]
+        text[ cv, 'tilt (degrees)', 0.7 * unit, 12.0 * unit,
             4.8 * unit, unit, 13.0, '#ffffff80' ]
         text[ cv, 'field of view (degrees)', 5.8 * unit,
-            15.4 * unit, 5.8 * unit, unit, 13.0, '#ffffff80' ]
+            12.0 * unit, 5.8 * unit, unit, 13.0, '#ffffff80' ]
+        # each section: its jobs' states, its models' times, gaze's
+        # last result
+        text[ cv, 'eye detector', 0.7 * unit, 15.2 * unit, 11.0 * unit,
+            unit, 14.0, '#e4e4ea' ]
+        text[ cv, 'training: {job_word[ 'eyes' ]}', 0.7 * unit,
+            17.6 * unit,
+            11.4 * unit, unit, 13.0, '#ffffff80' ]
+        text[ cv, 'models: {model_word[ 'find.hsn' ]}', 0.7 * unit,
+            18.5 * unit, 11.4 * unit, unit, 13.0, '#ffffff80' ]
+        text[ cv, 'gaze', 12.5 * unit, 15.2 * unit, 11.0 * unit, unit,
+            14.0, '#e4e4ea' ]
+        text[ cv, 'training: {job_word[ 'gaze' ]}   model: '
+            + '{model_word[ 'gaze.hsg' ]}', 12.5 * unit, 17.6 * unit,
+            11.0 * unit, unit, 13.0, '#ffffff80' ]
+        gr : string hs_gaze_result[]
+        if [ gr.count > 0 ]
+            # its mean and median, the baselines after it left out
+            bar : i32 [ i32[ gr.index_of[ ', worst' ] ] ]
+            if [ bar > 0 ] gr = gr.mid[ 0, bar ]
+            text[ cv, gr, 12.5 * unit, 18.5 * unit, 11.0 * unit, unit,
+                13.0, '#ffffff80' ]
         if [ problem && problem.count > 0 ]
-            text[ cv, problem, 0.7 * unit, 18.0 * unit,
+            text[ cv, problem, 0.7 * unit, 14.1 * unit,
                 22.6 * unit, unit, 13.0, '#ff8a8a' ]
         el [ note && note.count > 0 ]
-            text[ cv, note, 0.7 * unit, 18.0 * unit,
+            text[ cv, note, 0.7 * unit, 14.1 * unit,
                 22.6 * unit, unit, 13.0, '#ffffff80' ]
 
     public func on_click [ ev: Event ]
@@ -249,6 +309,25 @@ element HyperspacePanel
             chosen = i32[ item.id.mid[ 7,
                 item.id.count - 7 ].integer_value[] ]
             seed_mount[]
+        el [ item.id.starts_with[ 'job_' ] ]
+            # a click arrives twice: the toggle takes the first alone
+            if [ epoch_millis[] - job_ms < 300 ] return
+            job_ms = epoch_millis[]
+            jn : string item.id.mid[ 4, item.id.count - 4 ]
+            # only a job running: a finished one's pid may be reused
+            if [ hs_job_state[ jn ] == 'running' ] hs_job_stop[ jn, '' ]
+            el hs_job_go[ jn, '' ]
+        el [ item.id == 'del_eyes' || item.id == 'del_gaze' ]
+            # a click arrives twice: a delete takes the first alone
+            if [ epoch_millis[] - del_ms < 300 ] return
+            del_ms = epoch_millis[]
+            names : vec string [] [ 'gaze.hsg', 'gaze.pt' ]
+            if [ item.id == 'del_eyes' ]
+                names = vec string [] [ 'find.hsn', 'target.hsn',
+                                        'eye.hsn' ]
+            for [ nm: string ] in names
+                f : path '{hs_models[]}/{nm}'
+                if [ f.exists[] ] hs_model_trash[ nm ]
         el [ item.id == 'add_camera' ]
             if [ !apply[] ] return
             rig.mounts.push[ HsMount [] ]

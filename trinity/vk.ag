@@ -7004,7 +7004,6 @@ Texture Display
             if [ scale <= 0.0 ] scale = 1.0
             extent.width  = u32[ f32[ width ] * scale ]
             extent.height = u32[ f32[ height ] * scale ]
-            log 'display: no surface {width}x{height} points, scale {scale}'
 
     # a parallel reload builds its display beside the live one: the
     # swapchain is made on its first owned frame, retiring the live one

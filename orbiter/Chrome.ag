@@ -1978,8 +1978,9 @@ func orbiter.drawer_x [] -> f32
     if [ menu_kind == 'popup' && popup_right && ux && ux.root
          && ux.root.bounds ]
         return ux.root.bounds.w - round[ 10.91 * unit_px[] ]
-    # a card's info menu: beside the dock, over the cards
-    if [ menu_kind == 'appinfo' ] return dock_w[]
+    # a card's info menu or a store's login: beside the dock
+    if [ menu_kind == 'appinfo' || menu_kind == 'login' ]
+        return dock_w[]
     # a popup over the main menu: at the menu's own left edge
     if [ menu_kind == 'popup' && popup_x >= 0.0 ] return popup_x
     if [ menu_kind == 'popup' ] return (sys_under) ? sys_x[] : 0.0

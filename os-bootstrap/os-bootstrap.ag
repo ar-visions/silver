@@ -217,16 +217,9 @@ func answer_word [ f: string, key: string ] -> string
             return t.mid[ key.count + 1, t.count - key.count - 1 ].trim[]
     return ''
 
-# its 'key: [ a, b ]' as names
-func answer_list [ f: string, key: string ] -> vec string
-    out : vec string []
-    w : string answer_word[ f, key ]
-    for [ p: string ] in w.split[ ',' ]
-        n : string p.trim[]
-        while [ n.starts_with[ '[' ] ] n = n.mid[ 1, n.count - 1 ].trim[]
-        while [ n.ends_with[ ']' ] ] n = n.mid[ 0, n.count - 1 ].trim[]
-        if [ n.count > 0 ] out.push[ n ]
-    return out
+# an embedded device's tree, beside the drive's
+func embedded_home [] -> string
+    return '{tree_home[]}/embedded'
 
 func drive_tree [] -> string
     return '{tree_home[]}/root'
@@ -607,8 +600,8 @@ element Bootstrap
     # an unattended install's answers (an InstallAnswers .agi) put
     # on the stick: it boots, installs itself, with no screen
     mutable stick_answers : string [ '' ]
-    # a server's tree carries these apps alone (null: every app)
-    mutable only_apps : vec string
+    # an embedded device (no screen): its services alone
+    mutable embedded : bool
     mutable drives_at  : i64
     intern  tid        : pthread_t
     # the page: '' the kernels, 'build' a new one's choices
@@ -3328,8 +3321,7 @@ element Bootstrap
                 t : string r.load[ typeid[ string ], null ]
                 if [ !t ] continue
                 t = '\n{t}'
-                if [ t.index_of[ '\nsoftware:' ] < 0
-                        && t.index_of[ '\nscenes:' ] < 0 ] continue
+                if [ !ships[ t, mod ] ] continue
                 names.push[ mod ]
         for [ mod: string ] in names
             # the launcher's rule: a listed source newer than the
@@ -3880,6 +3872,18 @@ element Bootstrap
         if [ e <= 0 ] return ''
         return word.mid[ 0, e ]
 
+    # a module the tree carries, by its record's category (t
+    # starts with a newline): embedded, the services and the app
+    func ships [ t: string, mod: string ] -> bool
+        if [ embedded ]
+            if [ mod == app ] return true
+            sv : bool [ t.index_of[ '\nserves:' ] >= 0
+                || t.index_of[ '\ndaemon:' ] >= 0 ]
+            return sv
+        sw : bool [ t.index_of[ '\nsoftware:' ] >= 0
+            || t.index_of[ '\nscenes:' ] >= 0 ]
+        return sw
+
     # every built app and scene module (the export registry's
     # software: and scenes: lines) with all it needs to run
     func add_apps []
@@ -3893,15 +3897,10 @@ element Bootstrap
             t : string r.load[ typeid[ string ], null ]
             if [ !t ] continue
             t = '\n{t}'
-            app : bool [ t.index_of[ '\nsoftware:' ] >= 0 ]
-            scene : bool [ t.index_of[ '\nscenes:' ] >= 0 ]
-            if [ !app && !scene ] continue
             stem : nm.mid[ 0, nm.count - 4 ]
-            # a server's tree: only the apps it was asked for
-            if [ only_apps ]
-                om : string [ (stem.starts_with[ 'silver-' ])
-                    ? stem.mid[ 7, stem.count - 7 ] : stem ]
-                if [ !only_apps.contains[ om ] ] continue
+            om : string [ (stem.starts_with[ 'silver-' ])
+                ? stem.mid[ 7, stem.count - 7 ] : stem ]
+            if [ !ships[ t, om ] ] continue
             # a module whose source is gone left a stale record
             srcf : first_line[ '{install}/build/{stem}.source' ].trim[]
             if [ srcf.count > 0 ]
@@ -4482,15 +4481,13 @@ element main : trinity
             return
         if [ image && image.count > 0 ]
             if [ answers ] b.stick_answers = answers
-            # a server (headless): its own tree, orbiter and the
-            # answers' services alone
-            hl : string [ (answers) ? answer_word[ answers, 'headless' ]
+            # embedded: its own tree, orbiter and the services
+            em : string [ (answers) ? answer_word[ answers, 'embedded' ]
                 : '' ]
-            if [ hl == 'true' ]
-                b.only_apps = answer_list[ answers, 'services' ]
-                b.only_apps.push[ 'orbiter' ]
-                b.out_dir = path '{tree_home[]}/headless'
-                log 'os-bootstrap: a server: {b.only_apps.count} apps'
+            if [ em == 'true' ]
+                b.embedded = true
+                b.out_dir = path [ embedded_home[] ]
+                log 'os-bootstrap: embedded: the services alone'
             # the tree brought up to this build first: the apps as
             # they are now (only newer files are copied)
             b.out_dir.make_dir[]

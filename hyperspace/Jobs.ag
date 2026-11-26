@@ -3,11 +3,14 @@ extend hyperspace
 # the training jobs, as the export names them (jobs: in
 # install/export/silver-hyperspace.agi); each one's button label
 func hs_job_names [] -> vec string
-    return vec string [] [ 'eyes', 'export', 'gaze' ]
+    return vec string [] [ 'eyes', 'gaze', 'handfind', 'hands',
+        'point' ]
 
 func hs_job_label [ jn: string ] -> string
     if [ jn == 'eyes' ] return 'Train eyes'
-    if [ jn == 'export' ] return 'Export eyes'
+    if [ jn == 'hands' ] return 'Train hands'
+    if [ jn == 'point' ] return 'Train point'
+    if [ jn == 'handfind' ] return 'Train hand finder'
     return 'Train gaze'
 
 # each job's words, pid and exit code, in the app's own state
@@ -105,7 +108,13 @@ func hs_job_state [ jn: string ] -> string
     lf : path '{d}/{jn}.log'
     if [ !lf.exists[] ] return ''
     df : path '{d}/{jn}.done'
-    if [ !df.exists[] ] return 'running'
+    if [ !df.exists[] ]
+        # no end written: running only while its process lives
+        pf : path '{d}/{jn}.pid'
+        pid : string pf.load[ typeid[ string ], null ]
+        if [ !pid || pid.trim[].count == 0 ] return 'ended'
+        alive : command { kill -0 {pid.trim[]} 2>/dev/null }
+        return (alive.exec[ false ] == 0) ? 'running' : 'ended'
     tx : string df.load[ typeid[ string ], null ]
     code : string [ (tx) ? tx.trim[] : '' ]
     if [ code == 'stopped' ] return 'stopped'
@@ -131,6 +140,7 @@ element JobLog
     intern read_ms : i64
     intern lines   : vec string
     intern head    : string
+    intern states  : string
 
     func refresh []
         jn : string hs_job_last[]
@@ -150,6 +160,12 @@ element JobLog
         if [ now - read_ms > 500 ]
             read_ms = now
             refresh[]
+            # a job started or ended: the buttons say Stop or not
+            all : string ''
+            for [ jn: string ] in hs_job_names[]
+                all = '{all} {hs_job_state[ jn ]}'
+            if [ states && all != states ] w.restyle = true
+            states = all
         cv : Canvas w.screen
         cv.fill_color[ rgba [ '#0a0a12' ] ]
         cv.rect_to[ 0.0, 0.0, bounds.w, bounds.h ]

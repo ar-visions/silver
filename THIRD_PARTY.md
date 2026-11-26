@@ -140,6 +140,7 @@ Keep it in step with the imports.
 | Material Symbols: widgets (white fill added) | trinity/images (widgets) | https://github.com/google/material-design-icons | Apache-2.0 | Google |
 | Material Symbols: battery_full as battery (white fill added) | trinity/images (battery) | https://github.com/google/material-design-icons | Apache-2.0 | Google |
 | Material Symbols: light_mode (white fill added) | trinity/images (light_mode) | https://github.com/google/material-design-icons | Apache-2.0 | Google |
+| Material Symbols: writer's toolbar (format_paragraph, format_h1, format_h2, format_h3, format_bold, format_italic, format_strikethrough, code, link, format_list_bulleted, format_list_numbered, checklist, format_quote, code_blocks, horizontal_rule, table, save; white fill added) | writer/images | https://github.com/google/material-design-icons | Apache-2.0 | Google |
 | Material Symbols: bluetooth, bluetooth_connected, bluetooth_disabled, bluetooth_searching (white fill added) | trinity/images (bluetooth*) | https://github.com/google/material-design-icons | Apache-2.0 | Google |
 | Material Symbols: apps, list, grid_view (white fill added) | orbiter/images (apps_grid, view_list, grid_view) | https://github.com/google/material-design-icons | Apache-2.0 | Google |
 | Material Symbols: clear_all (white fill added) | orbiter/images/clear_all.svg | https://github.com/google/material-design-icons | Apache-2.0 | Google |

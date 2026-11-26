@@ -111,6 +111,7 @@ HOST_API int host_pid_stopped(int pid) {
 // ===========================================================================
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <poll.h>
 #include <dirent.h>
 #include <spawn.h>
 #include <sys/wait.h>
@@ -297,8 +298,15 @@ HOST_API void agent_sock_reply(const char* s) {
 #ifndef MSG_NOSIGNAL
 #define MSG_NOSIGNAL 0
 #endif
-    ssize_t w = send(g_agent_cli, s, strlen(s), MSG_NOSIGNAL);
-    (void)w;
+    // the whole answer, however long: the socket takes it in parts
+    size_t n = strlen(s), off = 0;
+    while (off < n) {
+        ssize_t w = send(g_agent_cli, s + off, n - off, MSG_NOSIGNAL);
+        if (w > 0) { off += (size_t)w; continue; }
+        if (w < 0 && errno != EAGAIN && errno != EWOULDBLOCK) return;
+        struct pollfd p = { g_agent_cli, POLLOUT, 0 };
+        if (poll(&p, 1, 2000) <= 0) return;
+    }
 }
 
 

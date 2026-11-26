@@ -1215,6 +1215,14 @@ expect func t_bitwise [] -> bool
     b: i64 [ 10 ]
     return (a | b) == 14 && (a & b) == 8 && (a ^ b) == 6 && (a << 2) == 48 && (a >> 2) == 3 && ~0 == -1
 
+# a u64 argument shifted right fills with zeros, as a local does
+func shr_u64_arg [ v: u64 ] -> u64
+    return v >> 1
+
+expect func t_shift_unsigned_arg [] -> bool
+    top : u64 [ 0x8000000000000000 ]
+    return shr_u64_arg[ top ] == 0x4000000000000000
+
 expect func t_compare [] -> bool
     a: i64 [ 5 ]
     b: i64 [ 9 ]

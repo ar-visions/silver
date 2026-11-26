@@ -264,7 +264,14 @@ func orbiter.on_overlay [ cv: Canvas ]
         if [ fal < 0.0 ] fal = 0.0
         wx : f32 [ av.vx ]
         wy : f32 [ av.vy ]
-        for [ p: element* ed, p, p = p.parent ]
+        # placed from what draws it: the window's app pane, else
+        # its editor (with neither, the window's corner)
+        pv_ : element pane_view[ i ]
+        at_ : element [ (pv_ && pv_.elements) ? pv_.elements['text']
+                        : null ]
+        if [ !at_ || !(at_ inherits AppPane) ] at_ = ed
+        if [ !at_ ] continue
+        for [ p: element* at_, p, p = p.parent ]
             if [ p.bounds ]
                 wx += p.bounds.x
                 wy += p.bounds.y

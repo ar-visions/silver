@@ -2252,6 +2252,14 @@ AU_EXPORT void au_main_args(int argc, cstrs argv) { (void)argc; g_main_argv = ar
 AU_EXPORT void au_apply_args(Au a) { if (a && g_main_argv) Au_with_cstrs((Au)a, g_main_argv); }
 AU_EXPORT int   au_argv_stop(void) { return g_argv_stop; }
 AU_EXPORT cstrs au_argv(void)      { return g_main_argv; }
+// --as <Class>: the app element made is that subclass of the app's
+AU_EXPORT bool au_app_as(symbol name) {
+    if (!g_main_argv || !name) return false;
+    for (int i = 1; g_main_argv[i]; i++)
+        if (strcmp(g_main_argv[i], "--as") == 0 && g_main_argv[i + 1])
+            return strcmp(g_main_argv[i + 1], name) == 0;
+    return false;
+}
 
 // live-reload rebuild flag, lives in libAu so the host and the dlopen'd app both
 // see it. silver-host sets it true around a blocking recompile (pumping one app
@@ -3173,6 +3181,25 @@ __thread int  af_count = 2; // managed == 1 means its not in the af vector, mana
 __thread int  af_size  = 0;
 AU_EXPORT none Au_free(Au);
 
+// the pool grows in place; the old array is not kept
+static void af_grow(void) {
+    int  n   = (af_size + 16) << 2;
+    ARef was = af;
+    af = (ARef)realloc(af, sizeof(ARef) * n);
+    if (!was) memset(af, 0, sizeof(ARef) * n);
+    else memset(&af[af_size], 0, sizeof(ARef) * (n - af_size));
+    af_size = n;
+}
+
+// a thread's end: its drained pool's array goes with it
+AU_EXPORT none au_pool_end(void) {
+    auto_free();
+    free(af);
+    af       = null;
+    af_size  = 0;
+    af_count = 2;
+}
+
 AU_EXPORT none Au_drop(Au a) {
     if (!a) return;
     Au info = header(a);
@@ -3779,14 +3806,7 @@ AU_EXPORT Au alloc_instance(Au_t type, sz n_bytes, bool managed) {
     a->refs = 0;
     a->managed = 0;
     if (managed) {
-        if (af_count >= af_size) {
-            ARef af_prev = af;
-            int new_size = (af_size + 16) << 2;
-            af = (ARef)calloc(sizeof(ARef), new_size);
-            if (af_prev)
-                memcpy(af, af_prev, af_size * sizeof(ARef));
-            af_size = new_size;
-        }
+        if (af_count >= af_size) af_grow();
         a->managed = af_count;
         af[af_count++] = a;
     }
@@ -3804,14 +3824,7 @@ AU_EXPORT Au au_release(Au o) {
     i32 n = __atomic_sub_fetch(&info->refs, 1, __ATOMIC_SEQ_CST);
     if (au_leaks()) leak_site_pop(info);
     if (n <= 0 && info->managed == 1) {
-        if (af_count >= af_size) {
-            ARef af_prev = af;
-            int new_size = (af_size + 16) << 2;
-            af = (ARef)calloc(sizeof(ARef), new_size);
-            if (af_prev)
-                memcpy(af, af_prev, af_size * sizeof(ARef));
-            af_size = new_size;
-        }
+        if (af_count >= af_size) af_grow();
         info->managed = af_count;
         af[af_count++] = info;
     }
@@ -4975,6 +4988,11 @@ AU_EXPORT Au Au_with_cstrs(Au a, cstrs argv) {
     while (argv[argc]) { // C standard puts a null char* on end, by law (see: Brannigans law)
         cstr arg = argv[argc];
         // --leaks [N] is a runtime flag owned by engage, not the app
+        // --as <Class> picked the app element's class: not a member
+        if (strcmp(arg, "--as") == 0) {
+            argc += argv[argc + 1] ? 2 : 1;
+            continue;
+        }
         if (strcmp(arg, "--leaks") == 0) {
             if (argv[argc + 1] && argv[argc + 1][0] >= '1' && argv[argc + 1][0] <= '9')
                 argc++;
@@ -10431,6 +10449,7 @@ static none async_runner(thread_t* thread) {
         thread->jobs++; // set something so sync can know
     }
     unlock(thread->lock);
+    au_pool_end();
 }
 
 // work is a vec (or a legacy array while any remains)
@@ -10565,7 +10584,7 @@ static void* au_spawn_runner(void* data) {
     void* fn = (void*)s->fn;
     s->fn(s->target, s->work);
     // thread exit: nothing else ever drains this __thread pool
-    auto_free();
+    au_pool_end();
     free(s);
     au_spawn_live_remove(fn);
     return null;

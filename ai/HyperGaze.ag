@@ -259,6 +259,28 @@ class HyChain
             && eye.load[ ep, false ]
         return valid
 
+    # the app's own files (find.hsn, target.hsn, eye.hsn in dir)
+    func load_app [ dir: string ] -> bool
+        find = GFindNet [ vk: vk, work_mb: 2048, scratch_mb: 1024 ]
+        target = GStageNet [ vk: vk, work_mb: 1024, scratch_mb: 512 ]
+        eye = GStageNet [ vk: vk, work_mb: 1024, scratch_mb: 512 ]
+        fp : path '{dir}/find.hsn'
+        tp : path '{dir}/target.hsn'
+        ep : path '{dir}/eye.hsn'
+        valid = find.read_find[ fp ] && target.read_stages[ tp ]
+            && eye.read_stages[ ep ]
+        return valid
+
+    # each net's picture side (a .pt carries none: the constants)
+    func find_side [] -> i64
+        return (find.side > 0) ? find.side : HY_FIND
+
+    func target_side [] -> i64
+        return (target.side > 0) ? target.side : HY_SIDE
+
+    func eye_side [] -> i64
+        return (eye.side > 0) ? eye.side : HY_EYE
+
     # pictures [n, 1, s, s] through a stage net, 64 at a time: its
     # outputs
     func stage_run [ net: GStageNet, x: vec f32, n: i64, s: i64 ]
@@ -278,7 +300,8 @@ class HyChain
 
     # find's x, y, gap for each picture, 8 at a time
     func find_run [ x: vec f32, n: i64 ] -> vec f32
-        cells : i64 [ HY_FIND * HY_FIND ]
+        fs : i64 find_side[]
+        cells : i64 [ fs * fs ]
         out : vec f32 [ n * 3 ]
         for [ from: i64 0, from < n, from += 8 ]
             m : i64 [ min[ 8, n - from ] ]
@@ -286,8 +309,7 @@ class HyChain
             for [ i: i64 0, i < m * cells, i += 1 ]
                 part[ i ] = x[ from * cells + i ]
             find.begin_step[]
-            t : GTensor find.gd.temp[ vec i64 [] [ m, 1, HY_FIND,
-                                                   HY_FIND ] ]
+            t : GTensor find.gd.temp[ vec i64 [] [ m, 1, fs, fs ] ]
             find.gd.upload[ t, part ]
             o : GFindOut find.forward[ t ]
             pt : vec f32 find.gd.download[ o.pt ]
@@ -319,7 +341,8 @@ func hy_area [ f: vec f32, base: i64, w: i64, out: i64 ] -> vec f32
 # them, refined, put back in the frame's pixels
 func hy_run_eyes [ ch: HyChain, f: vec f32, n: i64, w: i64,
                    p: vec f64 ] -> vec f64
-    cut : i64 [ HY_EYE * HY_EYE ]
+    es : i64 ch.eye_side[]
+    cut : i64 [ es * es ]
     crops : vec f32 [ 2 * n * cut ]
     out : vec f64 [ n * 8 ]
     keep : vec f64 [ n * 5 ]
@@ -344,14 +367,14 @@ func hy_run_eyes [ ch: HyChain, f: vec f32, n: i64, w: i64,
             t : vec f64 [] [ f32[ side * c ], f32[ -side * s ],
                              f32[ cx * 2.0 - 1.0 ], f32[ side * s ],
                              f32[ side * c ], f32[ cy * 2.0 - 1.0 ] ]
-            got : vec f32 hy_affine[ f, k * w * w, w, t, HY_EYE ]
+            got : vec f32 hy_affine[ f, k * w * w, w, t, es ]
             at : i64 [ (e * n + k) * cut ]
-            for [ i: i64 0, i < HY_EYE, i += 1 ]
-                for [ j: i64 0, j < HY_EYE, j += 1 ]
-                    from : i64 [ (e == 1) ? HY_EYE - 1 - j : j ]
-                    crops[ at + i * HY_EYE + j ] = got[ i * HY_EYE
+            for [ i: i64 0, i < es, i += 1 ]
+                for [ j: i64 0, j < es, j += 1 ]
+                    from : i64 [ (e == 1) ? es - 1 - j : j ]
+                    crops[ at + i * es + j ] = got[ i * es
                         + from ]
-    r : vec f32 ch.stage_run[ ch.eye, crops, 2 * n, HY_EYE ]
+    r : vec f32 ch.stage_run[ ch.eye, crops, 2 * n, es ]
     for [ k: i64 0, k < n, k += 1 ]
         side : f64 keep[ k * 5 ]
         c : f64 keep[ k * 5 + 1 ]
@@ -419,17 +442,19 @@ func hy_chain_frames [ frames: vec u8, n: i64, w: i64 ] -> vec f32
 # find on each whole frame at HY_FIND: x, y, gap in its shares
 func hy_chain_find [ ch: HyChain, f: vec f32, n: i64, w: i64 ]
         -> vec f32
-    small : vec f32 [ n * HY_FIND * HY_FIND ]
+    fs : i64 ch.find_side[]
+    small : vec f32 [ n * fs * fs ]
     for [ k: i64 0, k < n, k += 1 ]
-        a : vec f32 hy_area[ f, k * w * w, w, HY_FIND ]
+        a : vec f32 hy_area[ f, k * w * w, w, fs ]
         for [ i: i64 0, i < a.count, i += 1 ]
-            small[ k * HY_FIND * HY_FIND + i ] = a[ i ]
+            small[ k * fs * fs + i ] = a[ i ]
     return ch.find_run[ small, n ]
 
 # target on find's square: the four points in the frame's pixels
 func hy_chain_pair [ ch: HyChain, f: vec f32, n: i64, w: i64,
                      found: vec f32 ] -> vec f64
-    side : i64 [ HY_SIDE * HY_SIDE ]
+    ts : i64 ch.target_side[]
+    side : i64 [ ts * ts ]
     crops : vec f32 [ n * side ]
     for [ k: i64 0, k < n, k += 1 ]
         cx : f64 [ f64[ found[ k * 3 ] ] ]
@@ -437,10 +462,10 @@ func hy_chain_pair [ ch: HyChain, f: vec f32, n: i64, w: i64,
         s : f64 [ f64[ found[ k * 3 + 2 ] ] * HY_SPAN ]
         t : vec f64 [] [ f32[ s ], 0.0, f32[ cx * 2.0 - 1.0 ], 0.0,
                          f32[ s ], f32[ cy * 2.0 - 1.0 ] ]
-        got : vec f32 hy_affine[ f, k * w * w, w, t, HY_SIDE ]
+        got : vec f32 hy_affine[ f, k * w * w, w, t, ts ]
         for [ i: i64 0, i < side, i += 1 ]
             crops[ k * side + i ] = got[ i ]
-    tg : vec f32 ch.stage_run[ ch.target, crops, n, HY_SIDE ]
+    tg : vec f32 ch.stage_run[ ch.target, crops, n, ts ]
     p : vec f64 [ n * 8 ]
     for [ k: i64 0, k < n, k += 1 ]
         cx : f64 [ f64[ found[ k * 3 ] ] ]
@@ -514,8 +539,8 @@ expect func t_hyper_gaze_data [] -> bool
     tt : path '{dir}/target.hsn.silver'
     et : path '{dir}/eye.hsn.silver'
     ch.find.write_find[ ft ]
-    ch.target.write_stages[ tt, 64, 10 ]
-    ch.eye.write_stages[ et, 64, 4 ]
+    ch.target.write_stages[ tt, i32[ HY_SIDE ], 10 ]
+    ch.eye.write_stages[ et, i32[ HY_EYE ], 4 ]
     for [ nm: string ] in vec string [] [ 'find', 'target', 'eye' ]
         mine : vec u8 hy_bytes[ dir, '{nm}.hsn.silver' ]
         theirs : vec u8 hy_bytes[ dir, '{nm}.hsn' ]

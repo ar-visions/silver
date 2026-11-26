@@ -1,0 +1,693 @@
+extend ai
+
+# hyperspace's hand models in silver, from the bottom camera. The
+# hand model: is a hand there, how bent each finger is (thumb, index,
+# middle, ring, little: 0 straight, 1 curled), and how far the
+# fingers spread (0 together, 1 fanned wide). The finder: is a hand
+# there, and its box. The point model: from the finder's crop and
+# box, the point on the screen the hand points at (x right, y down,
+# from the screen's middle, shares of its width and height).
+# The eyes' recordings are all no hand (a hand on the face there is no
+# gesture). The last fifth of each recording is held back to test
+# on, never trained on
+
+# the gesture and point models read the finder's crop at HH_SIDE,
+# the finder the whole frame at HF_SIDE; each picture kept a quarter
+# larger than its net's side (hh_keep), cropped and made its side
+HH_SIDE : i64 [ 32 ]
+HF_SIDE : i64 [ 32 ]
+
+func hh_keep [ side: i64 ] -> i64
+    return side * 5 / 4
+# the peak learning rate, tuned at batch HH_LR_BATCH
+HH_LR       : f64 [ 0.01 ]
+HH_LR_BATCH : i64 [ 64 ]
+HH_HELD : f64 [ 0.2 ]
+# the gesture model's outputs: the five bends, the spread
+HH_OUT  : i64 [ 6 ]
+# the finder's outputs: a hand, its box's middle (x, y) and side, as
+# shares of the frame's width
+HF_OUT  : i64 [ 4 ]
+# the point model's outputs: the point's x and y; its picture the
+# finder's box made this much larger (every joint inside)
+HP_OUT  : i64 [ 2 ]
+HP_CROP : f64 [ 1.25 ]
+
+func hh_names [] -> vec string
+    return vec string [] [ 'hand', 'thumb', 'index', 'middle', 'ring',
+        'little', 'spread' ]
+
+# a recorded pose's bends (thumb first) and spread; null for one it
+# does not know
+func hh_shape [ name: string ] -> vec f32
+    if [ name == 'open' ]
+        return vec f32 [] [ 0.0, 0.0, 0.0, 0.0, 0.0, 1.0 ]
+    if [ name == 'curl_33' ]
+        return vec f32 [] [ 0.33, 0.33, 0.33, 0.33, 0.33, 0.67 ]
+    if [ name == 'curl_67' ]
+        return vec f32 [] [ 0.67, 0.67, 0.67, 0.67, 0.67, 0.33 ]
+    if [ name == 'fist' ]
+        return vec f32 [] [ 0.5, 1.0, 1.0, 1.0, 1.0, 0.0 ]
+    if [ name == 'index' || name == 'point' ]
+        return vec f32 [] [ 0.5, 0.0, 1.0, 1.0, 1.0, 0.0 ]
+    if [ name == 'middle' ]
+        return vec f32 [] [ 0.5, 1.0, 0.0, 1.0, 1.0, 0.0 ]
+    if [ name == 'ring' ]
+        return vec f32 [] [ 0.5, 1.0, 1.0, 0.0, 1.0, 0.0 ]
+    if [ name == 'little' ]
+        return vec f32 [] [ 0.5, 1.0, 1.0, 1.0, 0.0, 0.0 ]
+    if [ name == 'thumb' || name == 'thumb_up' ]
+        return vec f32 [] [ 0.0, 1.0, 1.0, 1.0, 1.0, 0.0 ]
+    if [ name == 'shaka' ]
+        return vec f32 [] [ 0.0, 1.0, 1.0, 1.0, 0.0, 1.0 ]
+    if [ name == 'peace' ]
+        return vec f32 [] [ 0.5, 0.0, 0.0, 1.0, 1.0, 1.0 ]
+    if [ name == 'ok' ]
+        return vec f32 [] [ 0.5, 0.5, 0.0, 0.0, 0.0, 0.5 ]
+    if [ name == 'pinch' ]
+        return vec f32 [] [ 0.5, 0.5, 0.25, 0.25, 0.25, 0.0 ]
+    return null
+
+# a capture's value by its key (its .agi is key=value words)
+func hh_field [ tx: string, key: string ] -> string
+    line : string ' {tx}'
+    at : i32 [ i32[ line.index_of[ ' {key}=' ] ] ]
+    if [ at < 0 ] return ''
+    from : i32 [ at + i32[ key.count ] + 2 ]
+    rest : line.mid[ from, line.count - from ]
+    sp : i32 [ i32[ rest.index_of[ ' ' ] ] ]
+    v : string [ (sp >= 0) ? rest.mid[ 0, sp ] : rest ]
+    return v.trim[]
+
+# a capture: its time, its picture, the recording it belongs to, and
+# its answer: a hand or not, its shape (the hand model's bends and
+# spread, or the way it points; null: unknown)
+class HhRec
+    public id    : i64
+    public stem  : string
+    public key   : string
+    public hand  : bool
+    public shape : vec f32
+
+class HhGroup
+    public idx : vec i64
+
+class HhSet
+    public n      : i64
+    public frames : vec u8
+    # each capture's answers (wide a capture) and which of them count
+    public wide   : i64
+    public y      : vec f32
+    public mask   : vec f32
+    # one group a kind of answer with a hand, each drawn alike, and
+    # the no-hand group, drawn as often as all of them
+    public train  : vec HhGroup
+    public none   : HhGroup
+    public test   : vec i64
+    # the answer a mirrored picture turns over (-1 none)
+    public turn   : i64
+    # the finder's set: answers 1..3 a box (middle x, y, side) that
+    # moves and scales with each training crop
+    public box    : bool
+    # numbers each capture gives the net beside its picture (the
+    # point model's box: middle x, y from the frame's middle, side),
+    # naux a capture
+    public aux    : vec f32
+    public naux   : i64
+    # its net's side, and the side its pictures are kept at
+    public side   : i64
+    public keep   : i64
+
+# a folder's captures; every one no hand when bare
+func hh_read_dir [ dir: string, bare: bool, recs: vec HhRec ]
+    d : path dir
+    if [ !d.exists[] ] return
+    for [ f: path ] in d.ls[ null, false ]
+        s : string '{f}'
+        if [ !s.ends_with[ '.agi' ] || s.count < 17 ] continue
+        tx : string f.load[ typeid[ string ], null ]
+        if [ !tx ] continue
+        g : string [ (bare) ? 'none' : hh_field[ tx, 'gesture' ] ]
+        if [ g == 'pose' ] g = hh_field[ tx, 'gesture_scale' ]
+        shape : vec f32 hh_shape[ g ]
+        # the sweep and the old random poses: left out (pointing at
+        # the screen and the old directions: a hand, its shape
+        # unknown)
+        if [ !shape && g != 'none' && g != 'direction'
+             && g != 'point_at' ]
+            continue
+        id : i64 s.mid[ s.count - 17, 13 ].integer_value[]
+        sess : string hh_field[ tx, 'session' ]
+        recs.push[ HhRec [ id: id, stem: s.mid[ 0, s.count - 4 ],
+                           key: '{sess} {g}', hand: g != 'none',
+                           shape: shape ] ]
+
+# the gesture model's captures: every hand pose of a known shape,
+# boxed and cropped by the finder (out/handfind.hsn)
+func hh_load_set [ state: string, out: string,
+                   vk: vk_context ] -> HhSet
+    all : vec HhRec []
+    hh_read_dir[ '{state}/hands', false, all ]
+    recs : vec HhRec []
+    for [ r: HhRec ] in all
+        if [ r.shape ] recs.push[ r ]
+    return hh_crop_set[ recs, HH_OUT, -1, false, out, vk ]
+
+# the records' pictures read and kept a quarter larger than side,
+# their answers wide a capture (lead: the hand first, then the
+# shape); each recording's last fifth held back
+func hh_set_of [ recs: vec HhRec, wide: i64, lead: bool,
+                 turn: i64, side: i64 ] -> HhSet
+    if [ recs.count == 0 ]
+        log 'hands: no recordings'
+        return null
+    kp : i64 hh_keep[ side ]
+    kk : i64 [ kp * kp ]
+    no : i64 wide
+    from : i64 [ (lead) ? 1 : 0 ]
+    set : HhSet [ n: recs.count, frames: vec u8 [ recs.count * kk ],
+                  side: side, keep: kp,
+                  wide: no, turn: turn,
+                  y: vec f32 [ recs.count * no ],
+                  mask: vec f32 [ recs.count * no ],
+                  train: vec HhGroup [], test: vec i64 [] ]
+    groups : map HhGroup [ string ] []
+    order : vec string []
+    for [ i: i64 0, i < recs.count, i += 1 ]
+        mk : i32 [ Au.auto_mark[] ]
+        r : HhRec recs[ i ]
+        gp : HyGrey hy_grey[ path '{r.stem}-camera1.png' ]
+        if [ gp.valid ]
+            pic : vec u8 hy_resize[ gp.bytes, gp.w, gp.h, kp ]
+            memcpy[ @set.frames[ i * kk ], @pic[ 0 ], kk ]
+        Au.auto_free_to[ mk ]
+        if [ lead ]
+            set.y[ i * no ] = (r.hand) ? 1.0 : 0.0
+            set.mask[ i * no ] = 1.0
+        if [ r.shape ]
+            for [ c: i64 from, c < no, c += 1 ]
+                set.y[ i * no + c ] = r.shape[ c - from ]
+                set.mask[ i * no + c ] = 1.0
+        if [ !groups.contains[ r.key ] ]
+            groups[ r.key ] = HhGroup [ idx: vec i64 [] ]
+            order.push[ r.key ]
+        groups[ r.key ].idx.push[ i ]
+        if [ (i + 1) % 5000 == 0 ] log 'hands: read {i + 1} of {recs.count}'
+    # each recording in time order, its last fifth held back; a kind
+    # (the part of the key after the session) one training group
+    kinds : map HhGroup [ string ] []
+    for [ k: string ] in order
+        ix : vec i64 groups[ k ].idx
+        for [ a: i64 1, a < ix.count, a += 1 ]
+            for [ b: i64 a, b > 0, b -= 1 ]
+                if [ recs[ ix[ b - 1 ] ].id <= recs[ ix[ b ] ].id ]
+                    break
+                t : i64 ix[ b ]
+                ix[ b ] = ix[ b - 1 ]
+                ix[ b - 1 ] = t
+        held : i64 [ (ix.count >= 5)
+                     ? i64[ f64[ ix.count ] * HH_HELD ] : 0 ]
+        sp : i32 [ i32[ k.index_of[ ' ' ] ] ]
+        kind : string k.mid[ sp + 1, k.count - sp - 1 ]
+        if [ !kinds.contains[ kind ] ]
+            kinds[ kind ] = HhGroup [ idx: vec i64 [] ]
+            if [ kind == 'none' ] set.none = kinds[ kind ]
+            el set.train.push[ kinds[ kind ] ]
+        for [ j: i64 0, j < ix.count, j += 1 ]
+            if [ j < ix.count - held ] kinds[ kind ].idx.push[ ix[ j ] ]
+            el set.test.push[ ix[ j ] ]
+    log '{recs.count} captures, {set.test.count} held back'
+    return set
+
+class HhBatch
+    public n    : i64
+    public side : i64
+    public x    : vec f32
+    public y    : vec f32
+    public mask : vec f32
+    public aux  : vec f32
+    public naux : i64
+
+# the batch's pictures at HH_SIDE: to train, a random crop of 3/4 to
+# all of the picture, its light and contrast changed, half of them
+# mirrored; to test, whole
+func hh_batch [ set: HhSet, take: vec i64, train: bool,
+                dr: HyDraws ] -> HhBatch
+    n : i64 take.count
+    no : i64 set.wide
+    sd : i64 set.side
+    kp : i64 set.keep
+    hb : HhBatch [ n: n, side: sd, x: vec f32 [ n * sd * sd ],
+                   y: vec f32 [ n * no ], mask: vec f32 [ n * no ] ]
+    flipped : vec bool [ n ]
+    for [ k: i64 0, k < n, k += 1 ]
+        it : i64 take[ k ]
+        for [ c: i64 0, c < no, c += 1 ]
+            hb.y[ k * no + c ] = set.y[ it * no + c ]
+            hb.mask[ k * no + c ] = set.mask[ it * no + c ]
+        c : f64 [ f64[ kp ] ]
+        ox : f64 [ 0.0 ]
+        oy : f64 [ 0.0 ]
+        mirror : bool [ false ]
+        gain : f64 [ 1.0 ]
+        lift : f64 [ 0.0 ]
+        if [ train ]
+            c = f64[ kp ] * (0.75 + 0.25 * dr.u01[])
+            ox = (f64[ kp ] - c) * dr.u01[]
+            oy = (f64[ kp ] - c) * dr.u01[]
+            mirror = dr.u01[] < 0.5
+            flipped[ k ] = mirror
+            gain = 0.6 + 0.9 * dr.u01[]
+            lift = 40.0 * dr.u01[] - 20.0
+        if [ mirror && set.turn >= 0 ]
+            tc : i64 [ k * no + set.turn ]
+            hb.y[ tc ] = 0.0 - hb.y[ tc ]
+        # the box in the crop's shares, then mirrored with it
+        if [ set.box && hb.mask[ k * no + 1 ] > 0.5 ]
+            fk : f64 [ f64[ kp ] / c ]
+            bx : f64 [ (f64[ hb.y[ k * no + 1 ] ] * f64[ kp ] - ox) / c ]
+            by : f64 [ (f64[ hb.y[ k * no + 2 ] ] * f64[ kp ] - oy) / c ]
+            hb.y[ k * no + 1 ] = (mirror) ? 1.0 - bx : bx
+            hb.y[ k * no + 2 ] = by
+            hb.y[ k * no + 3 ] = f64[ hb.y[ k * no + 3 ] ] * fk
+        base : i64 [ it * kp * kp ]
+        step : f64 [ c / f64[ sd ] ]
+        for [ py: i64 0, py < sd, py += 1 ]
+            sy : f64 [ oy + (f64[ py ] + 0.5) * step - 0.5 ]
+            y0 : i64 [ max[ min[ i64[ floor[ sy ] ], kp - 2 ], 0 ] ]
+            fy : f64 [ min[ max[ sy - f64[ y0 ], 0.0 ], 1.0 ] ]
+            for [ px: i64 0, px < sd, px += 1 ]
+                sx : f64 [ ox + (f64[ px ] + 0.5) * step - 0.5 ]
+                x0 : i64 [ max[ min[ i64[ floor[ sx ] ], kp - 2 ], 0 ] ]
+                fx : f64 [ min[ max[ sx - f64[ x0 ], 0.0 ], 1.0 ] ]
+                at : i64 [ base + y0 * kp + x0 ]
+                top : f64 [ f64[ set.frames[ at ] ] * (1.0 - fx)
+                            + f64[ set.frames[ at + 1 ] ] * fx ]
+                low : f64 [ f64[ set.frames[ at + kp ] ] * (1.0 - fx)
+                            + f64[ set.frames[ at + kp + 1 ] ] * fx ]
+                v : f64 [ (top * (1.0 - fy) + low * fy) * gain + lift ]
+                dx : i64 [ (mirror) ? sd - 1 - px : px ]
+                at = (k * sd + py) * sd + dx
+                hb.x[ at ] = min[ max[ v, 0.0 ], 255.0 ]
+    if [ set.aux ]
+        hb.naux = set.naux
+        hb.aux = vec f32 [ n * set.naux ]
+        for [ k: i64 0, k < n, k += 1 ]
+            for [ c: i64 0, c < set.naux, c += 1 ]
+                hb.aux[ k * set.naux + c ] =
+                    set.aux[ take[ k ] * set.naux + c ]
+            # the box's x (from the frame's middle) turns with it
+            if [ flipped[ k ] ]
+                hb.aux[ k * set.naux ] = 0.0 - hb.aux[ k * set.naux ]
+    return hb
+
+# the net's answer for a batch, with its numbers when it has them
+func hh_out [ net: GStageNet, hb: HhBatch, train: bool ] -> GTensor
+    g : Grad net.gd
+    t : GTensor g.temp[ vec i64 [] [ hb.n, 1, hb.side, hb.side ] ]
+    g.upload[ t, hb.x ]
+    if [ !hb.aux ] return net.forward[ t, train ]
+    a : GTensor g.temp[ vec i64 [] [ hb.n, hb.naux ] ]
+    g.upload[ a, hb.aux ]
+    return net.forward_aux[ t, a, train ]
+
+# one step: smooth L1 over the answers that count (an unknown one's
+# output and answer both made 0)
+func hh_step [ net: GStageNet, hb: HhBatch, lr: f64, b1: f64 ] -> f64
+    net.begin_step[]
+    g : Grad net.gd
+    dims : vec i64 [] [ hb.n, hb.y.count / hb.n, 1 ]
+    m : GTensor g.temp[ dims ]
+    g.upload[ m, hb.mask ]
+    want : vec f32 [ hb.y.count ]
+    for [ i: i64 0, i < want.count, i += 1 ]
+        want[ i ] = hb.y[ i ] * hb.mask[ i ]
+    y : GTensor g.temp[ dims ]
+    g.upload[ y, want ]
+    o : GTensor g.reshape[ hh_out[ net, hb, true ], dims ]
+    loss : GTensor g.smooth_l1[ g.mul[ o, m ], y, 0.01 ]
+    g.backward_all[ vec GTensor [] [ loss ], vec f32 [] [ 1.0 ] ]
+    got : vec f32 g.download[ loss ]
+    net.adamw_step[ f32[ lr ], f32[ b1 ], 0.01, 0.0 ]
+    return got[ 0 ]
+
+# the held-back captures judged: each bend's and the spread's mean
+# miss; returns their mean
+func hh_judge [ net: GStageNet, set: HhSet, dr: HyDraws ] -> f64
+    no : i64 HH_OUT
+    miss : vec f64 [ no ]
+    many : vec i64 [ no ]
+    for [ from: i64 0, from < set.test.count, from += 128 ]
+        take : vec i64 []
+        last : i64 [ min[ from + 128, set.test.count ] ]
+        for [ i: i64 from, i < last, i += 1 ]
+            take.push[ set.test[ i ] ]
+        hb : HhBatch hh_batch[ set, take, false, dr ]
+        net.begin_step[]
+        o : vec f32 net.gd.download[ hh_out[ net, hb, false ] ]
+        for [ r: i64 0, r < hb.n, r += 1 ]
+            for [ c: i64 0, c < no, c += 1 ]
+                at : i64 [ r * no + c ]
+                if [ hb.mask[ at ] < 0.5 ] continue
+                miss[ c ] += fabs[ f64[ o[ at ] ] - f64[ hb.y[ at ] ] ]
+                many[ c ] += 1
+    err : f64 [ 0.0 ]
+    names : vec string hh_names[]
+    for [ c: i64 0, c < no, c += 1 ]
+        e : f64 [ miss[ c ] / f64[ max[ many[ c ], 1 ] ] ]
+        log '  {hy_pad_right[ names[ c + 1 ], 10 ]} off by {hy_num[ e, 3 ]}'
+        err += e
+    return err / f64[ no ]
+
+# a training: each epoch size captures, half no hand, the rest each
+# kind drawn alike, AdamW at the one-cycle rate; the best epoch (by
+# its judge: 0 the hand model's, 1 the point model's, 2 the
+# finder's) written to
+# out/<name>.hsn, the stage net's file
+func hh_fit [ set: HhSet, kind: i64, name: string, out: string,
+              epochs: i64, size: i64, batch: i64, lr: f64,
+              vk: vk_context ] -> bool
+    if [ !set ] return false
+    od : path out
+    if [ !od.exists[] ] od.make_dir[]
+    net : GStageNet [ vk: vk, work_mb: 2048, scratch_mb: 1024 ]
+    net.extra = set.naux
+    net.fresh_stages[ set.side, set.wide, 3 ]
+    if [ !net.valid ] return false
+    net.gd.record = true
+    dr : HyDraws [ state: 5 ]
+    per : i64 [ (size + batch - 1) / batch ]
+    total : i64 [ epochs * per ]
+    best : f64 [ -1.0 ]
+    kept : vec HyKept []
+    step : i64 [ 0 ]
+    peak : f64 hy_rate[ HH_LR, HH_LR_BATCH, batch, lr ]
+    log '{name}: batch {batch}, peak learning rate {hy_num[ peak, 5 ]}'
+    for [ ep: i64 0, ep < epochs, ep += 1 ]
+        t0 : i64 [ Au.epoch_millis[] ]
+        lost : f64 [ 0.0 ]
+        for [ k: i64 0, k < per, k += 1 ]
+            # this runs inside init: no frame drains the pool
+            mk : i32 [ Au.auto_mark[] ]
+            take : vec i64 []
+            for [ i: i64 0, i < batch, i += 1 ]
+                gi : i64 [ i64[ dr.u01[] * f64[ set.train.count ] ] ]
+                g : HhGroup set.train[ gi ]
+                if [ set.none && dr.u01[] < 0.5 ] g = set.none
+                at : i64 [ i64[ dr.u01[] * f64[ g.idx.count ] ] ]
+                take.push[ g.idx[ at ] ]
+            hb : HhBatch hh_batch[ set, take, true, dr ]
+            sc : vec f64 one_cycle[ step, total, peak ]
+            lost += hh_step[ net, hb, sc[ 0 ], sc[ 1 ] ]
+            Au.auto_free_to[ mk ]
+            step += 1
+        log '{name} {ep + 1}/{epochs}   train loss {hy_num[ lost / f64[ per ], 5 ]}   ({(Au.epoch_millis[] - t0) / 1000} s)'
+        jm : i32 [ Au.auto_mark[] ]
+        score : f64 [ (kind == 0) ? hh_judge[ net, set, dr ]
+                      : (kind == 1) ? hp_judge[ net, set, dr ]
+                      : hf_judge[ net, set, dr ] ]
+        Au.auto_free_to[ jm ]
+        if [ best < 0.0 || score < best ]
+            best = score
+            kept = hy_snapshot[ net ]
+    hy_restore[ net, kept ]
+    hf : path '{out}/{name}.hsn'
+    if [ !net.write_stages[ hf, i32[ set.side ], i32[ set.wide ] ] ]
+        return false
+    log '{name}: best mean error {hy_num[ best, 3 ]}; written to {hf}'
+    return true
+
+func hh_train [ state: string, out: string, epochs: i64, size: i64,
+                batch: i64, lr: f64, vk: vk_context ] -> bool
+    return hh_fit[ hh_load_set[ state, out, vk ], 0, 'hands', out,
+                   epochs, size, batch, lr, vk ]
+
+# a frame's square crop about (cx, cy) (shares of its width and
+# height), side sd of its width, made kp across: each pixel the mean
+# of a grid of bilinear reads covering it, the edges held (the app
+# crops the same way)
+func hp_crop [ g: HyGrey, cx: f64, cy: f64, sd: f64,
+               kp: i64 ] -> vec u8
+    out : vec u8 [ kp * kp ]
+    w : f64 [ f64[ g.w ] ]
+    h : f64 [ f64[ g.h ] ]
+    span : f64 [ sd * w ]
+    px : f64 [ span / f64[ kp ] ]
+    n : i64 [ min[ max[ i64[ ceil[ px ] ], 1 ], 8 ] ]
+    for [ i: i64 0, i < kp, i += 1 ]
+        for [ j: i64 0, j < kp, j += 1 ]
+            sum : f64 [ 0.0 ]
+            for [ a: i64 0, a < n, a += 1 ]
+                for [ b: i64 0, b < n, b += 1 ]
+                    sy : f64 [ cy * h - span / 2.0 + (f64[ i ]
+                        + (f64[ a ] + 0.5) / f64[ n ]) * px - 0.5 ]
+                    sx : f64 [ cx * w - span / 2.0 + (f64[ j ]
+                        + (f64[ b ] + 0.5) / f64[ n ]) * px - 0.5 ]
+                    sum += hp_grey_at[ g, sx, sy ]
+            v : f64 [ floor[ sum / f64[ n * n ] + 0.5 ] ]
+            out[ i * kp + j ] = u8[ min[ max[ v, 0.0 ], 255.0 ] ]
+    return out
+
+# a frame's grey at a point, bilinear, the edges held
+func hp_grey_at [ g: HyGrey, x: f64, y: f64 ] -> f64
+    sx : f64 [ min[ max[ x, 0.0 ], f64[ g.w ] - 1.001 ] ]
+    sy : f64 [ min[ max[ y, 0.0 ], f64[ g.h ] - 1.001 ] ]
+    x0 : i64 [ i64[ floor[ sx ] ] ]
+    y0 : i64 [ i64[ floor[ sy ] ] ]
+    fx : f64 [ sx - f64[ x0 ] ]
+    fy : f64 [ sy - f64[ y0 ] ]
+    at : i64 [ y0 * g.w + x0 ]
+    top : f64 [ f64[ g.bytes[ at ] ] * (1.0 - fx)
+                + f64[ g.bytes[ at + 1 ] ] * fx ]
+    low : f64 [ f64[ g.bytes[ at + g.w ] ] * (1.0 - fx)
+                + f64[ g.bytes[ at + g.w + 1 ] ] * fx ]
+    return top * (1.0 - fy) + low * fy
+
+# captures boxed by the finder (out/handfind.hsn) as the app boxes
+# them, each picture the box made HP_CROP larger (kept a quarter
+# larger than HH_SIDE), the box kept beside it when aux; a capture
+# the finder finds no hand in left out
+func hh_crop_set [ recs: vec HhRec, wide: i64, turn: i64, aux: bool,
+                   out: string, vk: vk_context ] -> HhSet
+    if [ recs.count == 0 ]
+        log 'hands: no recordings'
+        return null
+    fd : path '{out}/handfind.hsn'
+    finder : GStageNet [ vk: vk, work_mb: 2048, scratch_mb: 1024 ]
+    if [ !finder.read_stages[ fd ] ]
+        log 'hands: no hand finder at {fd}: train it first'
+        return null
+    set : HhSet hh_set_of[ recs, wide, false, turn, HH_SIDE ]
+    if [ !set ] return null
+    # the whole frames as the finder reads them
+    fk : i64 hh_keep[ finder.side ]
+    fs : HhSet [ n: set.n, frames: vec u8 [ set.n * fk * fk ],
+                 side: finder.side, keep: fk, wide: HF_OUT,
+                 y: vec f32 [ set.n * HF_OUT ],
+                 mask: vec f32 [ set.n * HF_OUT ] ]
+    for [ i: i64 0, i < set.n, i += 1 ]
+        mk : i32 [ Au.auto_mark[] ]
+        gp : HyGrey hy_grey[ path '{recs[ i ].stem}-camera1.png' ]
+        if [ gp.valid ]
+            pic : vec u8 hy_resize[ gp.bytes, gp.w, gp.h, fk ]
+            memcpy[ @fs.frames[ i * fk * fk ], @pic[ 0 ], fk * fk ]
+        Au.auto_free_to[ mk ]
+    box : vec f32 [ set.n * 3 ]
+    found : vec bool [ set.n ]
+    many : i64 [ 0 ]
+    dr : HyDraws [ state: 7 ]
+    for [ from: i64 0, from < set.n, from += 128 ]
+        take : vec i64 []
+        last : i64 [ min[ from + 128, set.n ] ]
+        for [ i: i64 from, i < last, i += 1 ]
+            take.push[ i ]
+        hb : HhBatch hh_batch[ fs, take, false, dr ]
+        finder.begin_step[]
+        o : vec f32 finder.gd.download[ hh_out[ finder, hb, false ] ]
+        for [ r: i64 0, r < hb.n, r += 1 ]
+            i : i64 take[ r ]
+            b : i64 [ r * HF_OUT ]
+            if [ o[ b ] < 0.5 || o[ b + 3 ] < 0.02 ] continue
+            found[ i ] = true
+            many += 1
+            box[ i * 3 ] = o[ b + 1 ] - 0.5
+            box[ i * 3 + 1 ] = o[ b + 2 ] - 0.5
+            box[ i * 3 + 2 ] = o[ b + 3 ]
+    log 'hands: the finder found a hand in {many} of {set.n}'
+    # each found capture's picture: its crop from the whole frame
+    kp : i64 set.keep
+    kk : i64 [ kp * kp ]
+    for [ i: i64 0, i < set.n, i += 1 ]
+        if [ !found[ i ] ] continue
+        mk : i32 [ Au.auto_mark[] ]
+        gp : HyGrey hy_grey[ path '{recs[ i ].stem}-camera1.png' ]
+        if [ gp.valid ]
+            pic : vec u8 hp_crop[ gp, f64[ box[ i * 3 ] ] + 0.5,
+                f64[ box[ i * 3 + 1 ] ] + 0.5,
+                f64[ box[ i * 3 + 2 ] ] * HP_CROP, kp ]
+            memcpy[ @set.frames[ i * kk ], @pic[ 0 ], kk ]
+        el found[ i ] = false
+        Au.auto_free_to[ mk ]
+    if [ aux ]
+        set.naux = 3
+        set.aux = box
+    # the ones with no hand out of training and testing
+    for [ g: HhGroup ] in set.train
+        keep : vec i64 []
+        for [ i: i64 ] in g.idx
+            if [ found[ i ] ] keep.push[ i ]
+        g.idx = keep
+    test : vec i64 []
+    for [ i: i64 ] in set.test
+        if [ found[ i ] ] test.push[ i ]
+    set.test = test
+    return set
+
+# the point model's captures: each pointing capture, labelled with
+# the dot's place on the screen (from its middle), cropped by the
+# finder with its box beside it; mirrored as the rest: the bottom
+# camera sits at the screen's middle, so a mirrored right hand is a
+# left hand pointing at the mirrored point (the point's x and the
+# box's x turn over)
+func hp_load_set [ state: string, out: string,
+                   vk: vk_context ] -> HhSet
+    recs : vec HhRec []
+    d : path '{state}/hands'
+    if [ d.exists[] ]
+        for [ f: path ] in d.ls[ null, false ]
+            s : string '{f}'
+            if [ !s.ends_with[ '.agi' ] || s.count < 17 ] continue
+            tx : string f.load[ typeid[ string ], null ]
+            if [ !tx || hh_field[ tx, 'gesture' ] != 'point_at' ]
+                continue
+            sx : f32 hh_field[ tx, 'target_x' ].real_value[]
+            sy : f32 hh_field[ tx, 'target_y' ].real_value[]
+            id : i64 s.mid[ s.count - 17, 13 ].integer_value[]
+            sess : string hh_field[ tx, 'session' ]
+            recs.push[ HhRec [ id: id, stem: s.mid[ 0, s.count - 4 ],
+                key: '{sess} point', hand: true,
+                shape: vec f32 [] [ sx - 0.5, sy - 0.5 ] ] ]
+    return hh_crop_set[ recs, HP_OUT, 0, true, out, vk ]
+
+func hp_train [ state: string, out: string, epochs: i64, size: i64,
+                batch: i64, lr: f64, vk: vk_context ] -> bool
+    return hh_fit[ hp_load_set[ state, out, vk ], 1, 'point', out,
+                   epochs, size, batch, lr, vk ]
+
+# the held-back captures judged: the point's mean miss (as a share
+# of the screen: its x by the width, its y by the height) and the
+# share within a tenth; returns the mean miss
+func hp_judge [ net: GStageNet, set: HhSet, dr: HyDraws ] -> f64
+    no : i64 HP_OUT
+    pts : i64 [ 0 ]
+    off : f64 [ 0.0 ]
+    near : i64 [ 0 ]
+    for [ from: i64 0, from < set.test.count, from += 128 ]
+        take : vec i64 []
+        last : i64 [ min[ from + 128, set.test.count ] ]
+        for [ i: i64 from, i < last, i += 1 ]
+            take.push[ set.test[ i ] ]
+        hb : HhBatch hh_batch[ set, take, false, dr ]
+        net.begin_step[]
+        o : vec f32 net.gd.download[ hh_out[ net, hb, false ] ]
+        for [ r: i64 0, r < hb.n, r += 1 ]
+            b : i64 [ r * no ]
+            dd : f64 [ hypot[ f64[ o[ b ] ] - f64[ hb.y[ b ] ],
+                              f64[ o[ b + 1 ] ] - f64[ hb.y[ b + 1 ] ] ] ]
+            off += dd
+            pts += 1
+            if [ dd < 0.1 ] near += 1
+    np : f64 [ f64[ max[ pts, 1 ] ] ]
+    log '  held back: pointing {pts}, off by {hy_num[ off / np, 3 ]} of the screen, within a tenth {hy_num[ f64[ near ] / np, 3 ]}'
+    return off / np
+
+# the finder's captures: the boxes drawn in annotate/hands.txt (a
+# frame, its box's middle and side in its pixels; or 'none'), and the
+# eyes' recordings as no hand
+func hf_load_set [ state: string ] -> HhSet
+    recs : vec HhRec []
+    pf : path '{state}/annotate/hands.txt'
+    tx : string [ (pf.exists[]) ? pf.load[ typeid[ string ], null ]
+                  : null ]
+    if [ !tx ]
+        log 'handfind: no boxes in {pf}'
+        return null
+    for [ ln: string ] in tx.split[ '\n' ]
+        ws : vec string ln.trim[].split[ ' ' ]
+        if [ ws.count < 2 ] continue
+        stem : string '{state}/{ws[ 0 ].mid[ 0, ws[ 0 ].count - 12 ]}'
+        nm : string ws[ 0 ]
+        id : i64 nm.mid[ nm.count - 25, 13 ].integer_value[]
+        af : path '{stem}.agi'
+        at : string [ (af.exists[]) ? af.load[ typeid[ string ], null ]
+                      : '' ]
+        sess : string hh_field[ (at) ? at : '', 'session' ]
+        if [ ws[ 1 ] == 'none' || ws.count < 4 ]
+            recs.push[ HhRec [ id: id, stem: stem, key: '{sess} none',
+                               hand: false ] ]
+            continue
+        gp : HyGrey hy_grey[ path '{stem}-camera1.png' ]
+        if [ !gp.valid ] continue
+        w : f64 [ f64[ gp.w ] ]
+        h : f64 [ f64[ gp.h ] ]
+        recs.push[ HhRec [ id: id, stem: stem, key: '{sess} box',
+            hand: true, shape: vec f32 [] [
+                ws[ 1 ].real_value[] / w, ws[ 2 ].real_value[] / h,
+                ws[ 3 ].real_value[] / w ] ] ]
+    hh_read_dir[ '{state}/gaze', true, recs ]
+    hh_read_dir[ '{state}/records', true, recs ]
+    set : HhSet hh_set_of[ recs, HF_OUT, true, -1, HF_SIDE ]
+    if [ set ] set.box = true
+    return set
+
+func hf_train [ state: string, out: string, epochs: i64, size: i64,
+                batch: i64, lr: f64, vk: vk_context ] -> bool
+    return hh_fit[ hf_load_set[ state ], 2, 'handfind', out, epochs,
+                   size, batch, lr, vk ]
+
+# the held-back captures judged: a hand found or not (share right);
+# for the boxes, the middle's mean miss and the side's, as shares of
+# its true side, and the share within a quarter side of both;
+# returns a mean error
+func hf_judge [ net: GStageNet, set: HhSet, dr: HyDraws ] -> f64
+    no : i64 HF_OUT
+    right : i64 [ 0 ]
+    seen : i64 [ 0 ]
+    calm : i64 [ 0 ]
+    nones : i64 [ 0 ]
+    boxes : i64 [ 0 ]
+    mid : f64 [ 0.0 ]
+    side : f64 [ 0.0 ]
+    good : i64 [ 0 ]
+    for [ from: i64 0, from < set.test.count, from += 128 ]
+        take : vec i64 []
+        last : i64 [ min[ from + 128, set.test.count ] ]
+        for [ i: i64 from, i < last, i += 1 ]
+            take.push[ set.test[ i ] ]
+        hb : HhBatch hh_batch[ set, take, false, dr ]
+        net.begin_step[]
+        o : vec f32 net.gd.download[ hh_out[ net, hb, false ] ]
+        for [ r: i64 0, r < hb.n, r += 1 ]
+            b : i64 [ r * no ]
+            if [ (o[ b ] > 0.5) == (hb.y[ b ] > 0.5) ] right += 1
+            if [ hb.y[ b ] < 0.5 ]
+                nones += 1
+                if [ o[ b ] < 0.5 ] calm += 1
+                continue
+            if [ o[ b ] > 0.5 ] seen += 1
+            if [ hb.mask[ b + 1 ] < 0.5 ] continue
+            ts : f64 [ max[ f64[ hb.y[ b + 3 ] ], 0.01 ] ]
+            dm : f64 [ hypot[ f64[ o[ b + 1 ] ] - f64[ hb.y[ b + 1 ] ],
+                              f64[ o[ b + 2 ] ] - f64[ hb.y[ b + 2 ] ] ]
+                       / ts ]
+            ds : f64 [ fabs[ f64[ o[ b + 3 ] ] - ts ] / ts ]
+            mid += dm
+            side += ds
+            boxes += 1
+            if [ dm < 0.25 && ds < 0.25 ] good += 1
+    found : f64 [ f64[ right ] / f64[ max[ set.test.count, 1 ] ] ]
+    nb : f64 [ f64[ max[ boxes, 1 ] ] ]
+    log '  held back: hands seen {seen} of {boxes}, no hand read so {calm} of {nones}'
+    log '  held back: boxes {boxes}, middle off by {hy_num[ mid / nb, 3 ]} sides, side off by {hy_num[ side / nb, 3 ]}, both within a quarter {hy_num[ f64[ good ] / nb, 3 ]}'
+    miss : f64 [ 1.0 - f64[ seen ] / nb ]
+    return ((1.0 - found) + miss + mid / nb + side / nb) / 4.0

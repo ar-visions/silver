@@ -22,6 +22,8 @@ import HyperData
 import HyperPaint
 import HyperGaze
 import HyperTrain
+import HyperHands
+import HyperGazeFit
     -lvulkan
 
 intern func fnv1a_hash [ @u8, size_t, u64 ] -> u64

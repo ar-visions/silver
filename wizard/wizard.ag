@@ -990,6 +990,12 @@ element WizText
         label_font: 'fonts/BarlowCondensed-Regular.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
+# a heading within a page
+element WizHead
+    public face : Layer [ label_color: rgba [ '#f2f2f6' ], label_size: 21,
+        label_font: 'fonts/BarlowCondensed-Regular.ttf',
+        label_align: vec2f [ x: 0.0, y: 0.5 ] ]
+
 element WizSmall
     public face : Layer [ label_color: rgba [ '#c8c8d0' ], label_size: 15,
         label_font: 'fonts/BarlowCondensed-Regular.ttf',
@@ -1008,6 +1014,12 @@ element WizGood
 
 element WizBad
     public face : Layer [ label_color: rgba [ '#ff9a8a' ], label_size: 15,
+        label_font: 'fonts/BarlowCondensed-Regular.ttf',
+        label_align: vec2f [ x: 0.0, y: 0.5 ] ]
+
+# what a choice means, under it
+element WizAbout
+    public face : Layer [ label_color: rgba [ '#ffb46a' ], label_size: 15,
         label_font: 'fonts/BarlowCondensed-Regular.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
@@ -1409,8 +1421,9 @@ class InstallAnswers
     public ssh_keys : bool
     # the services the machine runs from its first start (apache)
     public services : vec string
-    # no screen: orbiter runs in text mode from the first start
-    public headless : bool
+    # a device with no screen: its services alone, orbiter in
+    # text mode from the first start
+    public embedded : bool
 
 # orbiter-os setup: the install's settings, then the install
 element InstallWizard
@@ -1423,8 +1436,8 @@ element InstallWizard
     mutable given_hash : string [ '' ]
     # the services on from the first start, as the answers give them
     mutable given_services : vec string
-    # the answers' headless: orbiter in text mode at each start
-    mutable given_headless : bool
+    # an embedded device: the services' tree, no screen
+    mutable embedded : bool
     # the tree that is copied: the running system
     public source  : string [ '/' ]
     mutable page    : i32
@@ -1515,9 +1528,21 @@ element InstallWizard
         if [ n <= 0 ] return -1
         return n + n / 10
 
-    # where orbiter-os is: the tree being installed
+    # where orbiter-os is: the tree being installed (an embedded
+    # one has the drive's kernel and firmware)
     func hw_tree [] -> string
+        if [ source == embedded_root[] ] return drive_tree[]
         return (source == '/') ? '' : source
+
+    func embedded_root [] -> string
+        return '{embedded_home[]}/root'
+
+    # from another system the tree follows the kind chosen
+    func tree_for []
+        if [ source != drive_tree[] && source != embedded_root[] ]
+            return
+        source = (embedded) ? embedded_root[] : drive_tree[]
+        need = copy_need[]
 
     # running orbiter-os itself
     func booted_os [] -> bool
@@ -1649,6 +1674,7 @@ element InstallWizard
         for [ h: Hw ] in hw
             if [ h.ok && h.graphics ] g = true
             if [ h.ok && !h.graphics ] n = true
+        if [ embedded ] return n
         return g && n
 
     # a partition the folder will not fit on
@@ -1801,7 +1827,7 @@ element InstallWizard
             out = '{out} orbiter.image=/orbiter-os/root.img'
             out = '{out} orbiter.root={root}'
         if [ swap_word.count > 0 ] out = '{out} {swap_word}'
-        if [ given_headless ]
+        if [ embedded ]
             out = '{out} orbiter.args=--trinity.text_mode,true'
         # from another system: orbiter-os's own words, not its
         if [ !booted_os[] ]
@@ -1963,12 +1989,14 @@ element InstallWizard
         base : string [ (source == '/') ? '' : source ]
         kern : '{base}/boot/vmlinuz'
         rd   : '{base}/boot/initramfs'
-        for [ f: string ] in vec string [] [ kern, rd ]
-            fp : path [ f ]
-            if [ !fp.exists[] ] problems.push[ 'Missing {f}' ]
+        # an embedded tree is written by the build step
+        if [ source != embedded_root[] ]
+            for [ f: string ] in vec string [] [ kern, rd ]
+                fp : path [ f ]
+                if [ !fp.exists[] ] problems.push[ 'Missing {f}' ]
         # from another system the apps are built first (os-bootstrap
         # assemble: the worker runs it before the script's steps)
-        if [ source == drive_tree[] ]
+        if [ source == drive_tree[] || source == embedded_root[] ]
             step[ StepKind.build, 'Build the apps, update the tree' ]
         mnt  : '/run/wizard/root'
         efi  : '/run/wizard/efi'
@@ -2532,6 +2560,9 @@ element InstallWizard
             step_at = 0
             b : Bootstrap []
             b.initialize[]
+            if [ embedded ]
+                b.embedded = true
+                b.out_dir = path [ embedded_home[] ]
             b.out_dir.make_dir[]
             b.lock  = lock
             b.lines = lines
@@ -2605,7 +2636,8 @@ element InstallWizard
         again = pw
         keys_copy  = an.ssh_keys
         given_services = an.services
-        given_headless = an.headless
+        embedded = an.embedded
+        tree_for[]
         # the pages' own checks, the hardware's but for graphics (a
         # device with no screen needs none)
         for [ pg: i32 2, pg <= 4, pg += 1 ]
@@ -2687,6 +2719,9 @@ element InstallWizard
             fresh  = true
         el [ key == 'ssh_keys' ]
             keys_copy = !keys_copy
+        el [ key == 'role_full' || key == 'role_embedded' ]
+            embedded = key == 'role_embedded'
+            tree_for[]
         el [ key == 'swap' ]
             # round the choices: the file, then each partition
             opts : vec i32 [] [ -1 ]
@@ -2847,8 +2882,8 @@ element InstallWizard
             t[ 'bootstrap' ] = Bootstrap [
                 area: Region [ 'l1.4 t{top} r1.4 h14.15' ] ]
         el [ page == 1 ]
-            title = 'Hardware check'
-            note  = 'What orbiter-os supports on this machine.'
+            title = 'Device Support'
+            note  = 'What orbiter-os supports here, and how it runs.'
             y : f32 [ top ]
             for [ i: i32 0, i < hw.count, i += 1 ]
                 h : Hw hw[ i ]
@@ -2862,6 +2897,22 @@ element InstallWizard
             if [ hw.count == 0 ]
                 none : 'No graphics or network hardware was found.'
                 t[ 'hw_none' ] = WizText [ label: none, area: row[ y ] ]
+                y += gap
+            t[ 'role' ] = WizHead [ label: 'Role',
+                area: row[ y + 0.3 ] ]
+            ry : f32 [ y + 1.5 ]
+            t[ 'role_full' ] = WizPick [ label: 'Full',
+                selected: !embedded,
+                area: Region [ 'l1.4 t{ry} w9 h0.94' ] ]
+            t[ 'role_full_about' ] = WizAbout [
+                label: 'A screen, the desktop, every app; SSH by keys.',
+                area: Region [ 'l1.4 t{ry + 1.1} w14.3 h0.8' ] ]
+            t[ 'role_embedded' ] = WizPick [ label: 'Embedded',
+                selected: embedded,
+                area: Region [ 'l16.3 t{ry} w9 h0.94' ] ]
+            t[ 'role_embedded_about' ] = WizAbout [
+                label: 'No screen: orbiter, its services; SSH by keys.',
+                area: Region [ 'l16.3 t{ry + 1.1} r1.4 h0.8' ] ]
         el [ page == 2 ]
             title = 'Choose a disk'
             note  = 'orbiter-os is installed on it.'

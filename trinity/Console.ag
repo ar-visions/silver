@@ -18,9 +18,20 @@ struct TermCell
     attr : i32 [ 0 ]
 
 # the shell's history kept at each command, and a blank line
-# before its prompt when a command ran since the last one
-PROMPT_GAP : string [ 'history -a; __h=$(HISTTIMEFORMAT= history 1); '
+# before its prompt when a command ran since the last one; first
+# the end mark (OSC 133 D) with its exit code and command
+PROMPT_GAP : string [ '__e=$?; history -a; '
+    + '__h=$(HISTTIMEFORMAT= history 1); __c=; '
+    + '[ "$__h" != "$__p" ] && __c=$(sed "s/^ *[0-9]* *//" <<<"$__h"); '
+    + 'printf "\\033]133;D;%s;%s\\007" "$__e" "$__c"; '
     + '[ -n "$__p" ] && [ "$__h" != "$__p" ] && echo; __p=$__h' ]
+
+# one command the shell ran: its line, exit code, output, time
+class ConsoleRun
+    public cmd  : string
+    public code : i32
+    public out  : string
+    public secs : f64
 
 class ConsoleSession
     mutable pty_fd     : i32 [ -1 ]
@@ -115,11 +126,21 @@ class ConsoleSession
     # form (1006): the wheel goes to it, as a terminal's does
     mutable mouse_report : bool
     mutable mouse_sgr    : bool
+    # the commands run here (shell marks), for an agent to read
+    public  runs        : vec ConsoleRun
+    # the running command: its first output line (-1 none)
+    mutable run_from    : i32 [ -1 ]
+    mutable run_us      : i64
+    mutable run_cmd     : string
+    # the log line of each command the shell ran (its start mark):
+    # marks on the scrollbar's track; a program's own Enter makes none
+    public  cmd_lines   : vec i32
 
     func init []
         scrollback  = list string []
         sb_cells    = vec TermCell []
         sb_off      = vec i32 []
+        runs        = vec ConsoleRun []
         init_cells[ screen, rows * cols ]
         scroll_bot = rows - 1
         esc_pv     = vec i32 []
@@ -145,8 +166,9 @@ class ConsoleSession
                 # the prompt is its working folder, as it changes
                 setenv[ 'PS1', '\\w> ', 1 ]
                 # a blank line after a command, and after its output
-                # (only when one ran: an empty Enter adds none)
-                setenv[ 'PS0', '\n', 1 ]
+                # (only when one ran: an empty Enter adds none); the
+                # output's start mark (OSC 133 C) first
+                setenv[ 'PS0', '\\e]133;C\\a\n', 1 ]
                 setenv[ 'PROMPT_COMMAND', PROMPT_GAP, 1 ]
                 norc : string '--norc'
                 execl[ '/bin/bash', 'bash', norc.chars, null ]
@@ -174,9 +196,11 @@ class ConsoleSession
         esc_state  = 0
         clear_screen[]
         scrollback = list string []
+        cmd_lines = null
         sb_cells   = vec TermCell []
         sb_off     = vec i32 []
         run_armed  = false
+        run_from   = -1
         start[]
 
     func bl_cell [ i: i32 ]
@@ -439,6 +463,8 @@ class ConsoleSession
         clear_screen[]
         cx = 0
         cy = 0
+        # its lines are gone: a running command's start with them
+        run_from = -1
         scroll = 0.0
         scroll_x = 0.0
         user_scrolled = false
@@ -464,6 +490,7 @@ class ConsoleSession
                 bl_cell[ cy * cols + i ]
         el [ m == 3 ]
             scrollback = list string []
+            cmd_lines = null
             sb_cells   = vec TermCell []
             sb_off     = vec i32 []
         el
@@ -591,6 +618,7 @@ class ConsoleSession
         mouse_report = false
         mouse_sgr    = false
         scrollback = list string []
+        cmd_lines = null
         sb_cells   = vec TermCell []
         sb_off     = vec i32 []
         clear_screen[]
@@ -677,6 +705,15 @@ class ConsoleSession
     # an OSC ended: 0 and 2 set the title (1 is the icon's name)
     func osc_end []
         n : i32 [ (osc) ? i32[ osc.count ] : 0 ]
+        # 133;...: the shell's marks round each command
+        if [ n > 4 && osc[ 0 ] == 49 && osc[ 1 ] == 51
+             && osc[ 2 ] == 51 && osc[ 3 ] == 59 ]
+            mb : local i8 [ 1025 ]
+            for [ i: i32 4, i < n, i += 1 ]
+                mb[ i - 4 ] = i8[ osc[ i ] ]
+            mb[ n - 4 ] = 0
+            shell_mark[ string[ @mb[0] ] ]
+            return
         if [ n < 2 || osc[ 1 ] != 59 ] return
         k : i32 [ osc[ 0 ] ]
         if [ k != 48 && k != 50 ] return
@@ -685,6 +722,71 @@ class ConsoleSession
             tb[ i - 2 ] = i8[ osc[ i ] ]
         tb[ n - 2 ] = 0
         title = string[ @tb[0] ]
+
+    # the log's line under the cursor (scrollback, then screen)
+    func line_here [] -> i32
+        return i32[ scrollback.count ] + cy
+
+    # C: the output begins (the command is the line above);
+    # D;code;command: it ended
+    func shell_mark [ m: string ]
+        if [ m.starts_with[ 'C' ] ]
+            run_from = line_here[]
+            run_us   = epoch_micros[]
+            if [ run_from > 0 ]
+                if [ !cmd_lines ] cmd_lines = vec i32 []
+                cmd_lines.push[ run_from - 1 ]
+            above : string line_get[ run_from - 1 ]
+            pa : i32 [ i32[ above.index_of[ '> ' ] ] ]
+            run_cmd = (pa >= 0) ? above.mid[ pa + 2,
+                above.count - pa - 2 ] : above
+            return
+        if [ !m.starts_with[ 'D' ] || run_from < 0 ] return
+        rest : string m.mid[ 2, m.count - 2 ]
+        sc : i32 [ i32[ rest.index_of[ ';' ] ] ]
+        code : i32 [ (sc > 0) ? i32[ rest.mid[ 0, sc ].integer_value[] ]
+            : 0 ]
+        cmd : string [ (sc >= 0) ? rest.mid[ sc + 1,
+            rest.count - sc - 1 ].trim[] : '' ]
+        if [ cmd.count == 0 ] cmd = run_cmd
+        to : i32 [ line_here[] + ((cx > 0) ? 1 : 0) ]
+        secs : f64 [ f64[ epoch_micros[] - run_us ] / 1000000.0 ]
+        if [ cmd && cmd.count > 0 ]
+            runs.push[ ConsoleRun [ cmd: cmd, code: code,
+                out: span_text[ run_from, to ], secs: secs ] ]
+        run_from = -1
+
+    # lines first up to last, the blank ones at either end left out
+    func span_text [ first: i32, last: i32 ] -> string
+        lo : i32 [ max[ first, 0 ] ]
+        hi : i32 [ min[ last, line_count[] ] ]
+        while [ lo < hi && line_get[ lo ].trim[].count == 0 ] lo += 1
+        while [ hi > lo && line_get[ hi - 1 ].trim[].count == 0 ]
+            hi -= 1
+        out : string ''
+        for [ i: i32 lo, i < hi, i += 1 ]
+            out = (i == lo) ? line_get[ i ] : '{out}\n{line_get[ i ]}'
+        return out
+
+    # the last n commands with their output, the running one last;
+    # a program's session (no shell marks): its last 200 lines
+    public func transcript [ n: i32 ] -> string
+        if [ runs.count == 0 && run_from < 0 ] return tail_lines[ 200 ]
+        out : string ''
+        from : i32 [ max[ i32[ runs.count ] - n, 0 ] ]
+        for [ i: i32 from, i < i32[ runs.count ], i += 1 ]
+            r : ConsoleRun runs[ i ]
+            out = '{out}$ {r.cmd}\n{r.out}\n[exit {r.code}, {r.secs} s]\n\n'
+        if [ run_from >= 0 ]
+            secs : f64 [ f64[ epoch_micros[] - run_us ] / 1000000.0 ]
+            live : string span_text[ run_from, line_here[] + 1 ]
+            out = '{out}$ {run_cmd}\n{live}\n[running, {secs} s]\n'
+        return out
+
+    # the log's last n lines, as they show
+    public func tail_lines [ n: i32 ] -> string
+        hi : i32 [ line_here[] + 1 ]
+        return span_text[ max[ hi - n, 0 ], hi ]
 
     func process_byte [ c: i32 ]
         # UTF-8 continuation bytes assemble the pending codepoint.
@@ -922,6 +1024,7 @@ Layer TermLayer
         con.content_h = (s.max_scroll > 0.0)
             ? s.max_scroll + con.bounds.h : ch
         con.scroll.y  = s.scroll
+        con.draw_marks[ cv, s ]
 
 # its scroll's end: followed while the user has not scrolled away; the
 # shown scroll eases to its goal (filter_n), a drag moves it at once
@@ -1614,6 +1717,8 @@ element Console
     public  cwd        : string
     public  run_line   : string
     mutable last_run   : string
+    # the command mark under the pointer (its index + 1; 0 none)
+    mutable mark_hover : i32
     # the program's title becomes the app's (a terminal's tab)
     public  titles     : bool
     mutable title_was  : string
@@ -1836,10 +1941,83 @@ element Console
         if [ !app ] return false
         return app.open_at*[ path '{fp}', lno, sc ]
 
+    # a command's mark on the scrollbar's track, as the editor's git
+    # rails: its line's place in the whole log, at least 4px tall;
+    # null when the track is not shown (the program's own screen, a
+    # filter, all of it in view)
+    func mark_box [ s: ConsoleSession, i: i32 ] -> rect
+        sb : ScrollLayer (layers) ? cast ScrollLayer [
+            layers['scrollbar'] ] : null
+        cl : Layer (layers) ? layers[ 'content' ] : null
+        if [ !sb || !sb.bounds || !cl || !cl.bounds || s.in_alt
+             || content_h <= bounds.h || !s.cmd_lines ]
+            return null
+        flt : string filter[]
+        if [ flt && flt.count > 0 ] return null
+        lh : f32 [ (s.lh_cache > 0.0) ? s.lh_cache : 22.0 ]
+        top : f32 [ cl.bounds.y + 8.0 ]
+        vis : f32 [ sb.bounds.y + sb.bounds.h - top ]
+        if [ vis < 32.0 ] return null
+        ry : f32 [ top + f32[ s.cmd_lines[ i ] ] * lh / content_h
+                   * vis ]
+        rh : f32 [ max[ lh / content_h * vis, 4.0 ] ]
+        w : f32 [ sb.thumb_w * 2.0 ]
+        rx : f32 [ sb.bounds.x + sb.bounds.w - sb.thumb_w - w * 0.5 ]
+        return rect [ x: rx, y: ry, w: w, h: rh ]
+
+    # the marks: the thumb's rest width, half alpha, solid and the
+    # track's width under the pointer, fading out as the thumb nears
+    # (gone 8px from its edge, full 16px away); the thumb paints over
+    func draw_marks [ cv: Canvas, s: ConsoleSession ]
+        if [ !s.cmd_lines || !mark_box[ s, 0 ] ] return
+        sb : ScrollLayer cast ScrollLayer [ layers['scrollbar'] ]
+        cl : Layer layers[ 'content' ]
+        thy : f32 [ cl.bounds.y + 8.0 + sb.thumb_y_px ]
+        thb : f32 [ thy + sb.thumb_h_px ]
+        cv.save[]
+        cv.stroke_width[ 0.0 ]
+        for [ i: i32 0, i < s.cmd_lines.count, i += 1 ]
+            b : rect mark_box[ s, i ]
+            d : f32 [ 0.0 ]
+            if [ b.y + b.h <= thy ] d = thy - (b.y + b.h)
+            el [ b.y >= thb ] d = b.y - thb
+            fa : f32 [ clamp[ (d - 8.0) / 8.0, 0.0, 1.0 ] ]
+            if [ fa <= 0.0 ] continue
+            hv : bool [ mark_hover == i + 1 ]
+            rw : f32 [ ((hv) ? b.w : sb.thumb_w) - 2.0 ]
+            rr : f32 [ (hv) ? 0.0 : 4.0 ]
+            cv.fill_color[ rgba[ r: 0.502, g: 0.42, b: 1.0,
+                                 a: ((hv) ? 1.0 : 0.5) * fa ] ]
+            cv.rounded_rect[ b.x + (b.w - rw) * 0.5, b.y, rw, b.h, rr,
+                             rr, rr, rr ]
+            cv.paint[]
+        cv.restore[]
+
+    # the command mark at a point (index + 1; 0 none), a few px of
+    # slack about each; y in the element's view (its scroll taken off)
+    func mark_at [ s: ConsoleSession, x: f32, y: f32 ] -> i32
+        if [ !s.cmd_lines ] return 0
+        for [ i: i32 0, i < s.cmd_lines.count, i += 1 ]
+            b : rect mark_box[ s, i ]
+            if [ !b ] return 0
+            if [ x >= b.x - 4.0 && x <= b.x + b.w + 4.0
+                 && y >= b.y - 3.0 && y <= b.y + b.h + 3.0 ]
+                return i + 1
+        return 0
+
     func on_press [ ev: Event ]
         s : ConsoleSession session[]
         if [ !s ] return
         set_focus[]
+        # a command's mark: its line shown, a line of the one before
+        # above it
+        mk : i32 mark_at[ s, ev.mouse.pos.x,
+                          ev.mouse.pos.y - scroll.y ]
+        if [ mk > 0 && ev.mouse.button == 0 ]
+            lh : f32 [ (s.lh_cache > 0.0) ? s.lh_cache : 22.0 ]
+            s.user_scrolled = true
+            set_scroll[ s, f32[ s.cmd_lines[ mk - 1 ] - 1 ] * lh ]
+            return
         # the right button copies the selection; the middle pastes
         if [ ev.mouse.button == 1 ]
             txt : string s.selection_text[]
@@ -1882,6 +2060,11 @@ element Console
     func on_move [ ev: Event ]
         s : ConsoleSession session[]
         if [ !s ] return
+        mk : i32 mark_at[ s, ev.mouse.pos.x,
+                          ev.mouse.pos.y - scroll.y ]
+        if [ mk != mark_hover ]
+            mark_hover = mk
+            pristine = false
         ele : Layer (layers) ? layers[ 'content' ] : null
         if [ s.scroll_dragging && ele && ele.bounds ]
             sb : ScrollLayer (layers) ? cast ScrollLayer [
@@ -1924,6 +2107,9 @@ element Console
             ux.will_animate = true
 
     func on_leave [ ev: Event ]
+        if [ mark_hover != 0 ]
+            mark_hover = 0
+            pristine = false
         s : ConsoleSession session[]
         if [ s && s.hover_link_line >= 0 ]
             s.hover_link_line = -1
@@ -2053,3 +2239,13 @@ expect func t_agent_busy_title [] -> bool
     done : bool [ !s.agent_busy[] ]
     log 'agent title: idle {idle} on {on1} {on2} done {done}'
     return idle && on1 && on2 && done
+
+# the console under e: e itself, else the first one inside it
+func console_in [ e: element ] -> Console
+    if [ !e ] return null
+    if [ e inherits Console ] return cast Console [ e ]
+    if [ !e.elements ] return null
+    for [ c: element, id: string ] in e.elements
+        f : Console console_in[ c ]
+        if [ f ] return f
+    return null

@@ -6,9 +6,12 @@ export contains ['.local/state/hyperspace']
 export cameras ['v4l2']
 # its training, run by name from this folder (in orbiter, orbiter
 # runs the line)
-export jobs ['eyes python3 -u train_eyes.py',
-    'export python3 -u export_eyes.py',
-    'gaze python3 -u train_gaze.py --steps 6000']
+export jobs [
+    'eyes ../install/bin/hytrain --hidden true --eyes true',
+    'gaze ../install/bin/hytrain --hidden true --gaze true --steps 24000 --slew 0.2 --camera 1',
+    'hands ../install/bin/hytrain --hidden true --hands true --epochs 30 --size 8000 --batch 64',
+    'point ../install/bin/hytrain --hidden true --point true --epochs 30 --size 8000 --batch 64',
+    'handfind ../install/bin/hytrain --hidden true --handfind true --epochs 30 --size 8000 --batch 64']
 
 import vec
 import img
@@ -22,6 +25,7 @@ import Panel
 import Eyes
 import Jobs
 import Recordings
+import hand
 
 # the app's storage, one folder for the app and its panel: in its
 # view (a hosted slot) its own home's; drawn by orbiter (the panel),
@@ -55,6 +59,16 @@ func hs_neg_says [] -> vec string
         'let your hair fall over your eyes',
         'close your eyes', 'look away from the screen',
         'rest your chin on your hand, look at the screen' ]
+
+# a prompt run's labels and words: negatives' or gestures'
+func hs_prompt_keys [ route: string ] -> vec string
+    if [ route == 'gestures' ] return vec string [] [ 'pose' ]
+    return hs_neg_keys[]
+
+func hs_prompt_says [ route: string ] -> vec string
+    if [ route == 'gestures' ]
+        return vec string [] [ 'copy this hand, then hold it still' ]
+    return hs_neg_says[]
 
 func hs_dir [] -> path
     d : path path.path_storage[ 'hyperspace' ]
@@ -119,6 +133,10 @@ element hyperspace : trinity
     # gaze: the first camera's lit frame last captured
     intern shot_at : i64
     intern cancelled : bool
+    # gestures: recording this pose (a press starts and ends it),
+    # since when (us)
+    intern g_on : bool
+    intern g_rec_us : i64
     # Escape gave the screen back: the run goes on in its window
     intern left_full : bool
     # the view left_full was set in (another view goes full again)
@@ -133,6 +151,19 @@ element hyperspace : trinity
     intern ann_tex : Texture
     intern ann_rect : rect
     intern ann_done : i32
+    # hand boxes: the bottom camera's hand frames, mixed across the
+    # sessions; the one shown, and the drag (its middle where it
+    # began, its half side to the pointer, shares of the picture)
+    intern hb_files : vec string
+    intern hb_i : i32
+    intern hb_done : i32
+    intern hb_img : Image
+    intern hb_tex : Texture
+    intern hb_rect : rect
+    intern hb_drag : bool
+    intern hb_x : f32
+    intern hb_y : f32
+    intern hb_half : f32
     # testbed: the gaze from both cameras
     intern hub : GazeHub
     # recordings: the list as last read (again after a delete), and
@@ -141,6 +172,12 @@ element hyperspace : trinity
     intern trash_n : i64
     # a click arrives twice: a delete takes the first alone
     intern del_ms : i64
+    intern job_ms : i64
+    # Train all: the jobs still to run in turn, the one running, and
+    # when it was asked for (orbiter starts it a moment later)
+    intern all_left : vec string
+    intern all_now : string
+    intern all_ms : i64
     # a fixed dot for checking the testbed's placement: the monitor's
     # -0.5..0.5, shown until aim_until (ms)
     intern aim_x : f32
@@ -301,6 +338,7 @@ element hyperspace : trinity
         rig_poll[]
         command_poll[]
         if [ view == 'record' ] record_step[]
+        all_step[]
         # record takes the whole screen while its dot runs, the
         # testbed always (its dot plotted as record's is)
         n : i32 [ (points) ? i32[ points.count ] / 2 : 0 ]
@@ -315,6 +353,29 @@ element hyperspace : trinity
         if [ pending && epoch_millis[] >= capture_at ]
             capture[]
             taken += 1
+
+    # Train all: the next job once the last has ended (a job that
+    # failed or was stopped by hand: the rest go on)
+    func all_step []
+        if [ !all_left ] return
+        if [ all_now && all_now.count > 0 ]
+            if [ epoch_millis[] - all_ms < 3000 ] return
+            if [ hs_job_state[ all_now ] == 'running' ] return
+        if [ all_left.count == 0 ]
+            all_left = null
+            all_now = ''
+            log 'hyperspace: every job run'
+            if [ ux ] ux.restyle = true
+            return
+        all_now = all_left[ 0 ]
+        rest : vec string []
+        for [ i: i64 1, i < all_left.count, i += 1 ]
+            rest.push[ all_left[ i ] ]
+        all_left = rest
+        all_ms = epoch_millis[]
+        log 'hyperspace: Train all: {all_now}'
+        hs_job_go[ all_now, opener ]
+        if [ ux ] ux.restyle = true
 
     # record's menu: Cancel stops this run and deletes what it took
     action func cancel []
@@ -344,8 +405,10 @@ element hyperspace : trinity
         points = vec f32 []
         seed : i64 epoch_millis[]
         if [ route == 'edges' ] edge_points[]
-        if [ route == 'negatives' ] neg_points[ seed ]
-        for [ rd: i32 0, rd < ROUNDS && route == 'grid', rd += 1 ]
+        if [ route == 'gestures' ] pose_points[ seed ]
+        el [ prompted[] ] neg_points[ seed ]
+        grid_run : bool [ route == 'grid' || route == 'point' ]
+        for [ rd: i32 0, rd < ROUNDS && grid_run, rd += 1 ]
             seed = (seed * 1103515245 + 12345) % 2147483648
             nx : f32 [ f32[ seed % 61 ] / 1000.0 - 0.03 ]
             seed = (seed * 1103515245 + 12345) % 2147483648
@@ -375,7 +438,7 @@ element hyperspace : trinity
     # x the prompt's number
     func neg_points [ start: i64 ]
         seed : i64 start
-        n : i32 [ i32[ hs_neg_keys[].count ] ]
+        n : i32 [ i32[ hs_prompt_keys[ route ].count ] ]
         for [ rd: i32 0, rd < NEG_ROUNDS, rd += 1 ]
             order : vec i32 []
             for [ i: i32 0, i < n, i += 1 ] order += i
@@ -388,6 +451,14 @@ element hyperspace : trinity
             for [ v: i32 ] in order
                 points += f32[ v ]
                 points += 0.0
+
+    # gestures: the hand course (hand_course_names), each pose once,
+    # with either hand: an entry's x its place in the course
+    func pose_points [ start: i64 ]
+        n : i32 [ i32[ hand_course_names[].count ] ]
+        for [ i: i32 0, i < n, i += 1 ]
+            points += f32[ i ]
+            points += 0.0
 
     # edges: one stop for the run's count; the dot's place is by time
     func edge_points []
@@ -420,28 +491,35 @@ element hyperspace : trinity
     func record_step []
         if [ !points ] record_start[]
         if [ at >= points.count / 2 ] return
+        if [ pressed[] ]
+            gesture_step[]
+            return
         el_ms : i64 [ (epoch_micros[] - left_us) / 1000 ]
         mv : i64 move_ms[]
         cam : CameraView camera_view[ 0 ]
-        # the eyes start after the dot: none in the first 0.2 s
-        if [ into == 'gaze' && cam && cam.camera && !pending
+        # the eyes (or the pointing hand) start after the dot: none
+        # in the first 0.2 s
+        if [ follows[] && cam && cam.camera && !pending
              && el_ms >= 200 && cam.camera.taken != shot_at ]
             shot_at = cam.camera.taken
             d : vec2f dot_at[]
             take_at[ d.x, d.y, 0 ]
-        el [ route == 'negatives' ]
+            # point_at: not the old 'point' pose (index out)
+            if [ route == 'point' ] pending[ 3 ] = 'point_at'
+        el [ prompted[] ]
             # every lit frame once the prompt has been acted out
             if [ cam && cam.camera && !pending && el_ms >= NEG_SETTLE_MS
                  && cam.camera.taken != shot_at ]
                 shot_at = cam.camera.taken
                 take_at[ -1.0, -1.0, 0 ]
-                pending[ 3 ] = hs_neg_keys[][ i32[ points[ at * 2 ] ] ]
-        el [ into != 'gaze' && el_ms >= mv && !pending
+                pending[ 3 ] =
+                    hs_prompt_keys[ route ][ i32[ points[ at * 2 ] ] ]
+        el [ !follows[] && el_ms >= mv && !pending
              && el_ms < mv + 100 ]
             ask_capture[ 600 ]
         # edges: one run round the sides, at its end the last stop
         done : bool [ (route == 'edges') ? el_ms >= EDGE_MS
-                      : (route == 'negatives') ? el_ms >= NEG_MS
+                      : (prompted[]) ? el_ms >= NEG_MS
                       : el_ms >= mv + 1100 ]
         if [ done ]
             at += 1
@@ -449,9 +527,184 @@ element hyperspace : trinity
             if [ at >= points.count / 2 && ux ] ux.restyle = true
             left_us = epoch_micros[]
 
+    # every lit frame while a pose records, labelled with the pose;
+    # its target where on the screen the hand was shown (0 to 1)
+    func gesture_step []
+        if [ !g_on ] return
+        cam : CameraView camera_view[ 0 ]
+        if [ !cam || !cam.camera || pending
+             || cam.camera.taken == shot_at ]
+            return
+        shot_at = cam.camera.taken
+        d : vec2f hand_place[]
+        take_at[ d.x, d.y, 0 ]
+        pending[ 3 ] = prompt_key[]
+        # the pose's name in the course (hand_course makes it again)
+        if [ route == 'gestures' ]
+            pending[ 4 ] = course_name[]
+
+    # the shown entry's pose in the hand course
+    func course_name [] -> string
+        names : vec string hand_course_names[]
+        return names[ i32[ points[ at * 2 ] ] ]
+
+    # the shown prompt's label: gestures', the pose; else its key
+    func prompt_key [] -> string
+        if [ route == 'gestures' ] return 'pose'
+        return hs_prompt_keys[ route ][ i32[ points[ at * 2 ] ] ]
+
+    # the shown hand's place (shares of the screen): one spot
+    func hand_place [] -> vec2f
+        return vec2f [ 0.3, 0.52 ]
+
+    # a press: the shown pose starts recording, or ends and the next
+    # one shows
+    func gesture_press []
+        n : i32 [ (points) ? i32[ points.count ] / 2 : 0 ]
+        if [ view != 'record' || !pressed[] || at >= n ]
+            return
+        if [ !g_on ]
+            g_on = true
+            g_rec_us = epoch_micros[]
+            return
+        g_on = false
+        at += 1
+        if [ at >= n && ux ] ux.restyle = true
+
+    # the pose's armature: bones from each joint to its parent, the
+    # joints as dots; turning about its up, seen 20
+    # degrees from above, the near parts thicker and brighter; the
+    # wrist at x y
+    func draw_hand [ cv: Canvas, pose: HandPose, x: f32, y: f32,
+                     size: f32, touch: bool, left: bool ]
+        pts : vec f32 hand_points[ pose ]
+        par : vec i32 hand_parents[]
+        # turning round its up once each 8 s, so every side shows
+        tu : i64 [ epoch_millis[] % 8000 ]
+        spin : f32 [ f32[ tu ] / 8000.0 * 6.2831853 ]
+        cs : f32 [ cos[ spin ] ]
+        ss : f32 [ sin[ spin ] ]
+        ct : f32 [ cos[ 0.35 ] ]
+        st : f32 [ sin[ 0.35 ] ]
+        # the hand's middle turns in place, not the wrist
+        my : f32 [ 0.08 ]
+        sx : vec f32 []
+        sy : vec f32 []
+        sz : vec f32 []
+        for [ i: i32 0, i < par.count, i += 1 ]
+            # the left hand the right's mirror
+            px : f32 [ (left) ? 0.0 - pts[ i * 3 ] : pts[ i * 3 ] ]
+            py : f32 [ pts[ i * 3 + 1 ] - my ]
+            pz : f32 pts[ i * 3 + 2 ]
+            rx : f32 [ px * cs + pz * ss ]
+            rz : f32 [ pz * cs - px * ss ]
+            ty : f32 [ py * ct - rz * st ]
+            tz : f32 [ rz * ct + py * st ]
+            sx += x + rx * size
+            sy += y - ty * size
+            sz += tz
+        # the hand's colour: teal the left, violet the right, full
+        # with its palm to us, grey as its back turns to us
+        face : f32 [ min[ max[ 0.5 + 0.7 * cs, 0.0 ], 1.0 ] ]
+        hr : f32 [ (left) ? 0.29 : 0.5 ]
+        hg : f32 [ (left) ? 0.84 : 0.42 ]
+        hb : f32 [ (left) ? 0.78 : 1.0 ]
+        hr = 0.42 + (hr - 0.42) * face
+        hg = 0.42 + (hg - 0.42) * face
+        hb = 0.46 + (hb - 0.46) * face
+        cv.fill_color[ rgba [ '#0000' ] ]
+        cv.set_stroke_cap[ Cap.round ]
+        # the palm's edge across the knuckles, under the bones
+        cv.stroke_color[ rgba [ r: hr, g: hg, b: hb, a: 0.45 ] ]
+        cv.stroke_width[ 3.0 ]
+        knuckles : vec i32 [] [ 1, 5, 9, 13, 17 ]
+        cv.move_to[ sx[ 1 ], sy[ 1 ] ]
+        for [ kn: i32 ] in knuckles
+            cv.line_to[ sx[ kn ], sy[ kn ] ]
+        cv.paint[]
+        # far bones first: the near ones over them
+        order : vec i32 []
+        for [ i: i32 1, i < par.count, i += 1 ] order += i
+        for [ i: i32 1, i < order.count, i += 1 ]
+            for [ j: i32 i, j > 0, j -= 1 ]
+                ja : i32 order[ j - 1 ]
+                jb : i32 order[ j ]
+                da : f32 [ sz[ ja ] + sz[ par[ ja ] ] ]
+                db : f32 [ sz[ jb ] + sz[ par[ jb ] ] ]
+                if [ da <= db ] break
+                order[ j - 1 ] = jb
+                order[ j ] = ja
+        for [ i: i32 ] in order
+            near : f32 [ min[ max[ (sz[ i ] + sz[ par[ i ] ]) * 5.0
+                                   + 0.5, 0.0 ], 1.0 ] ]
+            al : i32 [ i32[ 90.0 + 165.0 * near ] ]
+            cv.stroke_color[ rgba [ r: hr, g: hg, b: hb,
+                                    a: f32[ al ] / 255.0 ] ]
+            cv.stroke_width[ 4.0 + 6.0 * near ]
+            cv.move_to[ sx[ par[ i ] ], sy[ par[ i ] ] ]
+            cv.line_to[ sx[ i ], sy[ i ] ]
+            cv.paint[]
+            cv.stroke_color[ rgba [ '#0000' ] ]
+            cv.fill_color[ rgba [ r: 1.0, g: 1.0, b: 1.0,
+                                  a: 0.4 + 0.5 * near ] ]
+            cv.arc[ sx[ i ], sy[ i ], 3.0 + 3.0 * near, 0.0, 6.2832 ]
+            cv.paint[]
+            cv.fill_color[ rgba [ '#0000' ] ]
+        # thumb and index tips touching: the touch drawn
+        if [ touch ]
+            cv.stroke_color[ rgba [ '#ffcf4a' ] ]
+            cv.stroke_width[ 5.0 ]
+            cv.move_to[ sx[ 4 ], sy[ 4 ] ]
+            cv.line_to[ sx[ 8 ], sy[ 8 ] ]
+            cv.paint[]
+            cv.stroke_color[ rgba [ '#0000' ] ]
+            cv.fill_color[ rgba [ '#ffcf4a' ] ]
+            mid_x : f32 [ (sx[ 4 ] + sx[ 8 ]) * 0.5 ]
+            mid_y : f32 [ (sy[ 4 ] + sy[ 8 ]) * 0.5 ]
+            cv.arc[ mid_x, mid_y, 6.0, 0.0, 6.2832 ]
+            cv.paint[]
+            cv.fill_color[ rgba [ '#0000' ] ]
+        if [ ux ] ux.will_animate = true
+
+    # gestures' screen: the pose to make, what to do, the pad
+    func draw_gesture [ cv: Canvas ]
+        key : string prompt_key[]
+        say : string hs_prompt_says[ route ][ 0 ]
+        n : i32 [ i32[ points.count ] / 2 ]
+        pose : HandPose hand_gesture[ 'open' ]
+        if [ key == 'pose' ]
+            pose = hand_course[ course_name[] ]
+        if [ key != 'none' ]
+            p : vec2f hand_place[]
+            draw_hand[ cv, pose, bounds.w * p.x, bounds.h * p.y,
+                bounds.h * 2.4, key == 'pinch' || key == 'ok', false ]
+        hs_text[ cv, say, bounds.w * 0.08, bounds.h * 0.1,
+            bounds.w * 0.5, 50.0, 32.0, '#ffffffd0' ]
+        word : string 'make the pose    space or click: start'
+        if [ g_on ]
+            word = 'recording: hold the pose' + '    space: next'
+        hs_text[ cv, word, bounds.w * 0.08, bounds.h * 0.9,
+            bounds.w * 0.84, 30.0, 20.0,
+            (g_on) ? '#ff8a8ae0' : '#ffffffa0' ]
+        hs_text[ cv, '{route}   {at + 1} / {n}', 20.0, 16.0, 600.0,
+            24.0, 17.0, '#ffffff80' ]
+
+    # a run of prompts (no dot): negatives or gestures
+    func prompted [] -> bool
+        return route == 'negatives' || pressed[]
+
+    # a run whose poses start and end by a press: gestures
+    func pressed [] -> bool
+        return route == 'gestures'
+
+    # every lit frame taken as the dot moves: gaze (looked at) and
+    # point (pointed at)
+    func follows [] -> bool
+        return into == 'gaze' || route == 'point'
+
     # the dot's time from point to point
     func move_ms [] -> i64
-        return (into == 'gaze') ? GAZE_MOVE_MS : MOVE_MS
+        return (follows[]) ? GAZE_MOVE_MS : MOVE_MS
 
     # a capture of the dot's point, after_ms from now
     func ask_capture [ after_ms: i64 ]
@@ -492,11 +745,12 @@ element hyperspace : trinity
         cv.fill_color[ rgba [ '#050508' ] ]
         cv.rect_to[ 0.0, 0.0, bounds.w, bounds.h ]
         cv.paint[]
+        point_draw[ cv ]
         if [ !hub ] return
         hub.step[]
         hub.ease[ w.frame_factor ]
         if [ hub.missing ]
-            hs_text[ cv, 'no gaze model: run train_gaze.py', 20.0,
+            hs_text[ cv, 'no gaze model: train gaze', 20.0,
                 16.0, 600.0, 24.0, 17.0, '#ffffff80' ]
             return
         gx : f32 hub.x
@@ -513,6 +767,20 @@ element hyperspace : trinity
         cv.arc[ x, y, 22.0, 0.0, 6.2832 ]
         cv.paint[]
         cv.fill_color[ rgba [ '#ffffff' ] ]
+        cv.arc[ x, y, 5.0, 0.0, 6.2832 ]
+        cv.paint[]
+
+    # where the hand points (the bottom camera's point model), a
+    # yellow dot on the screen
+    func point_draw [ cv: Canvas ]
+        ev : EyeView [ cast EyeView [ camera_view[ 1 ] ] ]
+        if [ !ev || !ev.pt_on ] return
+        x : f32 [ floor[ (ev.pt_x + 0.5) * bounds.w ] ]
+        y : f32 [ floor[ (ev.pt_y + 0.5) * bounds.h ] ]
+        cv.fill_color[ rgba [ '#ffcf4a50' ] ]
+        cv.arc[ x, y, 22.0, 0.0, 6.2832 ]
+        cv.paint[]
+        cv.fill_color[ rgba [ '#ffcf4a' ] ]
         cv.arc[ x, y, 5.0, 0.0, 6.2832 ]
         cv.paint[]
 
@@ -544,20 +812,25 @@ element hyperspace : trinity
                     label: 'Empty trash ({trash_n} captures)',
                     area: Region [ 'l1 t{y + 0.5} w12 h1.3' ] ]
             return e
-        # training: a button a job, Stop, and the last job's words
+        # training: a button a job (its Stop while it runs), and the
+        # last job's words
         if [ view == 'training' ]
             x : f32 [ 1.0 ]
+            e[ 'job_all' ] = PageButton [
+                label: (all_left) ? 'Stop all' : 'Train all',
+                area: Region [ 'l{x} t1 w6 h1.3' ] ]
+            x += 7.5
             for [ jn: string ] in hs_job_names[]
+                run : bool [ hs_job_state[ jn ] == 'running' ]
                 e[ 'job_{jn}' ] = PageButton [
-                    label: hs_job_label[ jn ],
+                    label: (run) ? 'Stop' : hs_job_label[ jn ],
                     area: Region [ 'l{x} t1 w6 h1.3' ] ]
                 x += 6.5
-            e[ 'job_stop' ] = PageButton [ label: 'Stop',
-                area: Region [ 'l{x} t1 w4 h1.3' ] ]
             e[ 'joblog' ] = JobLog [ animated: true,
                 area: Region { l1 t3 r1 b1 } ]
             return e
-        if [ view == 'annotate' || (view == 'record' && done) ]
+        if [ view == 'annotate' || view == 'handbox'
+             || (view == 'record' && done) ]
             return e
         # record takes the frames but shows none
         show : bool [ view == 'testbed' ]
@@ -587,6 +860,9 @@ element hyperspace : trinity
         if [ view == 'annotate' ]
             ann_draw[ cv ]
             return
+        if [ view == 'handbox' ]
+            hb_draw[ cv ]
+            return
         if [ view == 'testbed' ]
             gaze_draw[ w, cv ]
             return
@@ -604,9 +880,12 @@ element hyperspace : trinity
             cv.rect_to[ 0.0, 0.0, bounds.w, bounds.h ]
             cv.paint[]
             n : i32 [ (points) ? i32[ points.count ] / 2 : 0 ]
-            if [ at < n && route == 'negatives' ]
+            if [ at < n && pressed[] ]
+                draw_gesture[ cv ]
+            el [ at < n && prompted[] ]
                 # the prompt, large; the time left on it as a bar
-                say : string hs_neg_says[][ i32[ points[ at * 2 ] ] ]
+                say : string
+                    hs_prompt_says[ route ][ i32[ points[ at * 2 ] ] ]
                 hs_text[ cv, say, bounds.w * 0.15, bounds.h * 0.42,
                     bounds.w * 0.7, 60.0, 40.0, '#ffffffd0' ]
                 gone : f32 [ f32[ (epoch_micros[] - left_us) / 1000 ]
@@ -615,7 +894,7 @@ element hyperspace : trinity
                 cv.rect_to[ bounds.w * 0.15, bounds.h * 0.42 + 70.0,
                     bounds.w * 0.7 * min[ gone, 1.0 ], 4.0 ]
                 cv.paint[]
-                hs_text[ cv, 'negatives   {at + 1} / {n}',
+                hs_text[ cv, '{route}   {at + 1} / {n}',
                     20.0, 16.0, 600.0, 24.0, 17.0, '#ffffff80' ]
             el [ at < n ]
                 # a 3 x 3 pixel dot on whole pixels, a slight edge
@@ -629,7 +908,9 @@ element hyperspace : trinity
                 cv.fill_color[ rgba [ '#ffffff' ] ]
                 cv.rect_to[ x, y, 3.0, 3.0 ]
                 cv.paint[]
-                hs_text[ cv, 'look at the dot   {at + 1} / {n}',
+                say : string [ (route == 'point')
+                    ? 'point at the dot' : 'look at the dot' ]
+                hs_text[ cv, '{say}   {at + 1} / {n}',
                     20.0, 16.0, 600.0, 24.0, 17.0, '#ffffff80' ]
             el [ cancelled ]
                 hs_text[ cv, 'recording cancelled: its frames deleted',
@@ -684,7 +965,158 @@ element hyperspace : trinity
             20.0, 16.0, bounds.w - 40.0,
             24.0, 17.0, '#ffffffc0' ]
 
+    func hb_list [] -> path
+        return path '{ann_dir[]}/hands.txt'
+
+    # every hands camera1 frame not yet in hands.txt, taken a prime
+    # apart so a few hundred cover every session and pose
+    func hb_start []
+        done : vec string []
+        pf : path hb_list[]
+        if [ pf.exists[] ]
+            tx : string pf.load[ typeid[ string ], null ]
+            if [ tx ]
+                for [ ln: string ] in tx.split[ '\n' ]
+                    ws : vec string ln.trim[].split[ ' ' ]
+                    if [ ws.count > 1 ] done.push[ ws[ 0 ] ]
+        hb_done = i32[ done.count ]
+        all : vec string []
+        d : path '{hs_dir[]}/hands'
+        if [ d.exists[] ]
+            for [ f: path ] in d.ls[ null, false ]
+                nm : string f.filename[]
+                if [ nm.ends_with[ '-camera1.png' ] ]
+                    all.push[ 'hands/{nm}' ]
+        n : i64 all.count
+        step : i64 [ 7919 ]
+        if [ n > 0 && n % step == 0 ] step = 7907
+        hb_files = vec string []
+        for [ i: i64 0, i < n, i += 1 ]
+            nm : string all[ (i * step) % n ]
+            seen : bool [ false ]
+            for [ dn: string ] in done
+                if [ dn == nm ] seen = true
+            if [ !seen ] hb_files.push[ nm ]
+        hb_i = 0
+        hb_load[]
+
+    func hb_load []
+        hb_img = null
+        hb_tex = null
+        hb_drag = false
+        while [ hb_i < hb_files.count ]
+            im : Image [ uri: path '{hs_dir[]}/{hb_files[ hb_i ]}' ]
+            if [ im && im.width > 0 ]
+                hb_img = im
+                return
+            hb_i += 1
+
+    # a line of hands.txt: the frame, its box's middle and side in
+    # its pixels; or the frame and 'none'
+    func hb_save [ none: bool ]
+        pf : path hb_list[]
+        old : string ''
+        if [ pf.exists[] ] old = pf.load[ typeid[ string ], null ]
+        nm : string hb_files[ hb_i ]
+        line : string '{nm} none'
+        if [ !none ]
+            w : f32 [ hb_img.width ]
+            h : f32 [ hb_img.height ]
+            line = '{nm} {hb_x * w} {hb_y * h} {hb_half * 2.0 * w}'
+        pf.save[ '{old}{line}\n', null ]
+        hb_done += 1
+        hb_i += 1
+        hb_load[]
+
+    # the last line taken back, its frame shown again
+    func hb_undo []
+        pf : path hb_list[]
+        if [ !pf.exists[] || hb_i == 0 ] return
+        tx : string pf.load[ typeid[ string ], null ]
+        lines : vec string tx.trim[].split[ '\n' ]
+        if [ lines.count == 0 ] return
+        last : vec string lines[ lines.count - 1 ].split[ ' ' ]
+        if [ last[ 0 ] != hb_files[ hb_i - 1 ] ] return
+        keep : string ''
+        for [ i: i64 0, i < lines.count - 1, i += 1 ]
+            keep += '{lines[ i ]}\n'
+        pf.save[ keep, null ]
+        hb_done -= 1
+        hb_i -= 1
+        hb_load[]
+
+    func hb_draw [ cv: Canvas ]
+        if [ !hb_files ] hb_start[]
+        cv.fill_color[ rgba [ '#050508' ] ]
+        cv.rect_to[ 0.0, 0.0, bounds.w, bounds.h ]
+        cv.paint[]
+        if [ !hb_img ]
+            hs_text[ cv, 'every hand frame boxed: {hb_done} in '
+                + 'annotate/hands.txt', 20.0, 16.0, 800.0, 24.0,
+                17.0, '#ffffff80' ]
+            return
+        if [ !hb_tex ]
+            hb_tex = Texture [ vk: cv.vk, w: cv.w, sampler: hb_img,
+                               linear: true ]
+        iw : f32 [ hb_img.width ]
+        ih : f32 [ hb_img.height ]
+        k : f32 [ min[ bounds.w / iw, bounds.h / ih ] ]
+        hb_rect = rect [ x: (bounds.w - iw * k) / 2.0,
+                         y: (bounds.h - ih * k) / 2.0,
+                         w: iw * k, h: ih * k ]
+        cv.draw_image[ hb_tex, hb_rect ]
+        cv.paint[]
+        if [ hb_drag ]
+            x : f32 [ hb_rect.x + hb_x * hb_rect.w ]
+            y : f32 [ hb_rect.y + hb_y * hb_rect.h ]
+            r : f32 [ hb_half * hb_rect.w ]
+            cv.save[]
+            cv.fill_color[ rgba [ '#0000' ] ]
+            cv.stroke_color[ rgba [ '#4aff6e' ] ]
+            cv.stroke_width[ 2.0 ]
+            cv.rect_to[ x - r, y - r, r * 2.0, r * 2.0 ]
+            cv.paint[]
+            cv.restore[]
+            cv.fill_color[ rgba [ '#4aff6e' ] ]
+            cv.rect_to[ x - 2.0, y - 2.0, 4.0, 4.0 ]
+            cv.paint[]
+        hs_text[ cv, 'press on the hand\'s middle, drag out to its '
+            + 'edge, let go: next    frame {hb_done + 1}    '
+            + 'space: no hand    backspace: back one',
+            20.0, 16.0, bounds.w - 40.0, 24.0, 17.0, '#ffffffc0' ]
+
+    # the pointer as a share of the hand frame
+    func hb_at [ ev: Event ] -> vec2f
+        return vec2f [ (ev.mouse.pos.x - hb_rect.x) / hb_rect.w,
+                       (ev.mouse.pos.y - hb_rect.y) / hb_rect.h ]
+
+    public func on_move [ ev: Event ]
+        if [ view != 'handbox' || !hb_drag ] return
+        a : vec2f hb_at[ ev ]
+        hb_half = max[ abs[ a.x - hb_x ], abs[ a.y - hb_y ]
+                       * hb_rect.h / hb_rect.w ]
+        if [ ux ] ux.will_animate = true
+
+    public func on_release [ ev: Event ]
+        if [ view != 'handbox' || !hb_drag || !hb_img ] return
+        hb_drag = false
+        # under 4 of its pixels across: a slip, not a box
+        if [ hb_half * 2.0 * f32[ hb_img.width ] < 4.0 ] return
+        hb_save[ false ]
+
     public func on_press [ ev: Event ]
+        if [ view == 'handbox' && hb_img ]
+            a : vec2f hb_at[ ev ]
+            if [ a.x < 0.0 || a.x > 1.0 || a.y < 0.0 || a.y > 1.0 ]
+                return
+            hb_x = a.x
+            hb_y = a.y
+            hb_half = 0.0
+            hb_drag = true
+            return
+        if [ view == 'record' ]
+            gesture_press[]
+            return
         if [ view != 'annotate' || !ann_img ] return
         x : f32 [ (ev.mouse.pos.x - ann_rect.x) / ann_rect.w ]
         y : f32 [ (ev.mouse.pos.y - ann_rect.y) / ann_rect.h ]
@@ -699,6 +1131,12 @@ element hyperspace : trinity
         if [ (view == 'record' || view == 'testbed') && ev.key.state
              && ev.key.unicode == 256 ]
             left_full = true
+        if [ view == 'record' && ev.key.state && ev.key.unicode == 32 ]
+            gesture_press[]
+        if [ view == 'handbox' && ev.key.state && hb_img ]
+            if [ ev.key.unicode == 32 ] hb_save[ true ]
+            el [ ev.key.unicode == 259 ] hb_undo[]
+            return
         if [ view != 'annotate' || !ev.key.state || !ann_img ] return
         if [ ev.key.unicode == 259 && ann_clicks.count >= 2 ]
             keep : vec f32 []
@@ -727,11 +1165,26 @@ element hyperspace : trinity
             recs = null
             if [ ux ] ux.restyle = true
             return
-        if [ item.id == 'job_stop' ]
-            jl : string hs_job_last[]
-            if [ jl.count > 0 ] hs_job_stop[ jl, opener ]
-        el [ item.id.starts_with[ 'job_' ] ]
-            hs_job_go[ item.id.mid[ 4, item.id.count - 4 ], opener ]
+        if [ item.id.starts_with[ 'job_' ] ]
+            # a click arrives twice: the toggle takes the first alone
+            if [ epoch_millis[] - job_ms < 300 ] return
+            job_ms = epoch_millis[]
+            jn : string item.id.mid[ 4, item.id.count - 4 ]
+            if [ jn == 'all' ]
+                if [ all_left ]
+                    if [ all_now && all_now.count > 0 ]
+                        hs_job_stop[ all_now, opener ]
+                    all_left = null
+                    all_now = ''
+                el
+                    all_left = hs_job_names[]
+                    all_now = ''
+                if [ ux ] ux.restyle = true
+                return
+            if [ hs_job_state[ jn ] == 'running' ]
+                hs_job_stop[ jn, opener ]
+            el hs_job_go[ jn, opener ]
+            if [ ux ] ux.restyle = true
 
 # the base models (find, target) from Microsoft's FaceSynthetics:
 # rendered faces at every angle, the pupils labelled (non-commercial
@@ -761,3 +1214,46 @@ export func hs_base_model []
     }
     if [ run.exec[ false ] != 0 ]
         log 'hyperspace: the base model did not build'
+
+# the views, each one launchable: the app on its own props
+hyperspace HsRecord
+    view : 'record'
+
+hyperspace HsGaze
+    view : 'record'
+    into : 'gaze'
+
+hyperspace HsEdges
+    view  : 'record'
+    into  : 'gaze'
+    route : 'edges'
+
+hyperspace HsNegatives
+    view  : 'record'
+    into  : 'negatives'
+    route : 'negatives'
+
+hyperspace HsHands
+    view  : 'record'
+    into  : 'hands'
+    route : 'gestures'
+
+hyperspace HsPoint
+    view  : 'record'
+    into  : 'hands'
+    route : 'point'
+
+hyperspace HsTestbed
+    view : 'testbed'
+
+hyperspace HsTraining
+    view : 'training'
+
+hyperspace HsAnnotate
+    view : 'annotate'
+
+hyperspace HsHandBox
+    view : 'handbox'
+
+hyperspace HsRecordings
+    view : 'recordings'

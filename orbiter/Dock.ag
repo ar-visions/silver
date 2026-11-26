@@ -469,14 +469,11 @@ func orbiter.dock_icon_click [ di: DockIcon ]
     # active pane shows it over what it holds (no split)
     if [ !shift_down && di.module ]
         tp : i32 [ (fr) ? -1 : launch_pane[ md_ ] ]
-        # the selected window shows another running app: a new tab
-        # beside it in its group, never over it (it would run on
-        # unseen); the launch once its editor is there
+        # the selected window shows another running app: a window
+        # of its own, never a tab in its group (groups are made by
+        # hand); the launch once its editor is there
         if [ tp < 0 && launch_tab < 0 && pane_app_on[ active_pane ] ]
-            editor_slots += -1
-            pane_console += ''
-            nt : i32 [ i32[ editor_slots.count ] - 1 ]
-            grp_join[ nt, active_pane ]
+            nt : i32 full_pane[]
             active_pane = nt
             launch_tab  = nt
             launch_wait = di
@@ -1037,11 +1034,9 @@ func orbiter.show_own [ iid: i32 ]
         if [ ux ] ux.restyle = true
         return
     if [ pane_app_on[ active_pane ] ]
-        editor_slots += -1
-        pane_console += ''
-        nt : i32 [ i32[ editor_slots.count ] - 1 ]
-        grp_join[ nt, active_pane ]
+        nt : i32 full_pane[]
         active_pane = nt
+        launch_tab  = nt
         show_wait   = iid
         force_update[]
         return

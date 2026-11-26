@@ -1,0 +1,708 @@
+# hand: a right hand of 21 joints in the order hand sets use (the
+# wrist, then four a finger from the thumb: its base, two knuckles,
+# the tip), how far each bends, the points a pose puts them at, and
+# hand.glb (one rigid part a bone) written at the build
+export 1.0.0
+
+import gltf
+
+import <stdio.h>
+import <string.h>
+import <math.h>
+
+# a joint in metres, in its parent's frame: y along the finger, the
+# palm facing +z
+class HandJoint
+    public name : string
+    public parent : i32
+    public x : f32
+    public y : f32
+    public z : f32
+    # at rest, degrees: across the palm (about z), its twist (about
+    # y), bent toward the palm (about x)
+    public across : f32
+    public twist : f32
+    public bent : f32
+    # what a pose may add, degrees
+    public bend_lo : f32
+    public bend_hi : f32
+    public spread_lo : f32
+    public spread_hi : f32
+    # the bone's thickness at its base and its end
+    public base_r : f32
+    public end_r : f32
+
+# a pose: each joint's bend and spread, degrees, over its rest
+class HandPose
+    public bend : vec f32
+    public spread : vec f32
+
+    func init []
+        if [ !bend ]
+            bend = vec f32 []
+            for [ i: i32 0, i < 21, i += 1 ] bend += 0.0
+        if [ !spread ]
+            spread = vec f32 []
+            for [ i: i32 0, i < 21, i += 1 ] spread += 0.0
+
+func hand_joint [ name: string, parent: i32, x: f32, y: f32, z: f32,
+                  across: f32, twist: f32, bent: f32, lo: f32,
+                  hi: f32, slo: f32, shi: f32, base: f32,
+                  tip: f32 ] -> HandJoint
+    return HandJoint [ name: name, parent: parent, x: x, y: y, z: z,
+                       across: across, twist: twist, bent: bent,
+                       bend_lo: lo, bend_hi: hi, spread_lo: slo,
+                       spread_hi: shi, base_r: base, end_r: tip ]
+
+# a finger's knuckle on the palm (x, y), its lean across the palm,
+# its three bones' lengths and its thickness against the index's
+func hand_finger [ js: vec HandJoint, nm: string, x: f32, y: f32,
+                   across: f32, near: f32, mid: f32, far: f32,
+                   k: f32 ]
+    at : i32 [ i32[ js.count ] ]
+    js.push[ hand_joint[ '{nm}_mcp', 0, x, y, 0.0, across, 0.0, 0.0,
+             -25.0, 90.0, -15.0, 15.0, 0.011 * k, 0.0098 * k ] ]
+    js.push[ hand_joint[ '{nm}_pip', at, 0.0, near, 0.0, 0.0, 0.0,
+             0.0, 0.0, 105.0, 0.0, 0.0, 0.0098 * k, 0.009 * k ] ]
+    js.push[ hand_joint[ '{nm}_dip', at + 1, 0.0, mid, 0.0, 0.0, 0.0,
+             0.0, -5.0, 85.0, 0.0, 0.0, 0.009 * k, 0.0081 * k ] ]
+    js.push[ hand_joint[ '{nm}_tip', at + 2, 0.0, far, 0.0, 0.0, 0.0,
+             0.0, 0.0, 0.0, 0.0, 0.0, 0.0081 * k, 0.0081 * k ] ]
+
+# an adult's right hand, the wrist at the origin
+func hand_joints [] -> vec HandJoint
+    js : vec HandJoint []
+    js.push[ hand_joint[ 'wrist', -1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+             0.0, 0.0, 0.0, 0.0, 0.026, 0.026 ] ]
+    js.push[ hand_joint[ 'thumb_cmc', 0, 0.021, 0.024, 0.008, -40.0,
+             -75.0, 20.0, -10.0, 45.0, -15.0, 50.0, 0.012, 0.011 ] ]
+    js.push[ hand_joint[ 'thumb_mcp', 1, 0.0, 0.046, 0.0, 0.0, 0.0,
+             0.0, -10.0, 60.0, -10.0, 10.0, 0.0105, 0.0095 ] ]
+    js.push[ hand_joint[ 'thumb_ip', 2, 0.0, 0.032, 0.0, 0.0, 0.0,
+             0.0, -15.0, 80.0, 0.0, 0.0, 0.0095, 0.0085 ] ]
+    js.push[ hand_joint[ 'thumb_tip', 3, 0.0, 0.027, 0.0, 0.0, 0.0,
+             0.0, 0.0, 0.0, 0.0, 0.0, 0.0085, 0.0085 ] ]
+    hand_finger[ js, 'index', 0.024, 0.090, -2.0, 0.040, 0.024,
+                 0.020, 1.0 ]
+    hand_finger[ js, 'middle', 0.004, 0.094, 0.0, 0.044, 0.028,
+                 0.021, 1.03 ]
+    hand_finger[ js, 'ring', -0.015, 0.088, 2.0, 0.041, 0.027,
+                 0.021, 0.97 ]
+    hand_finger[ js, 'little', -0.032, 0.078, 5.0, 0.032, 0.019,
+                 0.019, 0.85 ]
+    return js
+
+func hand_clamp [ v: f32, lo: f32, hi: f32 ] -> f32
+    if [ v < lo ] return lo
+    if [ v > hi ] return hi
+    return v
+
+# the turn about z, then y, then x (degrees) as a 3 x 3, rows first
+func hand_turn [ across: f32, twist: f32, bent: f32 ] -> vec f32
+    cz : f32 [ cos[ across * 0.01745329 ] ]
+    sz : f32 [ sin[ across * 0.01745329 ] ]
+    cy : f32 [ cos[ twist * 0.01745329 ] ]
+    sy : f32 [ sin[ twist * 0.01745329 ] ]
+    cx : f32 [ cos[ bent * 0.01745329 ] ]
+    sx : f32 [ sin[ bent * 0.01745329 ] ]
+    r : vec f32 []
+    r += cz * cy
+    r += cz * sy * sx - sz * cx
+    r += cz * sy * cx + sz * sx
+    r += sz * cy
+    r += sz * sy * sx + cz * cx
+    r += sz * sy * cx - cz * sx
+    r += 0.0 - sy
+    r += cy * sx
+    r += cy * cx
+    return r
+
+# the same turn as a quaternion: x, y, z, w
+func hand_quat [ across: f32, twist: f32, bent: f32 ] -> vec f32
+    cz : f32 [ cos[ across * 0.00872665 ] ]
+    sz : f32 [ sin[ across * 0.00872665 ] ]
+    cy : f32 [ cos[ twist * 0.00872665 ] ]
+    sy : f32 [ sin[ twist * 0.00872665 ] ]
+    cx : f32 [ cos[ bent * 0.00872665 ] ]
+    sx : f32 [ sin[ bent * 0.00872665 ] ]
+    tx : f32 [ cy * sx ]
+    ty : f32 [ cx * sy ]
+    tz : f32 [ 0.0 - sy * sx ]
+    tw : f32 [ cy * cx ]
+    q : vec f32 []
+    q += cz * tx - sz * ty
+    q += cz * ty + sz * tx
+    q += cz * tz + sz * tw
+    q += cz * tw - sz * tz
+    return q
+
+# the 3 x 3 in m from at, times the one in b
+func hand_mul [ m: vec f32, at: i32, b: vec f32 ] -> vec f32
+    r : vec f32 []
+    for [ i: i32 0, i < 3, i += 1 ]
+        for [ j: i32 0, j < 3, j += 1 ]
+            row : i32 [ at + i * 3 ]
+            s : f32 [ m[ row ] * b[ j ] + m[ row + 1 ] * b[ j + 3 ]
+                      + m[ row + 2 ] * b[ j + 6 ] ]
+            r += s
+    return r
+
+# every joint's place for a pose, x y z each, in the wrist's frame;
+# each bend and spread held to its joint's range
+func hand_points [ pose: HandPose ] -> vec f32
+    js : vec HandJoint hand_joints[]
+    rot : vec f32 []
+    pts : vec f32 []
+    for [ i: i32 0, i < js.count, i += 1 ]
+        j : HandJoint js[ i ]
+        b : f32 [ hand_clamp[ pose.bend[ i ], j.bend_lo, j.bend_hi ] ]
+        s : f32 [ hand_clamp[ pose.spread[ i ], j.spread_lo,
+                              j.spread_hi ] ]
+        r : vec f32 hand_turn[ j.across + s, j.twist, j.bent + b ]
+        if [ j.parent < 0 ]
+            pts += j.x
+            pts += j.y
+            pts += j.z
+            for [ k: i32 0, k < 9, k += 1 ] rot += r[ k ]
+            continue
+        pb : i32 [ j.parent * 9 ]
+        pp : i32 [ j.parent * 3 ]
+        for [ k: i32 0, k < 3, k += 1 ]
+            row : i32 [ pb + k * 3 ]
+            v : f32 [ pts[ pp + k ] + rot[ row ] * j.x
+                      + rot[ row + 1 ] * j.y + rot[ row + 2 ] * j.z ]
+            pts += v
+        turned : vec f32 hand_mul[ rot, pb, r ]
+        for [ k: i32 0, k < 9, k += 1 ] rot += turned[ k ]
+    return pts
+
+# a fist: the fingers at the end of their bend, the thumb over them
+func hand_fist [] -> HandPose
+    pose : HandPose []
+    js : vec HandJoint hand_joints[]
+    for [ i: i32 5, i < js.count, i += 1 ]
+        j : HandJoint js[ i ]
+        pose.bend[ i ] = j.bend_hi
+    pose.bend[ 1 ] = 15.0
+    pose.spread[ 1 ] = 10.0
+    pose.bend[ 2 ] = 20.0
+    pose.bend[ 3 ] = 30.0
+    return pose
+
+# a gesture's pose by its name (open, fist, point, pinch, thumb_up,
+# peace, ok); an unknown name is the open hand
+func hand_gesture [ name: string ] -> HandPose
+    if [ name == 'fist' ] return hand_thumb_kept[ hand_fist[] ]
+    pose : HandPose []
+    if [ name == 'point' || name == 'thumb_up' || name == 'peace' ]
+        pose = hand_fist[]
+    if [ name == 'open' ]
+        pose.spread[ 1 ] = -15.0
+        pose.spread[ 5 ] = -10.0
+        pose.spread[ 13 ] = 8.0
+        pose.spread[ 17 ] = 15.0
+    el [ name == 'point' ]
+        for [ i: i32 5, i < 9, i += 1 ] pose.bend[ i ] = 0.0
+    el [ name == 'thumb_up' ]
+        for [ i: i32 1, i < 5, i += 1 ] pose.bend[ i ] = 0.0
+        pose.spread[ 1 ] = 0.0
+    el [ name == 'peace' ]
+        for [ i: i32 5, i < 12, i += 1 ] pose.bend[ i ] = 0.0
+        pose.spread[ 5 ] = -12.0
+        pose.spread[ 9 ] = 10.0
+    el [ name == 'pinch' || name == 'ok' ]
+        # the thumb's tip on the index's tip, found by search: tips
+        # touching, the thumb clear of the other fingers, bends kept
+        # near a natural pinch
+        pose.spread[ 1 ] = -15.0
+        pose.bend[ 1 ] = 18.8
+        pose.bend[ 2 ] = 18.6
+        pose.bend[ 3 ] = 22.7
+        pose.bend[ 5 ] = 11.4
+        pose.bend[ 6 ] = 67.6
+        pose.bend[ 7 ] = 50.1
+        if [ name == 'pinch' ]
+            for [ f: i32 9, f < 20, f += 4 ]
+                pose.bend[ f ] = 20.0
+                pose.bend[ f + 1 ] = 30.0
+                pose.bend[ f + 2 ] = 20.0
+        el
+            pose.spread[ 9 ] = 4.0
+            pose.spread[ 13 ] = 8.0
+            pose.spread[ 17 ] = 14.0
+        # their touch is the pose: not kept apart
+        return pose
+    return hand_thumb_kept[ pose ]
+
+func hand_dot [ u: vec f32, v: vec f32 ] -> f32
+    return u[ 0 ] * v[ 0 ] + u[ 1 ] * v[ 1 ] + u[ 2 ] * v[ 2 ]
+
+# the nearest two points of segments a0 a1 and b0 b1 (joints in pts),
+# how far apart
+func hand_seg_gap [ pts: vec f32, a0: i32, a1: i32, b0: i32,
+                    b1: i32 ] -> f32
+    d1 : vec f32 []
+    d2 : vec f32 []
+    r : vec f32 []
+    for [ k: i32 0, k < 3, k += 1 ]
+        d1 += pts[ a1 * 3 + k ] - pts[ a0 * 3 + k ]
+        d2 += pts[ b1 * 3 + k ] - pts[ b0 * 3 + k ]
+        r += pts[ a0 * 3 + k ] - pts[ b0 * 3 + k ]
+    a : f32 hand_dot[ d1, d1 ]
+    e : f32 hand_dot[ d2, d2 ]
+    f : f32 hand_dot[ d2, r ]
+    c : f32 hand_dot[ d1, r ]
+    b : f32 hand_dot[ d1, d2 ]
+    den : f32 [ a * e - b * b ]
+    sa : f32 [ 0.0 ]
+    if [ den > 1e-12 ]
+        sa = hand_clamp[ (b * f - c * e) / den, 0.0, 1.0 ]
+    tb : f32 [ (b * sa + f) / e ]
+    if [ tb < 0.0 ]
+        tb = 0.0
+        sa = hand_clamp[ 0.0 - c / a, 0.0, 1.0 ]
+    el [ tb > 1.0 ]
+        tb = 1.0
+        sa = hand_clamp[ (b - c) / a, 0.0, 1.0 ]
+    g : f32 [ 0.0 ]
+    for [ k: i32 0, k < 3, k += 1 ]
+        v : f32 [ r[ k ] + d1[ k ] * sa - d2[ k ] * tb ]
+        g += v * v
+    return sqrt[ g ]
+
+# the thumb's two outer bones' room from the fingers' bones (their
+# thicknesses taken off): under 0 the thumb is through a finger
+func hand_thumb_room [ pose: HandPose ] -> f32
+    js : vec HandJoint hand_joints[]
+    pts : vec f32 hand_points[ pose ]
+    room : f32 [ 1.0 ]
+    for [ t: i32 3, t <= 4, t += 1 ]
+        tp : i32 js[ t ].parent
+        tr : f32 [ (js[ tp ].base_r + js[ tp ].end_r) * 0.5 ]
+        for [ f: i32 5, f < 21, f += 1 ]
+            fp : i32 js[ f ].parent
+            # a finger's palm bone lies beside the thumb's: not one
+            if [ fp == 0 ] continue
+            fr : f32 [ (js[ fp ].base_r + js[ fp ].end_r) * 0.5 ]
+            gap : f32 [ hand_seg_gap[ pts, tp, t, fp, f ] - tr - fr ]
+            if [ gap < room ] room = gap
+    return room
+
+# the thumb brought back toward its rest (out to the side, straight)
+# as far as it must to clear the fingers; the fingers as they are
+func hand_thumb_kept [ pose: HandPose ] -> HandPose
+    if [ hand_thumb_room[ pose ] >= 0.0 ] return pose
+    lo : f32 [ 0.0 ]
+    hi : f32 [ 1.0 ]
+    for [ i: i32 0, i < 12, i += 1 ]
+        m : f32 [ (lo + hi) * 0.5 ]
+        if [ hand_thumb_room[ hand_thumb_part[ pose, m ] ] >= 0.0 ]
+            lo = m
+        el hi = m
+    return hand_thumb_part[ pose, lo ]
+
+# the pose with its thumb k of the way from rest to as asked
+func hand_thumb_part [ pose: HandPose, k: f32 ] -> HandPose
+    out : HandPose []
+    for [ i: i32 0, i < 21, i += 1 ]
+        out.bend[ i ] = pose.bend[ i ]
+        out.spread[ i ] = pose.spread[ i ]
+    for [ i: i32 1, i < 4, i += 1 ] out.bend[ i ] = pose.bend[ i ] * k
+    out.spread[ 1 ] = -10.0 + (pose.spread[ 1 ] + 10.0) * k
+    return out
+
+# the finger sweep at t (0 to 1 a cycle): each finger curls and opens
+# in turn, its last joint two thirds of its middle one; the thumb
+# folds across a little after, kept clear of them
+func hand_sweep [ t: f32 ] -> HandPose
+    pose : HandPose []
+    for [ k: i32 0, k < 4, k += 1 ]
+        f : i32 [ 5 + k * 4 ]
+        c : f32 [ 0.5 - 0.5 * cos[ 6.2831853 * (t - 0.12 * f32[ k ]) ] ]
+        pose.bend[ f ] = c * 85.0
+        pose.bend[ f + 1 ] = c * 100.0
+        pose.bend[ f + 2 ] = pose.bend[ f + 1 ] * 0.67
+    ct : f32 [ 0.5 - 0.5 * cos[ 6.2831853 * (t - 0.3) ] ]
+    pose.spread[ 1 ] = -10.0 + ct * 40.0
+    pose.bend[ 1 ] = ct * 30.0
+    pose.bend[ 2 ] = ct * 40.0
+    pose.bend[ 3 ] = ct * 60.0
+    return hand_thumb_kept[ pose ]
+
+# a random hand pose from seed: each finger's curl near open or near
+# closed more often than between, a little spread, its last joint two
+# thirds of its middle; a random thumb, kept clear of the fingers
+func hand_random [ seed: i64 ] -> HandPose
+    pose : HandPose []
+    r : i64 [ seed ]
+    for [ k: i32 0, k < 4, k += 1 ]
+        r = (r * 1103515245 + 12345) % 2147483648
+        u : f32 [ f32[ r % 10000 ] / 10000.0 ]
+        c : f32 [ 0.5 - 0.5 * cos[ u * 3.14159265 ] ]
+        r = (r * 1103515245 + 12345) % 2147483648
+        sp : f32 [ f32[ r % 2000 ] / 100.0 - 10.0 ]
+        f : i32 [ 5 + k * 4 ]
+        pose.bend[ f ] = c * 85.0
+        pose.bend[ f + 1 ] = c * 100.0
+        pose.bend[ f + 2 ] = pose.bend[ f + 1 ] * 0.67
+        pose.spread[ f ] = sp * (1.0 - c)
+    r = (r * 1103515245 + 12345) % 2147483648
+    t : f32 [ f32[ r % 10000 ] / 10000.0 ]
+    pose.spread[ 1 ] = -15.0 + t * 45.0
+    pose.bend[ 1 ] = t * 30.0
+    pose.bend[ 2 ] = t * 40.0
+    pose.bend[ 3 ] = t * 60.0
+    return hand_thumb_kept[ pose ]
+
+# the training course's poses in order: the hand opening and closing
+# by thirds, then each finger out of the fist from the index, the
+# thumb, then the shaka (thumb and little finger out)
+func hand_course_names [] -> vec string
+    return vec string [] [ 'open', 'curl_33', 'curl_67', 'fist',
+        'curl_67', 'curl_33', 'open', 'index', 'middle', 'ring',
+        'little', 'thumb', 'shaka' ]
+
+# the course's pose by its name: curl_33 a third of the way from the
+# open hand to the fist; a finger's name the fist with it straight
+func hand_course [ name: string ] -> HandPose
+    if [ name == 'open' || name == 'fist' ] return hand_gesture[ name ]
+    if [ name == 'curl_33' || name == 'curl_67' ]
+        c : f32 [ (name == 'curl_33') ? 0.333 : 0.667 ]
+        op : HandPose hand_gesture[ 'open' ]
+        fi : HandPose hand_gesture[ 'fist' ]
+        pose : HandPose []
+        for [ i: i32 0, i < 21, i += 1 ]
+            pose.bend[ i ] = op.bend[ i ]
+                + (fi.bend[ i ] - op.bend[ i ]) * c
+            pose.spread[ i ] = op.spread[ i ]
+                + (fi.spread[ i ] - op.spread[ i ]) * c
+        return hand_thumb_kept[ pose ]
+    pose : HandPose hand_fist[]
+    out : vec i32 []
+    if [ name == 'index' ] out += 5
+    if [ name == 'middle' ] out += 9
+    if [ name == 'ring' ] out += 13
+    if [ name == 'little' || name == 'shaka' ] out += 17
+    for [ f: i32 ] in out
+        for [ i: i32 f, i < f + 3, i += 1 ] pose.bend[ i ] = 0.0
+    if [ name == 'thumb' || name == 'shaka' ]
+        for [ i: i32 1, i < 5, i += 1 ] pose.bend[ i ] = 0.0
+        pose.spread[ 1 ] = (name == 'shaka') ? -20.0 : 0.0
+        return pose
+    return hand_thumb_kept[ pose ]
+
+# each joint's parent (-1 the wrist's): the bones to draw
+func hand_parents [] -> vec i32
+    out : vec i32 []
+    for [ j: HandJoint ] in hand_joints[]
+        out += j.parent
+    return out
+
+# a part's triangles: points, their normals, three indices each
+class HandMesh
+    public pos : vec f32
+    public nrm : vec f32
+    public idx : vec u32
+
+    func init []
+        if [ !pos ] pos = vec f32 []
+        if [ !nrm ] nrm = vec f32 []
+        if [ !idx ] idx = vec u32 []
+
+    func point [ x: f32, y: f32, z: f32, nx: f32, ny: f32, nz: f32 ]
+        n : f32 [ sqrt[ nx * nx + ny * ny + nz * nz ] ]
+        pos += x
+        pos += y
+        pos += z
+        nrm += nx / n
+        nrm += ny / n
+        nrm += nz / n
+
+    # rings from the top down, each of around + 1 points: two
+    # triangles a cell, wound counter-clockwise seen from outside
+    func cells [ first: u32, rings: u32, around: u32 ]
+        for [ i: u32 0, i + 1 < rings, i += 1 ]
+            for [ k: u32 0, k < around, k += 1 ]
+                a : u32 [ first + i * (around + 1) + k ]
+                b : u32 [ a + around + 1 ]
+                idx.push[ a ]
+                idx.push[ b + 1 ]
+                idx.push[ b ]
+                idx.push[ a ]
+                idx.push[ a + 1 ]
+                idx.push[ b + 1 ]
+
+    # an ellipsoid about cx cy cz with half sizes ax ay az
+    func ellipsoid [ cx: f32, cy: f32, cz: f32, ax: f32, ay: f32,
+                     az: f32 ]
+        first : u32 [ u32[ pos.count / 3 ] ]
+        for [ i: i32 0, i <= 12, i += 1 ]
+            t : f32 [ f32[ i ] * 3.14159265 / 12.0 ]
+            for [ k: i32 0, k <= 20, k += 1 ]
+                p : f32 [ f32[ k ] * 6.28318531 / 20.0 ]
+                ux : f32 [ sin[ t ] * cos[ p ] ]
+                uy : f32 [ cos[ t ] ]
+                uz : f32 [ sin[ t ] * sin[ p ] ]
+                point[ cx + ux * ax, cy + uy * ay, cz + uz * az,
+                       ux / ax, uy / ay, uz / az ]
+        cells[ first, 13, 20 ]
+
+    # a tube up y from 0 to len, base_r thick at 0, end_r at len,
+    # with a ball at each end
+    func bone [ len: f32, base_r: f32, end_r: f32 ]
+        first : u32 [ u32[ pos.count / 3 ] ]
+        lean : f32 [ (base_r - end_r) / len ]
+        for [ i: i32 0, i < 2, i += 1 ]
+            y : f32 [ (i == 0) ? len : 0.0 ]
+            r : f32 [ (i == 0) ? end_r : base_r ]
+            for [ k: i32 0, k <= 20, k += 1 ]
+                p : f32 [ f32[ k ] * 6.28318531 / 20.0 ]
+                point[ r * cos[ p ], y, r * sin[ p ], cos[ p ], lean,
+                       sin[ p ] ]
+        cells[ first, 2, 20 ]
+        ellipsoid[ 0.0, 0.0, 0.0, base_r, base_r, base_r ]
+        ellipsoid[ 0.0, len, 0.0, end_r, end_r, end_r ]
+
+# a joint's part, in its own frame: the palm on the wrist, else the
+# bone to its first child; a tip has none
+func hand_part [ js: vec HandJoint, i: i32 ] -> HandMesh
+    j : HandJoint js[ i ]
+    if [ j.parent < 0 ]
+        m : HandMesh []
+        m.ellipsoid[ -0.004, 0.048, 0.0, 0.046, 0.050, 0.015 ]
+        m.ellipsoid[ 0.0, 0.0, 0.0, 0.030, 0.020, 0.016 ]
+        return m
+    for [ c: i32 i + 1, c < js.count, c += 1 ]
+        child : HandJoint js[ c ]
+        if [ child.parent != i ] continue
+        len : f32 [ sqrt[ child.x * child.x + child.y * child.y
+                          + child.z * child.z ] ]
+        m : HandMesh []
+        m.bone[ len, j.base_r, j.end_r ]
+        return m
+    return null
+
+func hand_join [ parts: vec string ] -> string
+    s : string [ '' ]
+    for [ i: i32 0, i < parts.count, i += 1 ]
+        if [ i > 0 ] s = '{s},'
+        s = '{s}{parts[ i ]}'
+    return s
+
+# hand.glb: a node a joint (named as hand_joints names them, turned
+# by the pose), a part a node but the tips, one skin material
+func hand_glb_write [ to: string, pose: HandPose ] -> bool
+    js : vec HandJoint hand_joints[]
+    n : i32 [ i32[ js.count ] ]
+    parts : vec HandMesh []
+    nodes : vec string []
+    meshes : vec string []
+    views : vec string []
+    accs : vec string []
+    off : i32 [ 0 ]
+    for [ i: i32 0, i < n, i += 1 ]
+        m : HandMesh hand_part[ js, i ]
+        if [ !m ] continue
+        nv : i32 [ i32[ m.pos.count / 3 ] ]
+        ni : i32 [ i32[ m.idx.count ] ]
+        lo : vec f32 [] [ 9.0, 9.0, 9.0 ]
+        hi : vec f32 [] [ -9.0, -9.0, -9.0 ]
+        for [ k: i32 0, k < nv * 3, k += 1 ]
+            c : i32 [ k % 3 ]
+            v : f32 [ m.pos[ k ] ]
+            if [ v < lo[ c ] ] lo[ c ] = v
+            if [ v > hi[ c ] ] hi[ c ] = v
+        bv : i32 [ i32[ views.count ] ]
+        pb : i32 [ nv * 12 ]
+        pos_view :
+            '{{"buffer":0,"byteOffset":{off},'
+            + '"byteLength":{pb},"target":34962}}'
+        views.push[ pos_view ]
+        nrm_view :
+            '{{"buffer":0,"byteOffset":{off + pb},'
+            + '"byteLength":{pb},"target":34962}}'
+        views.push[ nrm_view ]
+        idx_view :
+            '{{"buffer":0,"byteOffset":{off + pb + pb},'
+            + '"byteLength":{ni * 4},"target":34963}}'
+        views.push[ idx_view ]
+        off = off + pb + pb + ni * 4
+        ai : i32 [ i32[ accs.count ] ]
+        pos_acc :
+            '{{"bufferView":{bv},"componentType":5126,'
+            + '"count":{nv},"type":"VEC3",'
+            + '"min":[{lo[ 0 ]},{lo[ 1 ]},{lo[ 2 ]}],'
+            + '"max":[{hi[ 0 ]},{hi[ 1 ]},{hi[ 2 ]}]}}'
+        accs.push[ pos_acc ]
+        nrm_acc :
+            '{{"bufferView":{bv + 1},"componentType":5126,'
+            + '"count":{nv},"type":"VEC3"}}'
+        accs.push[ nrm_acc ]
+        idx_acc :
+            '{{"bufferView":{bv + 2},"componentType":5125,'
+            + '"count":{ni},"type":"SCALAR"}}'
+        accs.push[ idx_acc ]
+        mesh_json :
+            '{{"name":"{js[ i ].name}","primitives":[{{'
+            + '"attributes":{{"POSITION":{ai},"NORMAL":{ai + 1}}},'
+            + '"indices":{ai + 2},"material":0}}]}}'
+        meshes.push[ mesh_json ]
+        parts.push[ m ]
+    mi : i32 [ 0 ]
+    for [ i: i32 0, i < n, i += 1 ]
+        j : HandJoint js[ i ]
+        b : f32 [ hand_clamp[ pose.bend[ i ], j.bend_lo, j.bend_hi ] ]
+        s : f32 [ hand_clamp[ pose.spread[ i ], j.spread_lo,
+                              j.spread_hi ] ]
+        q : vec f32 hand_quat[ j.across + s, j.twist, j.bent + b ]
+        kids : vec string []
+        for [ c: i32 i + 1, c < n, c += 1 ]
+            child : HandJoint js[ c ]
+            if [ child.parent == i ] kids.push[ '{c}' ]
+        nd :
+            '{{"name":"{j.name}",'
+            + '"translation":[{j.x},{j.y},{j.z}],'
+            + '"rotation":[{q[ 0 ]},{q[ 1 ]},{q[ 2 ]},{q[ 3 ]}]'
+        if [ kids.count > 0 ]
+            nd = '{nd},"mesh":{mi},"children":[{hand_join[ kids ]}]'
+            mi += 1
+        nodes.push[ '{nd}}}' ]
+    json :
+        '{{"asset":{{"version":"2.0",'
+        + '"generator":"silver hand"}},"scene":0,'
+        + '"scenes":[{{"nodes":[0]}}],'
+        + '"nodes":[{hand_join[ nodes ]}],'
+        + '"meshes":[{hand_join[ meshes ]}],'
+        + '"materials":[{{"name":"skin","pbrMetallicRoughness":{{'
+        + '"baseColorFactor":[0.80,0.58,0.47,1.0],'
+        + '"metallicFactor":0.0,"roughnessFactor":0.55}}}}],'
+        + '"buffers":[{{"byteLength":{off}}}],'
+        + '"bufferViews":[{hand_join[ views ]}],'
+        + '"accessors":[{hand_join[ accs ]}]}}'
+    jn : i32 [ i32[ json.count ] ]
+    jpad : i32 [ (jn + 3) / 4 * 4 ]
+    total : i32 [ 12 + 8 + jpad + 8 + off ]
+    out : new u8 [ total ]
+    memset[ @out[ 0 ], 0, total ]
+    # the header and the two chunks' lengths and kinds
+    head : @u32 [ @out[ 0 ] ]
+    head[ 0 ] = 0x46546C67
+    head[ 1 ] = 2
+    head[ 2 ] = u32[ total ]
+    head[ 3 ] = u32[ jpad ]
+    head[ 4 ] = 0x4E4F534A
+    memcpy[ @out[ 20 ], json.chars, jn ]
+    for [ k: i32 jn, k < jpad, k += 1 ] out[ 20 + k ] = 32
+    bin : i32 [ 20 + jpad ]
+    chunk : @u32 [ @out[ bin ] ]
+    chunk[ 0 ] = u32[ off ]
+    chunk[ 1 ] = 0x004E4942
+    at : i32 [ bin + 8 ]
+    for [ m: HandMesh ] in parts
+        pf : @f32 [ @out[ at ] ]
+        for [ k: i32 0, k < m.pos.count, k += 1 ] pf[ k ] = m.pos[ k ]
+        at += i32[ m.pos.count ] * 4
+        nf : @f32 [ @out[ at ] ]
+        for [ k: i32 0, k < m.nrm.count, k += 1 ] nf[ k ] = m.nrm[ k ]
+        at += i32[ m.nrm.count ] * 4
+        iu : @u32 [ @out[ at ] ]
+        for [ k: i32 0, k < m.idx.count, k += 1 ] iu[ k ] = m.idx[ k ]
+        at += i32[ m.idx.count ] * 4
+    fp : @FILE [ fopen[ to.chars, 'wb' ] ]
+    if [ !fp ] return false
+    fwrite[ @out[ 0 ], 1, total, fp ]
+    fclose[ fp ]
+    return true
+
+expect func t_hand_points [] -> bool
+    rest : HandPose []
+    p : vec f32 hand_points[ rest ]
+    if [ p.count != 63 ] return false
+    # the middle finger's tip: its knuckle, then its three bones up y
+    tip : f32 [ 0.094 + 0.044 + 0.028 + 0.021 ]
+    if [ fabs[ p[ 37 ] - tip ] > 0.0001 || fabs[ p[ 36 ] - 0.004 ]
+         > 0.0001 ] return false
+    f : vec f32 hand_points[ hand_fist[] ]
+    # in a fist each finger's tip is far nearer the wrist
+    for [ t: i32 8, t <= 20, t += 4 ]
+        open : f32 [ sqrt[ p[ t * 3 ] * p[ t * 3 ]
+                           + p[ t * 3 + 1 ] * p[ t * 3 + 1 ] ] ]
+        shut : f32 [ sqrt[ f[ t * 3 ] * f[ t * 3 ]
+                           + f[ t * 3 + 1 ] * f[ t * 3 + 1 ]
+                           + f[ t * 3 + 2 ] * f[ t * 3 + 2 ] ] ]
+        log 'hand: tip {t} open {open} m, fist {shut} m'
+        if [ shut > open * 0.6 ] return false
+    return true
+
+# every triangle faces away from its part's middle
+expect func t_hand_outward [] -> bool
+    m : HandMesh []
+    m.ellipsoid[ 0.0, 0.0, 0.0, 0.03, 0.02, 0.01 ]
+    m.bone[ 0.04, 0.01, 0.008 ]
+    bad : i32 [ 0 ]
+    for [ t: i32 0, t < m.idx.count, t += 3 ]
+        ia : i32 [ i32[ m.idx[ t ] ] * 3 ]
+        ib : i32 [ i32[ m.idx[ t + 1 ] ] * 3 ]
+        ic : i32 [ i32[ m.idx[ t + 2 ] ] * 3 ]
+        ux : f32 [ m.pos[ ib ] - m.pos[ ia ] ]
+        uy : f32 [ m.pos[ ib + 1 ] - m.pos[ ia + 1 ] ]
+        uz : f32 [ m.pos[ ib + 2 ] - m.pos[ ia + 2 ] ]
+        vx : f32 [ m.pos[ ic ] - m.pos[ ia ] ]
+        vy : f32 [ m.pos[ ic + 1 ] - m.pos[ ia + 1 ] ]
+        vz : f32 [ m.pos[ ic + 2 ] - m.pos[ ia + 2 ] ]
+        nx : f32 [ uy * vz - uz * vy ]
+        ny : f32 [ uz * vx - ux * vz ]
+        nz : f32 [ ux * vy - uy * vx ]
+        # no area: a pole's cell
+        if [ nx * nx + ny * ny + nz * nz < 1e-14 ] continue
+        d : f32 [ nx * m.nrm[ ia ] + ny * m.nrm[ ia + 1 ]
+                  + nz * m.nrm[ ia + 2 ] ]
+        if [ d <= 0.0 ] bad += 1
+    log 'hand: {m.idx.count / 3} triangles, {bad} facing in'
+    return bad == 0
+
+# the file read back: 21 nodes, each at the place hand_points gives
+expect func t_hand_glb [] -> bool
+    to : string '{path.path_install[]}/tmp/hand-test.glb'
+    rest : HandPose []
+    if [ !hand_glb_write[ to, rest ] ] return false
+    gm : GltfModel.open_glb[ path to ]
+    if [ !gm || gm.nodes.count != 21 ] return false
+    gm.compute_worlds[]
+    p : vec f32 hand_points[ rest ]
+    js : vec HandJoint hand_joints[]
+    worst : f32 [ 0.0 ]
+    for [ i: i32 0, i < 21, i += 1 ]
+        nd : Node gm.nodes[ i ]
+        if [ nd.name != js[ i ].name ] return false
+        for [ k: i32 0, k < 3, k += 1 ]
+            e : f32 [ fabs[ nd.world.m[ 12 + k ] - p[ i * 3 + k ] ] ]
+            if [ e > worst ] worst = e
+    log 'hand: the file against the joints, {worst} m at most'
+    fist : string '{path.path_install[]}/tmp/hand-fist.glb'
+    hand_glb_write[ fist, hand_fist[] ]
+    return worst < 0.00001
+
+# share/hand/hand.glb
+export func hand_model []
+    d : path '{path.path_install[]}/share/hand'
+    if [ !d.exists[] ] d.make_dir[]
+    rest : HandPose []
+    if [ !hand_glb_write[ '{d}/hand.glb', rest ] ]
+        log 'hand: hand.glb was not written'
+
+# pinch and ok: the thumb's tip at the index's (centres a finger's
+# thickness apart); the open hand's thumb clear of every finger
+expect func t_hand_touch [] -> bool
+    ok : bool [ true ]
+    for [ nm: string ] in vec string [] [ 'pinch', 'ok' ]
+        p : vec f32 hand_points[ hand_gesture[ nm ] ]
+        dx : f32 [ p[ 12 ] - p[ 24 ] ]
+        dy : f32 [ p[ 13 ] - p[ 25 ] ]
+        dz : f32 [ p[ 14 ] - p[ 26 ] ]
+        d : f32 [ sqrt[ dx * dx + dy * dy + dz * dz ] ]
+        log 'hand: {nm} tips {d} m apart'
+        if [ d > 0.02 ] ok = false
+    room : f32 hand_thumb_room[ hand_gesture[ 'open' ] ]
+    log 'hand: open thumb room {room} m'
+    return ok && room >= 0.0

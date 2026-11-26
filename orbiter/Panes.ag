@@ -412,9 +412,14 @@ element EditorView
         if [ av_ && o.pane_live[ pane_index ] && !av_.held
              && !o.stopped_at[ av_ ] && !browse_active[] ]
             ael : Elements []
-            # building or starting (until its first frame): the card
+            # building or starting (until its first frame): the card,
+            # or the window it came over, still
+            cov_ : AppView o.cover_of[ pane_index ]
             bw_ : string av_.status_word[]
-            if [ (bw_ == 'compiling' || bw_ == 'starting')
+            if [ cov_ ]
+                ael['cover'] = CoverPane [ inst: cov_,
+                    area: Region { l0 t0 r0 b0 } ]
+            el [ (bw_ == 'compiling' || bw_ == 'starting')
                  && av_.compiled[] ]
                 ael['build_card'] = BuildCard [ inst: av_,
                     area: Region { l0 t0 r0 b0 } ]
@@ -451,9 +456,6 @@ element EditorView
                  && !fi_.ended && !fi_.held && !fi_.viewer ]
                 edels['pip:{pane_index}'] = PipView [ inst: fi_,
                     area: Region [ pip_at[ fi_ ] ] ]
-            if [ fi_ && fi_.fade_in_ms > 0 ]
-                edels['resume_fade'] = ResumeFade [ inst: fi_,
-                    area: Region { l0 t0 r0 b0 } ]
             edels['rail'] = ToolRail [ no_scroll: true,
                                        area: Region [
                                            'l0 t1px w1.94 b0' ] ]
@@ -487,6 +489,16 @@ element EditorView
             t['text'] = Splitter [ area: Region { l0 t0 r0 b0 },
                                    vertical: true,
                 inner: cols, deflt: 180.0, min_size: 44.0 ]
+            # over the editor, in the window's place (inside it they
+            # drew from the window's corner, over the dock)
+            if [ fi_ && fi_.fade_in_ms > 0 ]
+                t['resume_fade'] = ResumeFade [ inst: fi_,
+                    area: Region { l0 t0 r0 b0 } ]
+            # a launch's new window before its app: the one under it
+            cvr_ : AppView orb[].cover_of[ pane_index ]
+            if [ cvr_ ]
+                t['cover'] = CoverPane [ inst: cvr_,
+                    area: Region { l0 t0 r0 b0 } ]
         return t
 
     # the error chip belongs to the file it names: only show it
@@ -991,6 +1003,17 @@ element EditorView
                             (bot_) ? 'r0 t-1px w{bw}px b{th_ - 1.0}px'
                             : 'r0 t{th_ - 1.0}px w{bw}px b-1px' ] ]
         return t
+
+# the window a launch came over: its last picture, until the new
+# app draws its first
+element CoverPane
+    animated : true
+    public inst : AppView
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds || !inst ]
+            return
+        inst.draw_frame[ w.screen, rect [ x: 0.0, y: 0.0, w: bounds.w,
+                                          h: bounds.h ] ]
 
 # a resumed app's frame over the source, coming up over 300 ms
 element ResumeFade
@@ -2082,6 +2105,14 @@ func orbiter.pane_lists_drop [ pi: i32 ]
         pane_sheet.remove[ pi ]
     if [ pending_sel && pi < pending_sel.count ]
         pending_sel.remove[ pi ]
+    if [ pane_under && pi < pane_under.count ]
+        gone : i32 pane_under[ pi ]
+        pane_under.remove[ pi ]
+        for [ k: i32 0, k < pane_under.count, k += 1 ]
+            u : i32 pane_under[ k ]
+            if [ u == pi ] u = gone
+            if [ u > pi ] u -= 1
+            pane_under[ k ] = u
     if [ nav_panes && pi < nav_panes.count ]
         nav_panes.remove[ pi ]
         nav_panes += Navigate []
@@ -2365,7 +2396,8 @@ func orbiter.free_empty_close []
         if [ mini_wait >= 0 && i == mini_pane ] continue
         if [ pending_show > 0 && i == pending_show_pane ] continue
         # a dock press's new tab, its app about to start
-        if [ (launch_wait || launch_tab == i) && i == active_pane ]
+        if [ (launch_wait || launch_tab == i || show_wait > 0)
+             && i == active_pane ]
             continue
         if [ editor_slots.count == 1 ]
             dock_pane[ i ]
@@ -3320,6 +3352,35 @@ func orbiter.place_window [ wn: u64 ]
     nm : string[ wlc_window_title[ wn ] ]
     log 'orbiter: window {wn} ({nm}) in pane {pane}'
 
+# a new window for a launch: maximized in the selected window's
+# place when that one is (it hides, still running), else floating
+func orbiter.full_pane [] -> i32
+    old : i32 [ active_pane ]
+    if [ pane_floats[ old ] || pane_out[ old ] || mobile_on[] ]
+        return window_pane[]
+    pane_add[]
+    pending_finder = -1
+    nt : i32 [ i32[ editor_slots.count ] - 1 ]
+    take_place[ nt, old ]
+    hide_now[ old ]
+    if [ !pane_under ] pane_under = vec i32 []
+    while [ pane_under.count <= nt ] pane_under.push[ -1 ]
+    pane_under[ nt ] = old
+    active_pane = nt
+    return nt
+
+# the window a launch hid under pi, its last picture shown in pi
+# until pi's own app draws (null: none)
+func orbiter.cover_of [ pi: i32 ] -> AppView
+    if [ !pane_under || pi < 0 || pi >= pane_under.count ] return null
+    u : i32 pane_under[ pi ]
+    if [ u < 0 ] return null
+    own : AppView pane_av[ pi ]
+    if [ own && (own.have_frame || own.ended) ] return null
+    cv : AppView pane_av[ u ]
+    if [ !cv || cv.ended || !cv.have_frame ] return null
+    return cv
+
 # a floating pane for a program's next window, in the middle of
 # the area, each later one a step down and right
 func orbiter.window_pane [] -> i32
@@ -3518,6 +3579,10 @@ func orbiter.close_pane [ pi: i32 ]
             pe.pristine = false
         active_pane = pi
         return
+    # a window a launch hid under it comes back
+    under : i32 [ -1 ]
+    if [ taker < 0 && pane_under && pi < pane_under.count ]
+        under = pane_under[ pi ]
     free_drop[ pi ]
     pane_lists_drop[ pi ]
     if [ pane_hid && pi < pane_hid.count ] pane_hid.remove[ pi ]
@@ -3538,7 +3603,13 @@ func orbiter.close_pane [ pi: i32 ]
         if [ src_ && dst_ ]
             dst_.extent       = src_.extent
             dst_.extent_shown = src_.extent_shown
-    if [ taker >= 0 ]
+    if [ under > pi ] under -= 1
+    if [ under >= 0 && under < editor_slots.count
+         && pane_hidden[ under ] ]
+        unhide[ under ]
+        show_now[ under ]
+        active_pane = under
+    el [ taker >= 0 ]
         active_pane = (taker > pi) ? taker - 1 : taker
     el [ active_pane > pi ]
         active_pane -= 1

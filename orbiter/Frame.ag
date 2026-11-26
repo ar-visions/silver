@@ -538,6 +538,7 @@ func orbiter.tick [ w: Window ]
         sw_ : i32 [ show_wait ]
         show_wait = 0
         pick_instance[ sw_, active_pane ]
+        launch_tab = -1
     if [ pending_show > 0 ]
         edp_ : Editor pane_at[ pending_show_pane ]
         avp : AppView instance_by[ pending_show ]

@@ -1,0 +1,552 @@
+extend ai
+
+# where on the screen he looks, as train_gaze.py trains it: the gaze
+# recordings' frames, their eye points by the app's own eye chain
+# (models/*.hsn), each camera's eye and face clips, then GGazeNet;
+# written as the app reads it (models/gaze.hsg)
+
+HG_GAP   : f64 [ 0.09 ]
+HG_PIECE : i64 [ 105 ]
+HG_BATCH : i64 [ 64 ]
+HG_LR    : f64 [ 0.0003 ]
+HG_CHUNK : i64 [ 64 ]
+
+# every capture: the clip bank, the dot (-0.5 .. 0.5), each camera's
+# spot on the screen (its share of the screen, y down), held back
+class HgSet
+    public n     : i64
+    public bank  : HyClipBank
+    public dots  : vec f32
+    public spots : vec f32
+    public test  : vec i64
+    public train : vec i64
+
+class HgCapture
+    public id   : i64
+    public stem : string
+    public sess : string
+    public dot  : vec f32
+    public spot : vec f32
+
+func hg_field [ tx: string, k: string ] -> string
+    for [ w: string ] in tx.trim[].split[ ' ' ]
+        if [ w.starts_with[ '{k}=' ] ]
+            return w.mid[ k.count + 1, w.count - k.count - 1 ]
+    return ''
+
+# the captures by their file names' times, oldest first
+func hg_sorted [ cs: vec HgCapture ] -> vec HgCapture
+    n : i64 cs.count
+    ix : vec i64 [ n ]
+    for [ i: i64 0, i < n, i += 1 ]
+        ix[ i ] = i
+    tmp : vec i64 [ n ]
+    for [ run: i64 1, run < n, run *= 2 ]
+        for [ lo: i64 0, lo < n, lo += run * 2 ]
+            mid : i64 [ min[ lo + run, n ] ]
+            hi : i64 [ min[ lo + run * 2, n ] ]
+            a : i64 lo
+            b : i64 mid
+            for [ k: i64 lo, k < hi, k += 1 ]
+                take_a : bool [ a < mid && (b >= hi
+                    || cs[ ix[ a ] ].id <= cs[ ix[ b ] ].id) ]
+                if [ take_a ]
+                    tmp[ k ] = ix[ a ]
+                    a += 1
+                el
+                    tmp[ k ] = ix[ b ]
+                    b += 1
+        for [ k: i64 0, k < n, k += 1 ]
+            ix[ k ] = tmp[ k ]
+    out : vec HgCapture []
+    for [ i: i64 0, i < n, i += 1 ]
+        out.push[ cs[ ix[ i ] ] ]
+    return out
+
+func hg_captures [ dir: string ] -> vec HgCapture
+    cs : vec HgCapture []
+    d : path dir
+    if [ !d.exists[] ] return cs
+    for [ f: path ] in d.ls[ null, false ]
+        s : string '{f}'
+        if [ !s.ends_with[ '.agi' ] || s.count < 17 ] continue
+        stem : string s.mid[ 0, s.count - 4 ]
+        c0 : path '{stem}-camera0.png'
+        c1 : path '{stem}-camera1.png'
+        if [ !c0.exists[] || !c1.exists[] ] continue
+        tx : string f.load[ typeid[ string ], null ]
+        if [ !tx ] continue
+        sw : f64 hg_field[ tx, 'screen_width_m' ].real_value[]
+        sh : f64 hg_field[ tx, 'screen_height_m' ].real_value[]
+        if [ sw <= 0.0 || sh <= 0.0 ] continue
+        sp : vec f32 []
+        for [ c: i64 0, c < 2, c += 1 ]
+            sp.push[ hg_field[ tx, 'camera_x_m{c}' ].real_value[] / sw ]
+            sp.push[ -hg_field[ tx, 'camera_y_m{c}' ].real_value[] / sh ]
+        dx : f32 [ hg_field[ tx, 'target_x' ].real_value[] - 0.5 ]
+        dy : f32 [ hg_field[ tx, 'target_y' ].real_value[] - 0.5 ]
+        cs.push[ HgCapture [ id: s.mid[ s.count - 17, 13 ].integer_value[],
+                             stem: stem, sess: hg_field[ tx, 'session' ],
+                             dot: vec f32 [] [ dx, dy ], spot: sp ] ]
+    return hg_sorted[ cs ]
+
+# the captures read a chunk at a time: the chain's points, judged,
+# then their clips into one bank; every 5th 7-second piece of each
+# session held back
+func hg_load [ state: string, models: string, vk: vk_context ] -> HgSet
+    cs : vec HgCapture hg_captures[ '{state}/gaze' ]
+    if [ cs.count == 0 ]
+        log 'gaze: no captures: record with the gaze entry'
+        return null
+    ch : HyChain [ vk: vk ]
+    if [ !ch.load_app[ models ] ]
+        log 'gaze: no eye models in {models}: train the eyes first'
+        return null
+    first : HyGrey hy_grey[ path '{cs[ 0 ].stem}-camera0.png' ]
+    w : i64 first.w
+    if [ w <= 0 || first.h != w ]
+        log 'gaze: frames must be square'
+        return null
+    n : i64 cs.count
+    es : i64 [ i64[ rint[ f64[ HY_EYE_CLIP ] * HY_WIDE ] ] ]
+    fs : i64 [ i64[ rint[ f64[ HY_CLIP ] * HY_WIDE ] ] ]
+    bk : HyClipBank [ n: n, es: es, fs: fs,
+                      eyes: vec u8 [ n * 4 * es * es ],
+                      faces: vec u8 [ n * 2 * fs * fs ],
+                      nums: vec f32 [ n * 38 ] ]
+    set : HgSet [ n: n, bank: bk, dots: vec f32 [ n * 2 ],
+                  spots: vec f32 [ n * 4 ], test: vec i64 [],
+                  train: vec i64 [] ]
+    sound : vec i64 [ 6 ]
+    t0 : i64 [ Au.epoch_millis[] ]
+    for [ from: i64 0, from < n, from += HG_CHUNK ]
+        mk : i32 [ Au.auto_mark[] ]
+        m : i64 [ min[ HG_CHUNK, n - from ] ]
+        frames : vec u8 [ m * 2 * w * w ]
+        for [ k: i64 0, k < m, k += 1 ]
+            for [ cam: i64 0, cam < 2, cam += 1 ]
+                g : HyGrey hy_grey[ path '{cs[ from + k ].stem}-camera{cam}.png' ]
+                if [ g.w == w && g.h == w ]
+                    memcpy[ @frames[ (k * 2 + cam) * w * w ],
+                            @g.bytes[ 0 ], w * w ]
+        cr : HyChainOut hy_chain_run[ ch, frames, m * 2, w ]
+        pts : vec f32 [ m * 16 ]
+        for [ i: i64 0, i < m * 16, i += 1 ]
+            pts[ i ] = cr.pts[ i ]
+        ok : vec f32 [ m * 2 ]
+        for [ i: i64 0, i < m * 2, i += 1 ]
+            mark : i64 cr.marks[ i ]
+            ok[ i ] = (mark == 0) ? 1.0 : 0.0
+            sound[ (i % 2) * 3 + mark ] += 1
+        part : HyClipBank hy_clip_bank[ frames, pts, ok, m, w, w ]
+        memcpy[ @bk.eyes[ from * 4 * es * es ], @part.eyes[ 0 ],
+                m * 4 * es * es ]
+        memcpy[ @bk.faces[ from * 2 * fs * fs ], @part.faces[ 0 ],
+                m * 2 * fs * fs ]
+        for [ i: i64 0, i < m * 38, i += 1 ]
+            bk.nums[ from * 38 + i ] = part.nums[ i ]
+        Au.auto_free_to[ mk ]
+        if [ (from / HG_CHUNK) % 32 == 31 ]
+            log 'gaze: {from + m} of {n} captures read ({(Au.epoch_millis[] - t0) / 1000} s)'
+    for [ cam: i64 0, cam < 2, cam += 1 ]
+        good : i64 [ sound[ cam * 3 ] * 100 / max[ n, 1 ] ]
+        shape : i64 [ sound[ cam * 3 + 1 ] * 100 / max[ n, 1 ] ]
+        shaky : i64 [ sound[ cam * 3 + 2 ] * 100 / max[ n, 1 ] ]
+        log 'camera {cam + 1}: {good}% sound, {shape}% bad shape, {shaky}% unstable'
+    # 7-second pieces of each session, every 5th never trained on
+    seen : map i64 [ string ] []
+    for [ k: i64 0, k < n, k += 1 ]
+        c : HgCapture cs[ k ]
+        set.dots[ k * 2 ] = c.dot[ 0 ]
+        set.dots[ k * 2 + 1 ] = c.dot[ 1 ]
+        for [ i: i64 0, i < 4, i += 1 ]
+            set.spots[ k * 4 + i ] = c.spot[ i ]
+        at : i64 [ (seen.contains[ c.sess ]) ? seen[ c.sess ] : 0 ]
+        seen[ c.sess ] = at + 1
+        if [ (at / HG_PIECE) % 5 == 4 ]
+            set.test.push[ k ]
+        el
+            set.train.push[ k ]
+    log 'gaze: {n} captures in {seen.count} sessions; training on {set.train.count}, never trained on {set.test.count}; errors in screen units, 0.5 half the screen'
+    return set
+
+# a batch's clips and numbers for the cameras read: 2 eye clips and
+# a face clip a camera, its 18 numbers, then each one's seen flag
+class HgPick
+    public n     : i64
+    public eyes  : vec f32
+    public faces : vec f32
+    public aux   : vec f32
+
+func hg_pick [ hb: HyGazeBatch, cams: vec i64 ] -> HgPick
+    nc : i64 cams.count
+    es : i64 [ HY_EYE_CLIP * HY_EYE_CLIP ]
+    fs : i64 [ HY_CLIP * HY_CLIP ]
+    na : i64 [ nc * 19 ]
+    p : HgPick [ n: hb.b, eyes: vec f32 [ hb.b * 2 * nc * es ],
+                 faces: vec f32 [ hb.b * nc * fs ],
+                 aux: vec f32 [ hb.b * na ] ]
+    for [ k: i64 0, k < hb.b, k += 1 ]
+        for [ j: i64 0, j < nc, j += 1 ]
+            c : i64 cams[ j ]
+            for [ e: i64 0, e < 2, e += 1 ]
+                src : i64 [ (k * 4 + c * 2 + e) * es ]
+                dst : i64 [ (k * 2 * nc + j * 2 + e) * es ]
+                for [ i: i64 0, i < es, i += 1 ]
+                    p.eyes[ dst + i ] = hb.eyes[ src + i ]
+            fsrc : i64 [ (k * 2 + c) * fs ]
+            fdst : i64 [ (k * nc + j) * fs ]
+            for [ i: i64 0, i < fs, i += 1 ]
+                p.faces[ fdst + i ] = hb.faces[ fsrc + i ]
+            to : i64 [ k * na + j * HY_NAUX ]
+            from : i64 [ k * 38 + c * HY_NAUX ]
+            for [ i: i64 0, i < HY_NAUX, i += 1 ]
+                p.aux[ to + i ] = hb.nums[ from + i ]
+            p.aux[ k * na + nc * HY_NAUX + j ] = hb.nums[ k * 38 + 36 + c ]
+    return p
+
+# the head moved up to reach metres across and up or down, the eyes
+# seen the same: every point on each camera moved by its own pixels
+# (its corner gap over HG_GAP); the dot stays
+func hg_slew [ p: HgPick, nc: i64, reach: f64, dr: HyDraws ]
+    if [ reach <= 0.0 ] return
+    dx : vec f64 dr.uniform[ p.n, -reach, reach ]
+    dy : vec f64 dr.uniform[ p.n, -reach, reach ]
+    xs : vec i64 [] [ 0, 2, 4, 6, 9, 12, 15 ]
+    ys : vec i64 [] [ 1, 3, 5, 7, 10, 13, 16 ]
+    na : i64 [ nc * 19 ]
+    for [ k: i64 0, k < p.n, k += 1 ]
+        for [ j: i64 0, j < nc, j += 1 ]
+            at : i64 [ k * na + j * HY_NAUX ]
+            px : f64 [ f64[ p.aux[ at + 8 ] ] / HG_GAP ]
+            for [ c: i64 ] in xs
+                p.aux[ at + c ] = f64[ p.aux[ at + c ] ] + dx[ k ] * px
+            for [ c: i64 ] in ys
+                p.aux[ at + c ] = f64[ p.aux[ at + c ] ] + dy[ k ] * px
+
+# the head slid along the one camera's line of sight by k (up to
+# reach either way): the dot moves k times as far from the camera's
+# spot, the camera's numbers shrink by 1 / k
+func hg_depth [ p: HgPick, goal: vec f32, spot: vec f32, reach: f64,
+                dr: HyDraws ]
+    if [ reach <= 0.0 ] return
+    top : f64 [ log1p[ reach ] ]
+    ks : vec f64 dr.uniform[ p.n, -top, top ]
+    for [ k: i64 0, k < p.n, k += 1 ]
+        f : f64 [ exp[ ks[ k ] ] ]
+        for [ i: i64 0, i < HY_NAUX, i += 1 ]
+            p.aux[ k * 19 + i ] = f64[ p.aux[ k * 19 + i ] ] / f
+        for [ c: i64 0, c < 2, c += 1 ]
+            s : f64 [ f64[ spot[ k * 2 + c ] ] ]
+            goal[ k * 2 + c ] = s + f * (f64[ goal[ k * 2 + c ] ] - s)
+
+# the net's answers for the captures idx, unjittered, 128 at a time
+func hg_run [ net: GGazeNet, set: HgSet, idx: vec i64, cams: vec i64,
+              dr: HyDraws ] -> vec f32
+    out : vec f32 []
+    nc : i64 cams.count
+    for [ from: i64 0, from < idx.count, from += 128 ]
+        take : vec i64 []
+        last : i64 [ min[ from + 128, idx.count ] ]
+        for [ i: i64 from, i < last, i += 1 ]
+            take.push[ idx[ i ] ]
+        p : HgPick hg_pick[ hy_gaze_batch[ set.bank, take, false, dr ],
+                            cams ]
+        for [ v: f32 ] in hg_forward[ net, p, nc ]
+            out.push[ v ]
+    return out
+
+func hg_forward [ net: GGazeNet, p: HgPick, nc: i64 ] -> vec f32
+    net.begin_step[]
+    g : Grad net.gd
+    e : GTensor g.temp[ vec i64 [] [ p.n, 2 * nc, HY_EYE_CLIP,
+                                     HY_EYE_CLIP ] ]
+    g.upload[ e, p.eyes ]
+    f : GTensor g.temp[ vec i64 [] [ p.n, nc, HY_CLIP, HY_CLIP ] ]
+    g.upload[ f, p.faces ]
+    a : GTensor g.temp[ vec i64 [] [ p.n, nc * 19 ] ]
+    g.upload[ a, p.aux ]
+    return g.download[ net.forward[ e, f, a, false ] ]
+
+# each answer's miss from its dot, in screen units
+func hg_misses [ got: vec f32, set: HgSet, idx: vec i64 ] -> vec f64
+    out : vec f64 [ idx.count ]
+    for [ i: i64 0, i < idx.count, i += 1 ]
+        out[ i ] = hypot[ f64[ got[ i * 2 ] ] - f64[ set.dots[ idx[ i ] * 2 ] ],
+                          f64[ got[ i * 2 + 1 ] ]
+                          - f64[ set.dots[ idx[ i ] * 2 + 1 ] ] ]
+    return out
+
+func hg_mean [ v: vec f64 ] -> f64
+    s : f64 [ 0.0 ]
+    for [ x: f64 ] in v
+        s += x
+    return s / f64[ max[ v.count, 1 ] ]
+
+func hg_median [ v: vec f64 ] -> f64
+    if [ v.count == 0 ] return 0.0
+    s : vec f64 [ v.count ]
+    for [ i: i64 0, i < v.count, i += 1 ]
+        s[ i ] = v[ i ]
+    for [ i: i64 1, i < s.count, i += 1 ]
+        x : f64 s[ i ]
+        j : i64 [ i - 1 ]
+        while [ j >= 0 && s[ j ] > x ]
+            s[ j + 1 ] = s[ j ]
+            j -= 1
+        s[ j + 1 ] = x
+    return s[ s.count / 2 ]
+
+func hg_say [ v: vec f64 ] -> string
+    return 'mean {hy_num[ hg_mean[ v ], 3 ]}, median {hy_num[ hg_median[ v ], 3 ]}'
+
+# a d x d system a w = b (b d x m, row major) by elimination; the
+# answer d x m
+func hg_solve [ a: vec f64, b: vec f64, d: i64, m: i64 ] -> vec f64
+    ma : vec f64 [ d * d ]
+    mb : vec f64 [ d * m ]
+    for [ i: i64 0, i < d * d, i += 1 ]
+        ma[ i ] = a[ i ]
+    for [ i: i64 0, i < d * m, i += 1 ]
+        mb[ i ] = b[ i ]
+    for [ c: i64 0, c < d, c += 1 ]
+        piv : i64 c
+        for [ r: i64 c + 1, r < d, r += 1 ]
+            if [ fabs[ ma[ r * d + c ] ] > fabs[ ma[ piv * d + c ] ] ]
+                piv = r
+        if [ piv != c ]
+            for [ k: i64 0, k < d, k += 1 ]
+                t : f64 ma[ c * d + k ]
+                ma[ c * d + k ] = ma[ piv * d + k ]
+                ma[ piv * d + k ] = t
+            for [ k: i64 0, k < m, k += 1 ]
+                t : f64 mb[ c * m + k ]
+                mb[ c * m + k ] = mb[ piv * m + k ]
+                mb[ piv * m + k ] = t
+        top : f64 ma[ c * d + c ]
+        if [ fabs[ top ] < 1.0e-12 ] continue
+        for [ r: i64 0, r < d, r += 1 ]
+            if [ r == c ] continue
+            f : f64 [ ma[ r * d + c ] / top ]
+            if [ f == 0.0 ] continue
+            for [ k: i64 c, k < d, k += 1 ]
+                ma[ r * d + k ] = ma[ r * d + k ] - f * ma[ c * d + k ]
+            for [ k: i64 0, k < m, k += 1 ]
+                mb[ r * m + k ] = mb[ r * m + k ] - f * mb[ c * m + k ]
+    for [ c: i64 0, c < d, c += 1 ]
+        top : f64 ma[ c * d + c ]
+        for [ k: i64 0, k < m, k += 1 ]
+            mb[ c * m + k ] = (fabs[ top ] < 1.0e-12) ? 0.0
+                : mb[ c * m + k ] / top
+    return mb
+
+# rows x (n x d) to y (n x 2) by least squares, ridge lam on all but
+# the last column; the fit applied to xt
+func hg_fit_lines [ x: vec f64, y: vec f64, n: i64, d: i64,
+                    lam: f64, xt: vec f64, nt: i64 ] -> vec f64
+    a : vec f64 [ d * d ]
+    b : vec f64 [ d * 2 ]
+    for [ r: i64 0, r < n, r += 1 ]
+        for [ i: i64 0, i < d, i += 1 ]
+            xi : f64 x[ r * d + i ]
+            for [ j: i64 0, j < d, j += 1 ]
+                a[ i * d + j ] = a[ i * d + j ] + xi * x[ r * d + j ]
+            b[ i * 2 ] = b[ i * 2 ] + xi * y[ r * 2 ]
+            b[ i * 2 + 1 ] = b[ i * 2 + 1 ] + xi * y[ r * 2 + 1 ]
+    for [ i: i64 0, i < d - 1, i += 1 ]
+        a[ i * d + i ] = a[ i * d + i ] + lam
+    wt : vec f64 hg_solve[ a, b, d, 2 ]
+    out : vec f64 [ nt * 2 ]
+    for [ r: i64 0, r < nt, r += 1 ]
+        for [ c: i64 0, c < 2, c += 1 ]
+            s : f64 [ 0.0 ]
+            for [ i: i64 0, i < d, i += 1 ]
+                s += xt[ r * d + i ] * wt[ i * 2 + c ]
+            out[ r * 2 + c ] = s
+    return out
+
+# the numbers alone (each camera's 18 and seen flag, standardized)
+# by a ridge fit: the plain baseline
+func hg_ridge [ set: HgSet, cams: vec i64 ] -> vec f64
+    nc : i64 cams.count
+    cols : vec i64 []
+    for [ c: i64 ] in cams
+        for [ i: i64 0, i < HY_NAUX, i += 1 ]
+            cols.push[ c * HY_NAUX + i ]
+    for [ c: i64 ] in cams
+        cols.push[ 36 + c ]
+    nf : i64 cols.count
+    d : i64 [ nf + 1 ]
+    mu : vec f64 [ nf ]
+    sd : vec f64 [ nf ]
+    for [ j: i64 0, j < nf, j += 1 ]
+        s : f64 [ 0.0 ]
+        q : f64 [ 0.0 ]
+        for [ k: i64 ] in set.train
+            v : f64 [ f64[ set.bank.nums[ k * 38 + cols[ j ] ] ] ]
+            s += v
+            q += v * v
+        m : f64 [ s / f64[ set.train.count ] ]
+        mu[ j ] = m
+        sd[ j ] = sqrt[ fmax[ q / f64[ set.train.count ] - m * m, 0.0 ] ]
+            + 1.0e-6
+    x : vec f64 [ set.train.count * d ]
+    y : vec f64 [ set.train.count * 2 ]
+    for [ r: i64 0, r < set.train.count, r += 1 ]
+        k : i64 set.train[ r ]
+        for [ j: i64 0, j < nf, j += 1 ]
+            x[ r * d + j ] = (f64[ set.bank.nums[ k * 38 + cols[ j ] ] ]
+                              - mu[ j ]) / sd[ j ]
+        x[ r * d + nf ] = 1.0
+        y[ r * 2 ] = set.dots[ k * 2 ]
+        y[ r * 2 + 1 ] = set.dots[ k * 2 + 1 ]
+    xt : vec f64 [ set.test.count * d ]
+    for [ r: i64 0, r < set.test.count, r += 1 ]
+        k : i64 set.test[ r ]
+        for [ j: i64 0, j < nf, j += 1 ]
+            xt[ r * d + j ] = (f64[ set.bank.nums[ k * 38 + cols[ j ] ] ]
+                               - mu[ j ]) / sd[ j ]
+        xt[ r * d + nf ] = 1.0
+    got : vec f64 hg_fit_lines[ x, y, set.train.count, d, 10.0, xt,
+                                set.test.count ]
+    out : vec f64 [ set.test.count ]
+    for [ r: i64 0, r < set.test.count, r += 1 ]
+        k : i64 set.test[ r ]
+        out[ r ] = hypot[ got[ r * 2 ] - f64[ set.dots[ k * 2 ] ],
+                          got[ r * 2 + 1 ] - f64[ set.dots[ k * 2 + 1 ] ] ]
+    return out
+
+# the training: 64 captures a step, AdamW (3e-4, decay 0.01) on the
+# cosine rate, gradients clipped to 1; every 1000 steps the errors,
+# the best step's net on the held back kept
+func hg_fit [ set: HgSet, cams: vec i64, steps: i64, slew: f64,
+              depth: f64, vk: vk_context ] -> GGazeNet
+    nc : i64 cams.count
+    net : GGazeNet [ vk: vk, work_mb: 2048, scratch_mb: 1024, cams: nc ]
+    net.fresh[]
+    if [ !net.valid ] return null
+    net.gd.record = true
+    dr : HyDraws [ state: 5 ]
+    best : f64 [ -1.0 ]
+    kept : vec HyKept []
+    t0 : i64 [ Au.epoch_millis[] ]
+    for [ step: i64 0, step < steps, step += 1 ]
+        mk : i32 [ Au.auto_mark[] ]
+        take : vec i64 []
+        for [ i: i64 0, i < HG_BATCH, i += 1 ]
+            take.push[ set.train[ i64[ dr.u01[]
+                                       * f64[ set.train.count ] ] ] ]
+        p : HgPick hg_pick[ hy_gaze_batch[ set.bank, take, true, dr ],
+                            cams ]
+        goal : vec f32 [ HG_BATCH * 2 ]
+        spot : vec f32 [ HG_BATCH * 2 ]
+        for [ k: i64 0, k < HG_BATCH, k += 1 ]
+            for [ c: i64 0, c < 2, c += 1 ]
+                goal[ k * 2 + c ] = set.dots[ take[ k ] * 2 + c ]
+                spot[ k * 2 + c ] = set.spots[ take[ k ] * 4
+                                               + cams[ 0 ] * 2 + c ]
+        if [ nc == 1 ] hg_depth[ p, goal, spot, depth, dr ]
+        p.eyes = hy_shake[ p.eyes, HG_BATCH, 2 * nc, HY_EYE_CLIP, dr ]
+        p.faces = hy_shake[ p.faces, HG_BATCH, nc, HY_CLIP, dr ]
+        hg_slew[ p, nc, slew, dr ]
+        keep : vec f32 [ HG_BATCH * 256 ]
+        for [ i: i64 0, i < keep.count, i += 1 ]
+            keep[ i ] = (dr.u01[] < 0.2) ? 0.0 : 1.25
+        net.keep = keep
+        net.begin_step[]
+        g : Grad net.gd
+        e : GTensor g.temp[ vec i64 [] [ HG_BATCH, 2 * nc, HY_EYE_CLIP,
+                                         HY_EYE_CLIP ] ]
+        g.upload[ e, p.eyes ]
+        f : GTensor g.temp[ vec i64 [] [ HG_BATCH, nc, HY_CLIP,
+                                         HY_CLIP ] ]
+        g.upload[ f, p.faces ]
+        a : GTensor g.temp[ vec i64 [] [ HG_BATCH, nc * 19 ] ]
+        g.upload[ a, p.aux ]
+        y : GTensor g.temp[ vec i64 [] [ HG_BATCH, 2 ] ]
+        g.upload[ y, goal ]
+        loss : GTensor net.loss[ net.forward[ e, f, a, true ], y ]
+        g.backward_all[ vec GTensor [] [ loss ], vec f32 [] [ 1.0 ] ]
+        net.adamw_step[ f32[ cosine_rate[ step, steps, HG_LR ] ], 0.9,
+                        0.01, 1.0 ]
+        net.keep = null
+        Au.auto_free_to[ mk ]
+        if [ (step + 1) % 1000 != 0 ] continue
+        some : vec i64 []
+        for [ i: i64 0, i < min[ 512, set.train.count ], i += 1 ]
+            some.push[ set.train[ i64[ dr.u01[]
+                                       * f64[ set.train.count ] ] ] ]
+        tr : vec f64 hg_misses[ hg_run[ net, set, some, cams, dr ], set,
+                                some ]
+        te : vec f64 hg_misses[ hg_run[ net, set, set.test, cams, dr ],
+                                set, set.test ]
+        score : f64 hg_mean[ te ]
+        if [ best < 0.0 || score < best ]
+            best = score
+            kept = hy_snapshot[ net ]
+        log '  step {step + 1}: training {hg_say[ tr ]} | never trained on {hg_say[ te ]}   ({(Au.epoch_millis[] - t0) / 1000} s)'
+    if [ kept.count > 0 ] hy_restore[ net, kept ]
+    return net
+
+# the whole gaze training: the captures, the net, the held back's
+# errors against the plain baselines, then models/gaze.hsg
+func hg_train [ state: string, models: string, steps: i64, slew: f64,
+                depth: f64, camera: i64, vk: vk_context ] -> bool
+    set : HgSet hg_load[ state, models, vk ]
+    if [ !set ] return false
+    if [ set.train.count == 0 || set.test.count == 0 ]
+        log 'gaze: too few captures to hold some back'
+        return false
+    cams : vec i64 [] [ 0, 1 ]
+    if [ camera == 1 || camera == 2 ] cams = vec i64 [] [ camera - 1 ]
+    log 'gaze: {steps} steps of {HG_BATCH}, a line every 1000'
+    net : GGazeNet hg_fit[ set, cams, steps, slew, depth, vk ]
+    if [ !net ] return false
+    dr : HyDraws [ state: 9 ]
+    got : vec f32 hg_run[ net, set, set.test, cams, dr ]
+    e : vec f64 hg_misses[ got, set, set.test ]
+    worst : f64 [ 0.0 ]
+    for [ v: f64 ] in e
+        worst = fmax[ worst, v ]
+    r : vec f64 hg_ridge[ set, cams ]
+    mx : f64 [ 0.0 ]
+    my : f64 [ 0.0 ]
+    for [ k: i64 ] in set.train
+        mx += f64[ set.dots[ k * 2 ] ]
+        my += f64[ set.dots[ k * 2 + 1 ] ]
+    mx = mx / f64[ set.train.count ]
+    my = my / f64[ set.train.count ]
+    mid : vec f64 [ set.test.count ]
+    for [ i: i64 0, i < set.test.count, i += 1 ]
+        k : i64 set.test[ i ]
+        mid[ i ] = hypot[ mx - f64[ set.dots[ k * 2 ] ],
+                          my - f64[ set.dots[ k * 2 + 1 ] ] ]
+    log 'never trained on ({set.test.count}): {hg_say[ e ]}, worst {hy_num[ worst, 3 ]} | points alone {hy_num[ hg_mean[ r ], 3 ]} | the middle always {hy_num[ hg_mean[ mid ], 3 ]}'
+    # calibrated: a straight-line fix fitted on the held back's first
+    # fifth, scored on the rest
+    nt : i64 set.test.count
+    nf : i64 [ nt / 5 ]
+    z : vec f64 [ nt * 3 ]
+    y : vec f64 [ nt * 2 ]
+    for [ i: i64 0, i < nt, i += 1 ]
+        z[ i * 3 ] = got[ i * 2 ]
+        z[ i * 3 + 1 ] = got[ i * 2 + 1 ]
+        z[ i * 3 + 2 ] = 1.0
+        y[ i * 2 ] = set.dots[ set.test[ i ] * 2 ]
+        y[ i * 2 + 1 ] = set.dots[ set.test[ i ] * 2 + 1 ]
+    if [ nf > 3 ]
+        rest : vec f64 [ (nt - nf) * 3 ]
+        for [ i: i64 0, i < (nt - nf) * 3, i += 1 ]
+            rest[ i ] = z[ nf * 3 + i ]
+        fixed : vec f64 hg_fit_lines[ z, y, nf, 3, 0.0, rest, nt - nf ]
+        c : vec f64 [ nt - nf ]
+        for [ i: i64 0, i < nt - nf, i += 1 ]
+            c[ i ] = hypot[ fixed[ i * 2 ] - y[ (nf + i) * 2 ],
+                            fixed[ i * 2 + 1 ] - y[ (nf + i) * 2 + 1 ] ]
+        log 'calibrated on its first fifth, the rest: {hg_say[ c ]}'
+    od : path models
+    if [ !od.exists[] ] od.make_dir[]
+    gf : path '{models}/gaze.hsg'
+    if [ !net.write_gaze[ gf, cams[ 0 ] ] ] return false
+    log 'gaze: written to {gf}'
+    return true

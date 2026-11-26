@@ -1977,6 +1977,16 @@ element PlanetView
     mutable cx       : f64 [ -260.0 ]
     mutable cy       : f64 [ 18.0 ]
     mutable cz       : f64 [ 360.0 ]
+    # the clouds' ground frame, carried along under the camera: its
+    # east and south, the camera's place on their map, its last place
+    mutable sky_ex   : vec3f
+    mutable sky_ez   : vec3f
+    mutable sky_on   : bool
+    mutable sky_wx   : f64
+    mutable sky_wz   : f64
+    mutable sky_px   : f64
+    mutable sky_py   : f64
+    mutable sky_pz   : f64
     # tan of half the vertical field of view
     mutable cam_th   : f32 [ 0.466 ]
     # the port cameras' field (the tangent of half of it), and
@@ -2387,6 +2397,50 @@ element PlanetView
         n : f32 [ sqrt[ sx.x * sx.x + sx.y * sx.y + sx.z * sx.z ] ]
         return vec3f [ sx.x / n, sx.y / n, sx.z / n ]
 
+    # the clouds' map is flat round the camera: its frame goes with
+    # the camera over the ground (no turn about the vertical), and
+    # the camera's place on it moves by its move along the ground
+    # (the pad's x and z alone run sideways far round the planet)
+    func sky_carry [ up: vec3f ]
+        if [ !sky_on ]
+            ox : to_local[ vec3f [ 1.0, 0.0, 0.0 ], up ]
+            oy : to_local[ vec3f [ 0.0, 1.0, 0.0 ], up ]
+            oz : to_local[ vec3f [ 0.0, 0.0, 1.0 ], up ]
+            sky_ex = vec3f [ ox.x, oy.x, oz.x ]
+            sky_ez = vec3f [ ox.z, oy.z, oz.z ]
+            sky_wx = cx
+            sky_wz = cz
+            sky_on = true
+        el
+            dx : f64 [ cx - sky_px ]
+            dy : f64 [ cy - sky_py ]
+            dz : f64 [ cz - sky_pz ]
+            r : f64 [ sqrt[ cx * cx + (cy + PLANET_R) * (cy + PLANET_R)
+                            + cz * cz ] ]
+            k : f64 [ PLANET_R / r ]
+            mx : f64 [ dx * sky_ex.x + dy * sky_ex.y + dz * sky_ex.z ]
+            mz : f64 [ dx * sky_ez.x + dy * sky_ez.y + dz * sky_ez.z ]
+            sky_wx += mx * k
+            sky_wz += mz * k
+            # east kept level under the new up, south square to both
+            d : f32 [ sky_ex.x * up.x + sky_ex.y * up.y
+                      + sky_ex.z * up.z ]
+            e : vec3f [ sky_ex.x - up.x * d, sky_ex.y - up.y * d,
+                        sky_ex.z - up.z * d ]
+            el_ : f32 [ sqrt[ e.x * e.x + e.y * e.y + e.z * e.z ] ]
+            if [ el_ > 0.0001 ]
+                sky_ex = vec3f [ e.x / el_, e.y / el_, e.z / el_ ]
+                sky_ez = cross3[ sky_ex, up ]
+        sky_px = cx
+        sky_py = cy
+        sky_pz = cz
+
+    # a direction in the clouds' frame: east, up, south
+    func in_sky [ v: vec3f, up: vec3f ] -> vec3f
+        sx : f32 [ v.x * sky_ex.x + v.y * sky_ex.y + v.z * sky_ex.z ]
+        sz : f32 [ v.x * sky_ez.x + v.y * sky_ez.y + v.z * sky_ez.z ]
+        return vec3f [ sx, v.x * up.x + v.y * up.y + v.z * up.z, sz ]
+
     func cross3 [ u: vec3f, v: vec3f ] -> vec3f
         return vec3f [ u.y * v.z - u.z * v.y, u.z * v.x - u.x * v.z,
                        u.x * v.y - u.y * v.x ]
@@ -2790,16 +2844,17 @@ element PlanetView
                       se * cos[ sun_az ] ]
         # the clouds stand on the ground under the camera: the pad's
         # vectors turned so the camera's up is their y
-        ls : to_local[ sun, up ]
+        sky_carry[ up ]
+        ls : in_sky[ sun, up ]
         cur.sun_el = asin[ clamp[ ls.y, -1.0, 1.0 ] ]
         cur.sun_az = atan2[ ls.x, ls.z ]
         sky.cur      = cur
         sky.bounds   = bounds
-        sky.cam_x    = f32[ cx ]
-        sky.cam_z    = f32[ cz ]
+        sky.cam_x    = f32[ sky_wx ]
+        sky.cam_z    = f32[ sky_wz ]
         sky.cam_h    = cam_alt
-        sky.look_fwd = to_local[ fwd, up ]
-        sky.look_up  = to_local[ cu, up ]
+        sky.look_fwd = in_sky[ fwd, up ]
+        sky.look_up  = in_sky[ cu, up ]
         sky.fov_tan  = th
         sky.exposure = exposure
         sky.quality  = quality

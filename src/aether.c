@@ -1444,8 +1444,11 @@ AU_EXPORT etype determine_rtype(aether a, OPType optype, etype L, etype R) {
     }
 
     // Integer promotion
-    int L_size = L->autype->abi_size;
-    int R_size = R->autype->abi_size;
+    // an argument's own entry has no size: its type's
+    Au_t L_ty = au_arg_type((Au)L);
+    Au_t R_ty = au_arg_type((Au)R);
+    int L_size = L_ty ? L_ty->abi_size : L->autype->abi_size;
+    int R_size = R_ty ? R_ty->abi_size : R->autype->abi_size;
     if (L_size > R_size)
         return canonical(L);
     else if (R_size > L_size)
@@ -8649,7 +8652,54 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
                 // no_pool: nothing owns this element -- the delegate takes it
                 // as a prop and the tree only borrows it, so at refs==0 the
                 // frame loop's auto_free would free it outright
-                enode root = e_create(a, app_element, null, true);
+                // --as <Class>: a subclass of the app element in this
+                // module (a view of the app) is made in its place
+                array subs = array(alloc, 8);
+                members(module_base, sm) {
+                    if (!is_class(sm) || sm->is_abstract) continue;
+                    if (sm == app_element->autype) continue;
+                    if (!inherits(sm, app_element->autype)) continue;
+                    push(subs, (Au)sm);
+                }
+                enode root;
+                if (len(subs) == 0) {
+                    root = e_create(a, app_element, null, true);
+                } else {
+                    LLVMValueRef slot = entry_alloca(a, ptr_ty, "app-root");
+                    LLVMValueRef fn_  = LLVMGetBasicBlockParent(
+                        LLVMGetInsertBlock(B));
+                    LLVMTypeRef  as_ty = LLVMFunctionType(
+                        LLVMInt1TypeInContext(a->module_ctx),
+                        (LLVMTypeRef[]){ ptr_ty }, 1, false);
+                    LLVMValueRef as_fn = LLVMGetNamedFunction(
+                        a->module_ref, "au_app_as");
+                    if (!as_fn) as_fn = LLVMAddFunction(
+                        a->module_ref, "au_app_as", as_ty);
+                    LLVMBasicBlockRef done_bb = LLVMAppendBasicBlockInContext(
+                        a->module_ctx, fn_, "app-made");
+                    each(subs, Au_t, sm) {
+                        LLVMValueRef nm = LLVMBuildGlobalStringPtr(B,
+                            sm->ident, "app-as");
+                        LLVMValueRef is = LLVMBuildCall2(B, as_ty, as_fn,
+                            (LLVMValueRef[]){ nm }, 1, "");
+                        LLVMBasicBlockRef yes = LLVMAppendBasicBlockInContext(
+                            a->module_ctx, fn_, "app-as-yes");
+                        LLVMBasicBlockRef no = LLVMAppendBasicBlockInContext(
+                            a->module_ctx, fn_, "app-as-no");
+                        LLVMBuildCondBr(B, is, yes, no);
+                        LLVMPositionBuilderAtEnd(B, yes);
+                        enode sr = e_create(a, u(etype, sm), null, true);
+                        LLVMBuildStore(B, _llvalue(sr), slot);
+                        LLVMBuildBr(B, done_bb);
+                        LLVMPositionBuilderAtEnd(B, no);
+                    }
+                    enode dr = e_create(a, app_element, null, true);
+                    LLVMBuildStore(B, _llvalue(dr), slot);
+                    LLVMBuildBr(B, done_bb);
+                    LLVMPositionBuilderAtEnd(B, done_bb);
+                    root = value(app_element,
+                        LLVMBuildLoad2(B, ptr_ty, slot, "app-root"));
+                }
                 root->is_any = true;
                 {
                     LLVMTypeRef  aa_ty = LLVMFunctionType(LLVMVoidTypeInContext(a->module_ctx),

@@ -12,6 +12,9 @@
 // a net's file: 'HSN1', side, outputs, then the floats (a stage's
 // two convs, weights then biases, four stages; the two dense layers)
 #define HS_MAGIC 0x314E5348
+// a stage net with numbers joined before its dense layer ('HSA1',
+// side, outputs, how many): the point model's box
+#define HS_AUX_MAGIC 0x31415348
 #define HS_STAGES 4
 
 typedef struct {
@@ -21,7 +24,7 @@ typedef struct {
     int    conv_in[HS_STAGES * 2], conv_out[HS_STAGES * 2];
     int    conv_k[HS_STAGES * 2];
     float *d1_w, *d1_b, *d2_w, *d2_b;
-    int    d1_in;
+    int    d1_in, extra;
     float* data;
     // working planes: the widest stage, padded
     float *a, *b, *pad;
@@ -39,13 +42,16 @@ HS_API void* hs_net_load(const char* path)
 {
     FILE* f = fopen(path, "rb");
     if (!f) return NULL;
-    int head[3];
+    int head[4] = { 0 };
     if (fread(head, 4, 3, f) != 3
-        || (head[0] != HS_MAGIC && head[0] != HS_FIND_MAGIC)) {
+        || (head[0] != HS_MAGIC && head[0] != HS_FIND_MAGIC
+            && head[0] != HS_AUX_MAGIC)
+        || (head[0] == HS_AUX_MAGIC && fread(head + 3, 4, 1, f) != 1)) {
         fclose(f);
         return NULL;
     }
     hs_net* n = calloc(1, sizeof(hs_net));
+    n->extra = head[3];
     n->side = head[1];
     n->outputs = head[2];
     n->is_find = head[0] == HS_FIND_MAGIC;
@@ -64,7 +70,7 @@ HS_API void* hs_net_load(const char* path)
     if (n->is_find) return n;
     float* p = n->data;
     int last = n->side / 16;
-    n->d1_in = 128 * last * last;
+    n->d1_in = 128 * last * last + n->extra;
     // every conv 3x3 but the first, its size from what is left over
     long rest = 128 * n->d1_in + 128 + n->outputs * 128 + n->outputs;
     int cin = 1;
@@ -401,9 +407,20 @@ static int hs_find_run(hs_net* n, const float* pic, float* out)
     return 3;
 }
 
+static int hs_net_run_aux(void* net, const float* img,
+                          const float* aux, float* out);
+
 // a side x side picture (0..1) in, the net's outputs out; the
 // picture made mean 0, deviation 1 first, as training did
 HS_API int hs_net_run(void* net, const float* img, float* out)
+{
+    return hs_net_run_aux(net, img, NULL, out);
+}
+
+// the same with its extra numbers (aux: n->extra of them) joined to
+// the flattened stages
+static int hs_net_run_aux(void* net, const float* img,
+                          const float* aux, float* out)
 {
     hs_net* n = net;
     if (!n) return 0;
@@ -435,7 +452,10 @@ HS_API int hs_net_run(void* net, const float* img, float* out)
     for (int o = 0; o < 128; o++) {
         float        v = n->d1_b[o];
         const float* w = n->d1_w + o * n->d1_in;
-        for (int k = 0; k < n->d1_in; k++) v += w[k] * n->a[k];
+        int          flat = n->d1_in - n->extra;
+        for (int k = 0; k < flat; k++) v += w[k] * n->a[k];
+        for (int e = 0; e < n->extra; e++)
+            v += w[flat + e] * (aux ? aux[e] : 0);
         hid[o] = v > 0 ? v : 0;
     }
     for (int o = 0; o < n->outputs; o++) {
@@ -987,5 +1007,262 @@ HS_API void hs_worker_free(void* worker)
     hs_net_free(k->eye);
     free(k->frame);
     free(k->shown);
+    free(k);
+}
+
+// the hand nets (ai/HyperHands.ag): handfind.hsn, a hand and its
+// box, on the whole frame; hands.hsn, each finger's bend and the
+// spread, and point.hsn, the point on the screen the hand points
+// at, both on the finder's crop, as training's held-back pictures
+// a net's picture kept a quarter larger than its side, then made
+// its side (ai/HyperHands.ag hh_keep)
+#define HS_HAND_KEEP(side) ((side) * 5 / 4)
+#define HS_HAND_NOUT 14
+
+typedef struct {
+    void *hands, *point, *find;
+    pthread_t       thread;
+    pthread_mutex_t lock;
+    pthread_cond_t  wake;
+    unsigned char*  frame;
+    int             w, h, fresh, quit;
+    float           out[HS_HAND_NOUT];
+    int             done;
+    float           ms;
+} hs_hand;
+
+// the kept picture (HS_HAND_KEEP across) to side x side, bilinear
+// over the whole of it, as training's held-back pictures
+static void hs_hand_side(const float* keep, int side, float* pic)
+{
+    int   kp = HS_HAND_KEEP(side);
+    float step = (float)kp / side;
+    for (int py = 0; py < side; py++) {
+        float sy = (py + 0.5f) * step - 0.5f;
+        int   y0 = (int)floorf(sy);
+        if (y0 > kp - 2) y0 = kp - 2;
+        if (y0 < 0) y0 = 0;
+        float fy = fminf(fmaxf(sy - y0, 0), 1);
+        for (int px = 0; px < side; px++) {
+            float sx = (px + 0.5f) * step - 0.5f;
+            int   x0 = (int)floorf(sx);
+            if (x0 > kp - 2) x0 = kp - 2;
+            if (x0 < 0) x0 = 0;
+            float fx = fminf(fmaxf(sx - x0, 0), 1);
+            const float* a = keep + y0 * kp + x0;
+            float top = a[0] * (1 - fx) + a[1] * fx;
+            float low = a[kp] * (1 - fx) + a[kp + 1] * fx;
+            pic[py * side + px] = top * (1 - fy) + low * fy;
+        }
+    }
+}
+
+// the whole frame kept by area, then to side
+static void hs_hand_pic(const unsigned char* grey, int w, int h,
+                        int side, float* keep, float* pic)
+{
+    float* img = malloc(w * h * 4);
+    for (int k = 0; k < w * h; k++) img[k] = grey[k] / 255.0f;
+    hs_area(img, w, h, HS_HAND_KEEP(side), keep);
+    free(img);
+    hs_hand_side(keep, side, pic);
+}
+
+// the finder's crop: a square about (cx, cy) (shares of the
+// frame), sd of its width across, kp across; each pixel the mean of
+// a grid of bilinear reads covering it, the edges held, rounded to
+// grey levels as training's (ai/HyperHands.ag hp_crop)
+// its side: the box made this much larger (HP_CROP)
+#define HS_POINT_CROP 1.25f
+static double hs_grey_at(const unsigned char* g, int w, int h,
+                         double sx, double sy)
+{
+    sx = fmin(fmax(sx, 0), w - 1.001);
+    sy = fmin(fmax(sy, 0), h - 1.001);
+    int    x0 = (int)floor(sx), y0 = (int)floor(sy);
+    double fx = sx - x0, fy = sy - y0;
+    const unsigned char* a = g + y0 * w + x0;
+    double top = a[0] * (1 - fx) + a[1] * fx;
+    double low = a[w] * (1 - fx) + a[w + 1] * fx;
+    return top * (1 - fy) + low * fy;
+}
+
+static void hs_hand_crop(const unsigned char* g, int w, int h,
+                         float cx, float cy, float sd, int kp,
+                         float* keep)
+{
+    double span = (double)sd * w, px = span / kp;
+    int    n = (int)ceil(px);
+    if (n < 1) n = 1;
+    if (n > 8) n = 8;
+    for (int i = 0; i < kp; i++)
+        for (int j = 0; j < kp; j++) {
+            double sum = 0;
+            for (int a = 0; a < n; a++)
+                for (int b = 0; b < n; b++) {
+                    double sy = cy * (double)h - span / 2
+                              + (i + (a + 0.5) / n) * px - 0.5;
+                    double sx = cx * (double)w - span / 2
+                              + (j + (b + 0.5) / n) * px - 0.5;
+                    sum += hs_grey_at(g, w, h, sx, sy);
+                }
+            double v = floor(sum / (n * n) + 0.5);
+            keep[i * kp + j] = (float)(fmin(fmax(v, 0), 255) / 255.0);
+        }
+}
+
+static void* hs_hand_work(void* arg)
+{
+    hs_hand*       k = arg;
+    unsigned char* mine = NULL;
+    int            cap = 0;
+    // room for a net up to 256 across
+    float*         keep = malloc(320 * 320 * 4);
+    for (;;) {
+        pthread_mutex_lock(&k->lock);
+        while (!k->fresh && !k->quit)
+            pthread_cond_wait(&k->wake, &k->lock);
+        if (k->quit) {
+            pthread_mutex_unlock(&k->lock);
+            break;
+        }
+        int w = k->w, h = k->h;
+        if (cap < w * h) {
+            free(mine);
+            cap = w * h;
+            mine = malloc(cap);
+        }
+        memcpy(mine, k->frame, w * h);
+        k->fresh = 0;
+        pthread_mutex_unlock(&k->lock);
+        struct timespec a, b;
+        clock_gettime(CLOCK_MONOTONIC, &a);
+        float o[HS_HAND_NOUT] = { 0 }, r[16];
+        // the finder on the whole frame
+        hs_net* fn = k->find;
+        if (fn && fn->outputs == 4 && fn->side <= 256) {
+            float* pic = malloc(fn->side * fn->side * 4);
+            hs_hand_pic(mine, w, h, fn->side, keep, pic);
+            hs_net_run(fn, pic, o + 10);
+            free(pic);
+        }
+        // a hand found: the gesture and point models on its crop
+        // (the box made HS_POINT_CROP larger), point with the box
+        float box[3] = { o[11] - 0.5f, o[12] - 0.5f, o[13] };
+        o[0] = o[10];
+        int found = fn && o[10] > 0.5f && o[13] >= 0.02f;
+        hs_net* gn = k->hands;
+        hs_net* pn = k->point;
+        void* nets[2] = { gn, pn };
+        for (int i = 0; i < 2 && found; i++) {
+            hs_net* n = nets[i];
+            if (!n || n->side > 256) continue;
+            if (i == 0 && (n->outputs != 6 || n->extra)) continue;
+            if (i == 1 && (n->outputs != 2 || n->extra != 3)) continue;
+            float* pic = malloc(n->side * n->side * 4);
+            hs_hand_crop(mine, w, h, o[11], o[12],
+                         o[13] * HS_POINT_CROP,
+                         HS_HAND_KEEP(n->side), keep);
+            hs_hand_side(keep, n->side, pic);
+            hs_net_run_aux(n, pic, box, r);
+            if (i == 0) memcpy(o + 1, r, 6 * 4);
+            else {
+                o[7] = 1;
+                o[8] = r[0];
+                o[9] = r[1];
+            }
+            free(pic);
+        }
+        clock_gettime(CLOCK_MONOTONIC, &b);
+        pthread_mutex_lock(&k->lock);
+        memcpy(k->out, o, sizeof(o));
+        k->done++;
+        k->ms = (b.tv_sec - a.tv_sec) * 1e3f
+              + (b.tv_nsec - a.tv_nsec) / 1e6f;
+        pthread_mutex_unlock(&k->lock);
+    }
+    free(keep);
+    free(mine);
+    return NULL;
+}
+
+// both hand nets from a folder (models/hands); NULL with neither
+HS_API void* hs_hand_open(const char* dir)
+{
+    char p[1024];
+    snprintf(p, sizeof(p), "%s/hands.hsn", dir);
+    void* hands = hs_net_load(p);
+    snprintf(p, sizeof(p), "%s/point.hsn", dir);
+    void* point = hs_net_load(p);
+    snprintf(p, sizeof(p), "%s/handfind.hsn", dir);
+    void* find = hs_net_load(p);
+    if (!hands && !point && !find) return NULL;
+    hs_hand* k = calloc(1, sizeof(hs_hand));
+    k->hands = hands;
+    k->point = point;
+    k->find = find;
+    pthread_mutex_init(&k->lock, NULL);
+    pthread_cond_init(&k->wake, NULL);
+    pthread_create(&k->thread, NULL, hs_hand_work, k);
+    return k;
+}
+
+// which nets loaded: 1 hands, 2 point, 4 the finder
+HS_API int hs_hand_has(void* hand)
+{
+    hs_hand* k = hand;
+    if (!k) return 0;
+    return (k->hands ? 1 : 0) | (k->point ? 2 : 0) | (k->find ? 4 : 0);
+}
+
+HS_API void hs_hand_put(void* hand, const unsigned char* grey, int w,
+                        int h)
+{
+    hs_hand* k = hand;
+    if (!k || !grey) return;
+    pthread_mutex_lock(&k->lock);
+    if (k->w * k->h != w * h) {
+        free(k->frame);
+        k->frame = malloc(w * h);
+    }
+    k->w = w;
+    k->h = h;
+    memcpy(k->frame, grey, w * h);
+    k->fresh = 1;
+    pthread_cond_signal(&k->wake);
+    pthread_mutex_unlock(&k->lock);
+}
+
+// the last answer: hand (the finder's), thumb, index, middle, ring,
+// little, spread (the gesture model's, on the finder's crop);
+// the point (1 when read; x, y from the screen's middle, shares of
+// its width and height), read from the finder's crop and box; the
+// finder's hand and box
+// (middle x, y and side, shares of the frame); frames answered
+HS_API int hs_hand_get(void* hand, float* out, float* ms)
+{
+    hs_hand* k = hand;
+    if (!k) return 0;
+    pthread_mutex_lock(&k->lock);
+    memcpy(out, k->out, sizeof(k->out));
+    int n = k->done;
+    if (ms) *ms = k->ms;
+    pthread_mutex_unlock(&k->lock);
+    return n;
+}
+
+HS_API void hs_hand_free(void* hand)
+{
+    hs_hand* k = hand;
+    if (!k) return;
+    pthread_mutex_lock(&k->lock);
+    k->quit = 1;
+    pthread_cond_signal(&k->wake);
+    pthread_mutex_unlock(&k->lock);
+    pthread_join(k->thread, NULL);
+    hs_net_free(k->hands);
+    hs_net_free(k->point);
+    hs_net_free(k->find);
+    free(k->frame);
     free(k);
 }

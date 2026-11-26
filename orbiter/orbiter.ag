@@ -839,6 +839,8 @@ element orbiter : trinity # implements compiler
     # panes put out of view by their task button: kept whole (editor,
     # app, place), only not drawn; across a reload too
     persist pane_hid : vec bool
+    # the window a launch hid under each one (-1 none)
+    intern pane_under : vec i32
     # each pane's fade: 0 shown, 1 gone (eased to its hide); and its
     # place while it fades over the desktop (x y w h)
     persist pane_fade : vec f32
@@ -1674,6 +1676,8 @@ element orbiter : trinity # implements compiler
     func waits_parent [ wn: u64 ] -> bool
 
     func window_pane [] -> i32
+    func full_pane [] -> i32
+    func cover_of [ pi: i32 ] -> AppView
 
     func window_under [ pi: i32, gone: u64 ] -> u64
 

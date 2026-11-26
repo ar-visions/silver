@@ -2652,6 +2652,7 @@ AU_EXPORT int   au_capture_stdout(void); // redirect stdout/stderr to a pipe; re
 AU_EXPORT int   au_stdout_orig(void);    // dup of the real stdout saved by au_capture_stdout (-1 if not captured)
 AU_EXPORT void  au_main_args(int argc, cstrs argv); // silver-host stashes process argv for the app
 AU_EXPORT void  au_apply_args(Au a);                // parse the stashed argv into app instance `a`
+AU_EXPORT bool  au_app_as(symbol name);              // --as <name> on the launch line
 AU_EXPORT int   au_argv_stop(void);                 // argv index after the default (positional) value
 AU_EXPORT void  au_argv_launcher(bool on);          // the positional ends our flags
 AU_EXPORT cstrs au_argv(void);                      // the stashed process argv

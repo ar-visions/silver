@@ -23,11 +23,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from train import FaceNet, StageConv, normalize  # noqa: E402
 
 FRAME = 256
-FIND = 64
-SIDE = 64
+FIND = 32
+SIDE = 32
 # the eye stage's crop, and the face it is cut from (finer than
 # target's, so the eye keeps its detail)
-EYE = 64
+EYE = 32
 FACE = 128
 # the eye crop's width in sc, and its turn off level in training
 EYE_SPAN = 0.7

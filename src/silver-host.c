@@ -1238,13 +1238,6 @@ static void product_stamp_path(char* out, size_t cap, const char* product) {
     snprintf(out, cap, "%s.current", product);
 }
 
-static void product_confirm(const char* product) {
-    char st[4300];
-    product_stamp_path(st, sizeof(st), product);
-    int fd = open(st, O_WRONLY | O_CREAT | O_CLOEXEC, 0644);
-    if (fd >= 0) { futimens(fd, NULL); close(fd); }
-}
-
 static int sources_newer(const char* product, source_watch* srcs, int nsr,
                          const char** which) {
     time_t prod = file_mtime(product);       // follows the symlink to the .so
@@ -2825,32 +2818,15 @@ int main(int argc, char** argv) {
 #endif
     cd_share(bindir, name);
 
-    // up-front staleness check: only recompile when a source is actually newer
-    // than the built product. when nothing changed we skip the compile entirely
-    // and dlopen the existing .so — no rebuild on every launch.
+    // a direct launch never builds: `silver <name>` builds, then runs.
+    // a stale product is said and loaded as it is
     source_watch srcs[MAX_SOURCES];
     int nsr = 0;
     load_sources(artifacts, srcs, &nsr);
     const char* which = "";
-    if (os_booted()) {
-        if (sources_newer(product, srcs, nsr, &which))
-            fprintf(stderr, "%s: %s is newer than the product %s; "
-                "the installer builds, a launch never does\n", name, which, product);
-        else
-            fprintf(stderr, "%s: product %s current, no build at a launch\n",
-                name, product);
-    } else if (sources_newer(product, srcs, nsr, &which)) {
-        fprintf(stderr, "%s: %s is newer than the product %s: building\n",
-            name, which, product);
-        if (rebuild_blocking(name, 0) != 0) {
-            fprintf(stderr, "%s: fix the build errors above and relaunch.\n", name);
-            return 1;
-        }
-        load_sources(artifacts, srcs, &nsr);   // artifact list may have changed
-        // silver built nothing: its product is current as it stands
-        if (sources_newer(product, srcs, nsr, &which))
-            product_confirm(product);
-    }
+    if (sources_newer(product, srcs, nsr, &which))
+        fprintf(stderr, "%s: %s is newer than the product %s; a launch "
+            "never builds (silver %s does)\n", name, which, product, name);
 
     char lib[4096];
     ssize_t n = readlink(product, lib, sizeof(lib) - 1);

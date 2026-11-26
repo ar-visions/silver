@@ -1,0 +1,155 @@
+extend hyperspace
+
+import <stdio.h>
+import <time.h>
+
+# the folders a recording saves into
+func hs_rec_folders [] -> vec string
+    return vec string [] [ 'gaze', 'records', 'negatives', 'hands' ]
+
+# one recording: its captures' file stems (time in ms) in a folder
+class HsSession
+    public folder : string
+    public id     : string
+    public kind   : string
+    public stems  : vec string
+    public first  : i64
+    public last   : i64
+
+# a time as Nov 22 20:14
+func hs_when [ ms: i64 ] -> string
+    t : i64 [ ms / 1000 ]
+    tm : struct tm
+    localtime_r[ @t, @tm ]
+    b : local i8 [ 64 ]
+    strftime[ @b[0], 64, '%b %d %H:%M'.chars, @tm ]
+    return string[ @b[0] ]
+
+# a value after 'key=' in a capture's words, '' none
+func hs_word [ tx: string, key: string ] -> string
+    at : i32 [ i32[ tx.index_of[ ' {key}=' ] ] ]
+    if [ at < 0 ] return ''
+    from : i32 [ at + i32[ key.count ] + 2 ]
+    rest : string tx.mid[ from, tx.count - from ]
+    sp : i32 [ i32[ rest.index_of[ ' ' ] ] ]
+    return (sp >= 0) ? rest.mid[ 0, sp ] : rest
+
+# every recording in the app's folders, newest first; gaze's kind is
+# edges when every capture's dot sat at the screen's rim
+func hs_sessions [] -> vec HsSession
+    out : vec HsSession []
+    for [ sub: string ] in hs_rec_folders[]
+        d : path '{hs_dir[]}/{sub}'
+        if [ !d.exists[] ] continue
+        by : map HsSession [ string ] []
+        rims : map i64 [ string ] []
+        for [ f: path ] in d.ls[ null, false ]
+            if [ f.ext[] != 'agi' ] continue
+            tx : string f.load[ typeid[ string ], null ]
+            if [ !tx ] continue
+            id : string hs_word[ tx, 'session' ]
+            if [ id.count == 0 ] id = '-'
+            stem : string f.stem[]
+            ms : i64 [ stem.integer_value[] ]
+            s : HsSession [ (by.contains[ id ]) ? by[ id ] : null ]
+            if [ !s ]
+                s = HsSession [ folder: sub, id: id,
+                                stems: vec string [], first: ms,
+                                last: ms ]
+                by[ id ] = s
+                rims[ id ] = 0
+            s.stems.push[ stem ]
+            if [ ms < s.first ] s.first = ms
+            if [ ms > s.last ] s.last = ms
+            x : f64 hs_word[ tx, 'target_x' ].real_value[]
+            y : f64 hs_word[ tx, 'target_y' ].real_value[]
+            rim : f64 [ min[ min[ x, 1.0 - x ], min[ y, 1.0 - y ] ] ]
+            if [ rim >= 0.0 && rim < 0.03 ] rims[ id ] = rims[ id ] + 1
+        for [ s: HsSession, id: string ] in by
+            s.kind = sub
+            if [ sub == 'gaze' ]
+                s.kind = (rims[ id ] == i64[ s.stems.count ])
+                    ? 'edges' : 'gaze'
+            out.push[ s ]
+    # newest first
+    for [ i: i32 1, i < i32[ out.count ], i += 1 ]
+        for [ j: i32 i, j > 0 && out[ j ].first > out[ j - 1 ].first,
+              j -= 1 ]
+            t : HsSession out[ j ]
+            out[ j ] = out[ j - 1 ]
+            out[ j - 1 ] = t
+    return out
+
+# a recording moved into the app's trash folder, its pictures too
+func hs_session_trash [ s: HsSession ]
+    top : path '{hs_dir[]}/trash'
+    if [ !top.exists[] ] top.make_dir[]
+    to : path '{top}/{s.folder}'
+    if [ !to.exists[] ] to.make_dir[]
+    for [ stem: string ] in s.stems
+        for [ end: string ] in vec string [] [ '.agi', '-camera0.png',
+                                              '-camera1.png' ]
+            a : string '{hs_dir[]}/{s.folder}/{stem}{end}'
+            b : string '{to}/{stem}{end}'
+            rename[ a.chars, b.chars ]
+
+# the trash's captures, and it emptied
+func hs_trash_count [] -> i64
+    n : i64 [ 0 ]
+    for [ sub: string ] in hs_rec_folders[]
+        d : path '{hs_dir[]}/trash/{sub}'
+        if [ !d.exists[] ] continue
+        for [ f: path ] in d.ls[ null, false ]
+            if [ f.ext[] == 'agi' ] n += 1
+    return n
+
+func hs_trash_empty []
+    d : string '{hs_dir[]}/trash'
+    run : command { rm -rf "{d}" }
+    run.exec[ false ]
+
+# a recording's row: when, kind, captures, length
+element RecRow
+    public s : HsSession
+
+    func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds || !s ] return
+        cv : Canvas w.screen
+        cv.fill_color[ rgba [ (hovered) ? '#ffffff10' : '#ffffff06' ] ]
+        cv.rect_to[ 0.0, 0.0, bounds.w, bounds.h ]
+        cv.paint[]
+        secs : i64 [ (s.last - s.first) / 1000 ]
+        pad : string [ (secs % 60 < 10) ? '0' : '' ]
+        len : string '{secs / 60}:{pad}{secs % 60}'
+        tx : string '{hs_when[ s.first ]}      {s.kind}      '
+            + '{s.stems.count} captures      {len}'
+        hs_text[ cv, tx, 12.0, 4.0, bounds.w - 24.0, bounds.h - 8.0,
+            18.0, '#e4e4ea' ]
+
+# a row's Delete: shown while ctrl / cmd is held, so its press claims
+# the modifier click (trinity's style inspector takes it otherwise)
+PageButton RecDelete
+    func on_press [ ev: Event ]
+        super.on_press[ ev ]
+        ev.no_default = true
+
+# a model moved into the trash, its time in its name (one per
+# delete); the testbed then says it is missing
+func hs_model_trash [ name: string ]
+    top : path '{hs_dir[]}/trash'
+    if [ !top.exists[] ] top.make_dir[]
+    to : path '{top}/models'
+    if [ !to.exists[] ] to.make_dir[]
+    a : string '{hs_models[]}/{name}'
+    b : string '{to}/{Au.epoch_millis[]}-{name}'
+    rename[ a.chars, b.chars ]
+
+# the gaze job's result: its log's line on the captures it never
+# trained on, '' none
+func hs_gaze_result [] -> string
+    lf : path '{hs_jobs_dir[]}/gaze.log'
+    tx : string lf.load[ typeid[ string ], null ]
+    if [ !tx ] return ''
+    for [ ln: string ] in tx.split[ '\n' ]
+        if [ ln.starts_with[ 'never trained on (' ] ] return ln
+    return ''
