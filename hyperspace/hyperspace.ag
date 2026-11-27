@@ -1,5 +1,6 @@
 export software ['developer']
-export startup ['hyperspace']
+# a service: the gaze on, for every app that says export gaze
+export serves ['--view gaze']
 export panels ['HyperspacePanel']
 export menus ['HyperspaceApps']
 export contains ['.local/state/hyperspace']
@@ -17,6 +18,8 @@ import vec
 import img
 import trinity
 import devices
+ifndef [ windows ]
+    import <signal.h>
 import tray
 
 import Mounts
@@ -104,7 +107,8 @@ element hyperspace : trinity
     height : i32 [ 360 ]
     public title : string [ 'hyperspace' ]
     public [ Launch ] cameras : string [ '/dev/video0' ]
-    # record (the dot), testbed (the cameras), training or annotate
+    # record (the dot), testbed (the cameras), training, annotate,
+    # or gaze (the service: no picture, the gaze sent to orbiter)
     public [ Launch ] view : string [ 'testbed' ]
     # record's folder: records (the eye nets' data) or gaze
     public [ Launch ] into : string [ 'records' ]
@@ -113,6 +117,13 @@ element hyperspace : trinity
     public [ Launch ] route : string [ 'grid' ]
     # orbiter's socket (it runs the training jobs for this app)
     public [ Launch ] opener : string
+    # the app that started this one for itself (its pid): when it
+    # ends, so does this
+    public [ Launch ] owner : i32
+    intern owner_seen : i64
+    # other apps alone using this one ('join <pid> <socket>'): each
+    # gets the gaze; it ends once the owner and all of them have
+    intern joined : vec string
     intern devices : vec string
     intern rig : HsRig
     intern command_at : i64
@@ -183,6 +194,13 @@ element hyperspace : trinity
     intern aim_x : f32
     intern aim_y : f32
     intern aim_until : i64
+    # the gaze as last sent ('x y', 'none'), and when
+    intern gaze_sent : string
+    intern gaze_sent_at : i64
+    # when sends to the opener began failing (ms), 0 while they work
+    intern gaze_lost_at : i64
+    # the head's answer last sent (its count)
+    intern head_sent : i32
 
     func ann_dir [] -> path
         d : path '{hs_dir[]}/annotate'
@@ -252,12 +270,14 @@ element hyperspace : trinity
         rig = next
         devices = vec string []
         for [ mount: HsMount ] in rig.mounts
-            devices.push[ mount.device ]
+            devices.push[ hs_camera_node[ mount.device ] ]
         pristine = false
         if [ ux ] ux.restyle = true
 
     func init []
         animated = true
+        # seen by no one, its cameras still need every frame
+        if [ view == 'gaze' ] unseen_full_rate = true
         rig_use[ hs_rig_load[ cameras ] ]
         file : path '{hs_dir[]}/mounts.agi'
         if [ file.exists[] ] rig_at = file.modified_time[]
@@ -335,9 +355,16 @@ element hyperspace : trinity
         pending = null
 
     func on_frame [ w: Window ]
+        owner_check[]
         rig_poll[]
         command_poll[]
         if [ view == 'record' ] record_step[]
+        if [ view == 'gaze' && hub ]
+            hub.step[]
+            hub.ease[ w.frame_factor ]
+            if [ hub.has ] gaze_send[ '{hub.x} {hub.y}' ]
+            el gaze_send[ 'none' ]
+            head_send[]
         all_step[]
         # record takes the whole screen while its dot runs, the
         # testbed always (its dot plotted as record's is)
@@ -750,6 +777,7 @@ element hyperspace : trinity
         hub.step[]
         hub.ease[ w.frame_factor ]
         if [ hub.missing ]
+            gaze_send[ 'none' ]
             hs_text[ cv, 'no gaze model: train gaze', 20.0,
                 16.0, 600.0, 24.0, 17.0, '#ffffff80' ]
             return
@@ -759,7 +787,10 @@ element hyperspace : trinity
         if [ aiming ]
             gx = aim_x
             gy = aim_y
-        el [ !hub.has ] return
+        el [ !hub.has ]
+            gaze_send[ 'none' ]
+            return
+        gaze_send[ '{gx} {gy}' ]
         x : f32 [ floor[ (gx + 0.5) * bounds.w ] ]
         y : f32 [ floor[ (gy + 0.5) * bounds.h ] ]
         if [ x < 0.0 || y < 0.0 || x > bounds.w || y > bounds.h ] return
@@ -769,6 +800,86 @@ element hyperspace : trinity
         cv.fill_color[ rgba [ '#ffffff' ] ]
         cv.arc[ x, y, 5.0, 0.0, 6.2832 ]
         cv.paint[]
+
+    # another app alone uses this one: 'join <pid> <its socket>'
+    public func on_agent [ s: string ]
+        ws : vec string s.trim[].split[ ' ' ]
+        if [ ws.count < 3 || ws[ 0 ] != 'join' ] return
+        jn : string '{ws[ 1 ]} {ws[ 2 ]}'
+        if [ !joined ] joined = vec string []
+        if [ joined.index_of[ jn ] >= 0 ] return
+        joined.push[ jn ]
+        gaze_sent = null
+        log 'hyperspace: {ws[ 1 ]} joined ({ws[ 2 ]})'
+
+    # the apps using this one gone (checked each second): the
+    # cameras go with the last of them
+    func owner_check []
+        if [ owner <= 0 ] return
+        now : i64 epoch_millis[]
+        if [ now - owner_seen < 1000 ] return
+        owner_seen = now
+        ifndef [ windows ]
+            keep : vec string []
+            if [ joined ]
+                for [ jn: string ] in joined
+                    jw : vec string jn.split[ ' ' ]
+                    pw : string jw[ 0 ]
+                    pid : i32 [ i32[ pw.integer_value[] ] ]
+                    if [ kill[ pid, 0 ] == 0 ] keep.push[ jn ]
+            joined = keep
+            if [ kill[ owner, 0 ] != 0 && keep.count == 0 ]
+                log 'hyperspace: its apps ended: so does this'
+                exit[ 0 ]
+
+    # a line to each app that joined
+    func joined_send [ ln: string ]
+        if [ !joined ] return
+        for [ jn: string ] in joined
+            ws : vec string jn.split[ ' ' ]
+            if [ ws.count >= 2 ] agent_path_send[ ws[ 1 ].chars, ln.chars ]
+
+    # the gaze to the opener ('x y' from the monitor's middle in
+    # -0.5..0.5, or 'none'): orbiter hands it on to the apps that take
+    # it; an app that started this one alone takes it itself. Sent on
+    # a change, again every 2 s; the gaze service ends when no one is
+    # there to take it
+    func gaze_send [ words: string ]
+        if [ !opener || opener.count == 0 ] return
+        now : i64 epoch_millis[]
+        if [ gaze_sent && gaze_sent == words
+             && now - gaze_sent_at < 2000 ] return
+        gaze_sent = words
+        gaze_sent_at = now
+        ln : string 'app system hyperspace {hs_slot[]} gaze {words}\n'
+        joined_send[ ln ]
+        if [ agent_path_send[ opener.chars, ln.chars ] != 0 ]
+            gaze_lost_at = 0
+            return
+        # a busy opener refuses a send now and then: wait it out
+        gaze_sent = null
+        if [ gaze_lost_at == 0 ] gaze_lost_at = now
+        # gone: 3 s with its socket's file gone, else a minute (one
+        # still loading refuses for a while; a stale file stays)
+        op : path [ opener ]
+        wait : i64 [ (op.exists[]) ? 60000 : 3000 ]
+        # an owner's end is owner_check's: others may still use it
+        if [ view == 'gaze' && hs_slot[] <= 0 && owner <= 0
+             && now - gaze_lost_at > wait ]
+            log 'hyperspace: {opener} is gone: the gaze ends'
+            exit[ 0 ]
+
+    # the head's place from the top camera ('x y gap', each answer
+    # once): orbiter hands it on to the apps that say export head
+    func head_send []
+        if [ !opener || opener.count == 0 ] return
+        ev : EyeView [ cast EyeView [ camera_view[ 0 ] ] ]
+        if [ !ev || ev.head_seen == head_sent ] return
+        head_sent = ev.head_seen
+        ln : string 'app system hyperspace {hs_slot[]} head '
+            + '{ev.head_x} {ev.head_y} {ev.head_gap}\n'
+        joined_send[ ln ]
+        agent_path_send[ opener.chars, ln.chars ]
 
     # where the hand points (the bottom camera's point model), a
     # yellow dot on the screen
@@ -832,10 +943,12 @@ element hyperspace : trinity
         if [ view == 'annotate' || view == 'handbox'
              || (view == 'record' && done) ]
             return e
-        # record takes the frames but shows none
+        # record takes the frames but shows none; the service finds
+        # the eyes and shows nothing
         show : bool [ view == 'testbed' ]
+        eyes : bool [ show || view == 'gaze' ]
         n : i32 [ max[ i32[ devices.count ], 1 ] ]
-        if [ show && !hub ] hub = GazeHub []
+        if [ eyes && !hub ] hub = GazeHub []
         for [ i: i32 0, i < devices.count, i += 1 ]
             # the testbed's cameras: side by side in the screen's
             # lower right quarter's corner, a quarter wide and high
@@ -844,10 +957,10 @@ element hyperspace : trinity
             ar : string [ (show) ? 'l{l}% t75% r{r}% b0'
                                  : 'l0 t0 w1 h1' ]
             # the testbed's cameras find the eyes as they run
-            if [ show ]
+            if [ eyes ]
                 e[ 'camera{i}' ] = EyeView [ device: devices[ i ],
                     animated: true, area: Region [ ar ], hub: hub,
-                    slot: i ]
+                    slot: i, paint_off: !show ]
             el
                 e[ 'camera{i}' ] = CameraView [
                     device: devices[ i ], animated: true,
@@ -1186,15 +1299,11 @@ element hyperspace : trinity
             el hs_job_go[ jn, opener ]
             if [ ux ] ux.restyle = true
 
-# the base models (find, target) from Microsoft's FaceSynthetics:
-# rendered faces at every angle, the pupils labelled (non-commercial
-# research licence), at the build; again only when this module
-# changes. training starts from them (install/share/silver-hyperspace
-# /base)
-export func hs_base_model []
-    ip : path path.path_install[]
-    ins : string '{ip.absolute[]}'
-    out : string '{ins}/share/silver-hyperspace/base'
+# Microsoft's FaceSynthetics (rendered faces at every angle, the
+# pupils labelled; non-commercial research licence), fetched and
+# unpacked once where hytrain's eye training reads it; the training
+# itself is hytrain's (the eyes job)
+export func hs_faces []
     cache : path path.path_cache[ 'hyperspace' ]
     if [ !cache.exists[] ] cache.make_dir[]
     site : 'https://facesyntheticspubwedata.z6.web.core.windows.net'
@@ -1208,12 +1317,14 @@ export func hs_base_model []
         if [ get.exec[ false ] != 0 ]
             log 'hyperspace: FaceSynthetics part {n} did not download'
             return
-    run : command {
-        python3 "{ins}/../hyperspace/train_eyes.py"
-            --faces "{cache}/facesynth.zip" --out "{out}"
+    open : command {
+        test -d "{cache}/facesynth/dataset_100000" || (
+            cat "{cache}"/facesynth.00? > "{cache}/facesynth.zip"
+            && unzip -q -o "{cache}/facesynth.zip"
+                -d "{cache}/facesynth")
     }
-    if [ run.exec[ false ] != 0 ]
-        log 'hyperspace: the base model did not build'
+    if [ open.exec[ false ] != 0 ]
+        log 'hyperspace: FaceSynthetics did not unpack'
 
 # the views, each one launchable: the app on its own props
 hyperspace HsRecord

@@ -405,6 +405,54 @@ subsurface scattering. Cyan and lavender come only from lights.
    do not open a second camera or run a second eye pipeline.
 9. OPEN start Star Reader full-screen. Escape returns it to its normal
    window and does not make it enter full-screen again.
+10. DONE (Nov 26) cmd+shift+0 kills star-reader and orbiter:
+   support/kill-watch.sh reads X raw keys (works under a grab),
+   started at login by ~/.config/autostart/kill-watch.desktop.
+12. DONE (Nov 26) each burst plays boom.wav, the finale swell.wav
+   (star-reader/sounds, his picks 9 and 7) through spectra.
+13. DONE (Nov 26: keep answering before the words come back)
+   each star has its own run (said, shook, heard; star_time):
+   the star looked at while a voice goes on stays up until its
+   words come; whisper takes each spoken take in turn (speech
+   segs, next_take) and the words go to the star looked at as
+   they began. Twelve label pairs, six sparks a star. Checked
+   hidden: four answers spoken back to back, each its own star,
+   all turned and burst. The test feed now plays at a mic's pace.
+14. DONE (Nov 26) all twelve answered: the twelve stars spiral
+   into the middle (2.2 s), star 0 grows into one big star with
+   the score on it, the burst sound, then the time and percent
+   right under it; after 14 s a new round. Score = 1000 x right
+   share (12 / (12 + wrong)) x min(1, 60 s / round time). The
+   fonts: digits in Math, words in Title (neither has both).
+   Checked hidden (a temporary all-won switch, removed).
+11. OPEN launched from orbiter, star-reader locks the machine:
+   orbiter hands it the whole screen ("star-reader on the
+   screen", ScreenOut) and its slot log stays empty.
+15. DONE (Nov 26) the problem moved up the canvas y axis: the Math
+   font ascent is 940 units, and the label draw offset is -4.5
+   pixels. Its visible center is 9.5 pixels below the star silhouette
+   center; the approved picture's is about 10 pixels below it.
+16. DONE (Nov 26) the Title font's lowercase `i` crop now includes
+   its dot. The installed glyph has two contours and spans 727 font
+   units on the y axis. Checked in the installed font.
+17. DONE (Nov 26) the mistaken 3-pixel Math x-axis shift was removed
+   after the user clarified that the needed movement was vertical.
+18. DONE (Nov 26) every lowercase Title glyph moved up 20 font
+   units on the y axis, about 1.1 pixels at the app's 56-pixel title
+   size. Uppercase letters and Math glyphs did not move. The installed
+   font sample and module build pass.
+19. DONE (Nov 26) the lowercase `i` and `j` are traced from isolated
+   source components, so their overlapping source boxes cannot copy
+   a neighbor's edge. Both installed glyphs have two contours: one
+   stem and one dot. Checked in a large installed-font `hijkl` sample.
+20. DONE (Nov 27) the interactive kerning proof lays out every
+   Title pair in lower/lower, upper/upper and both mixed directions,
+   plus every Math pair. A selected pair nudges from -160 to +160
+   font units and sends the collected values back for application.
+21. DONE (Nov 27) the 24 supplied lowercase-to-`j` Title kerning
+   values are in the font's `kern` table. The installed font has
+   all 24 exact values; at 200 pixels `aj`, `fj`, and `wj` close by
+   14, 29, and 26 pixels. The Math font stays unchanged.
 
 ---
 
@@ -17673,5 +17721,38 @@ not the synthetic 3D face.
    c. DONE hytrain trains everything (--all: eyes, gaze, hand
       finder, hands, point, each its own process, the host's
       channel variables unset so each really starts).
-   d. OPEN the base models (hs_base_model, hyperspace.ag) still
-      build by train_eyes.py: the last python in the training.
+   d. DONE (Nov 26) no python at the build: hs_base_model (it
+      ran train_eyes.py into a base folder nothing read) is now
+      hs_faces, which only fetches and unpacks FaceSynthetics where
+      hytrain's eyes job reads it.
+14. OPEN (Nov 26) facial expressions: per-muscle values (FACS
+   action units or ARKit's 52 blendshapes), not emotion names.
+   Public sets are near frontal; our cameras sit ~20 degrees off
+   and below, so they are a warm start at most. Order:
+   a. OPEN a lower-face crop beside the eye crops (mouth, cheeks).
+   b. OPEN a guided capture in testbed: the screen shows a target
+      expression, the user copies it for a few seconds, both
+      cameras record; about 200 takes (muscles alone and paired).
+   c. OPEN labels: the target shown, plus a teacher (MediaPipe's
+      blendshape model, Apache 2.0) on the more frontal camera;
+      the same label goes to the other camera's frame at that
+      instant, so the side view gets labels it cannot read itself.
+   d. OPEN the warm start: DISFA / BP4D action units (research
+      only: never shipped), IR look augmentation as the eyes have.
+   e. OPEN train on hytrain; test on takes never trained on.
+15. BUILT (Nov 26) the head moves the F-14's seat eye, centred on
+   where it starts; no new model, no calibration. The gaze service
+   reads the top camera's (slot 0) outer corners each answer and
+   sends `head x y gap` (shares of the frame); orbiter hands it as
+   `set head x y gap` to apps that say `export head` (gaze_forward
+   takes the prop now). flightsim: the first 30 answers are the
+   rest (H takes it again); pinhole from a 0.6 m rest: forward =
+   0.6 - 0.6 x gap0 / gap (-0.25..0.30 m), side and up from the
+   middle's move at that distance (+-0.3, +-0.15 m), eased 0.5;
+   both seats, not arcade. Seen hidden with answers fed by the
+   socket: forward closer to the HUD, the user's right moves the
+   eye right. NOT seen with the real camera (the gaze service on).
+   Alone (not in orbiter) flightsim starts its own hyperspace gaze
+   service, its socket the opener, as Star Reader does (head_on,
+   on_agent); seen live: answers reached his running flightsim.
+   OPEN: a turned head shortens the gap (reads as farther).

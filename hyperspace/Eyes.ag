@@ -137,6 +137,13 @@ CameraView EyeView
     public pt_on : bool
     public pt_x : f32
     public pt_y : f32
+    # the head (the top camera): the outer corners' midpoint from
+    # the frame's middle (shares of its width, height), their gap
+    # (a share of its width), and the answer it came from
+    public head_x : f32
+    public head_y : f32
+    public head_gap : f32
+    public head_seen : i32
 
     func dealloc []
         if [ worker ] hs_worker_free[ worker ]
@@ -156,7 +163,11 @@ CameraView EyeView
             rect [ x: 0.0, y: 0.0, w: f32[ camera.width ],
                    h: f32[ camera.height ] ]
         camera.update[]
-        if [ paint_off ] return
+        # the service: the eyes found, nothing drawn
+        if [ paint_off ]
+            if [ (hub && hub.reads[ slot ]) || slot == 0 ] feed[]
+            if [ slot == 0 ] head_read[]
+            return
         cv : Canvas w.screen
         full : rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ]
         # the eyes only on a camera the gaze reads; the hands on the
@@ -237,7 +248,9 @@ CameraView EyeView
 
     # the eye nets: fed each new frame, the eyes drawn over the frame
     # their answer came from
-    func eyes_draw [ cv: Canvas, full: rect ]
+    # the worker made once; each new lit frame goes to it (false:
+    # no models)
+    func feed [] -> bool
         if [ !tried ]
             tried = true
             dir : string '{hs_models[]}'
@@ -245,20 +258,42 @@ CameraView EyeView
             found = vec f32 []
             for [ i: i32 0, i < 11, i += 1 ]
                 found.push[ 0.0 ]
-        if [ !worker ]
-            cv.draw_image[ camera.image, full ]
-            cv.paint[]
-            hs_text[ cv, 'no models in {hs_models[]}', 12.0, 8.0,
-                bounds.w, 20.0, 14.0, '#ffffffa0' ]
-            return
+        if [ !worker ] return false
         if [ hub ] hub.put[ slot, worker ]
-        # only a new lit frame goes to the worker
         if [ camera.taken != taken_at ]
             taken_at = camera.taken
             img : Image frame_image[]
             if [ img ]
                 px : @u8 img.vdata[]
                 hs_worker_put[ worker, px, camera.width, camera.height ]
+        return true
+
+    # the worker's newest corners as the head's place (service only:
+    # eyes_draw reads the answer itself)
+    func head_read []
+        if [ !worker ] return
+        cw : i32 camera.width
+        chh : i32 camera.height
+        if [ !grey || grey.count != cw * chh ]
+            grey = vec u8 [ cw * chh ]
+        ms : f32 [ 0.0 ]
+        n : i32 hs_worker_get[ worker, @found[ 0 ], @ms, @grey[ 0 ], cw,
+                               chh ]
+        if [ n == 0 || n == head_seen ] return
+        head_seen = n
+        dx : f32 [ found[ 5 ] - found[ 3 ] ]
+        dy : f32 [ found[ 6 ] - found[ 4 ] ]
+        head_x = (found[ 3 ] + found[ 5 ]) / 2.0 / f32[ cw ] - 0.5
+        head_y = (found[ 4 ] + found[ 6 ]) / 2.0 / f32[ chh ] - 0.5
+        head_gap = sqrt[ dx * dx + dy * dy ] / f32[ cw ]
+
+    func eyes_draw [ cv: Canvas, full: rect ]
+        if [ !feed[] ]
+            cv.draw_image[ camera.image, full ]
+            cv.paint[]
+            hs_text[ cv, 'no models in {hs_models[]}', 12.0, 8.0,
+                bounds.w, 20.0, 14.0, '#ffffffa0' ]
+            return
         cw : i32 camera.width
         chh : i32 camera.height
         if [ !grey || grey.count != cw * chh ]

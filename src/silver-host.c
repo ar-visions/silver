@@ -2606,6 +2606,18 @@ int main(int argc, char** argv) {
         return view_share(argc, argv);
 #endif
     init_as_pid1();
+#if defined(__linux__)
+    // an app's own launch inherits its child marks: not our child
+    if (getenv(ISOLATE_CHILD_ENV)) {
+        const char* sv = getenv("SILVER_SUPERVISOR");
+        int svp = sv ? atoi(sv) : 0;
+        if (svp > 0 && getppid() != svp && kill(svp, 0) == 0) {
+            unsetenv(ISOLATE_CHILD_ENV);
+            unsetenv("SILVER_SUPERVISOR");
+            unsetenv("SILVER_SHM_FD");
+        }
+    }
+#endif
 #ifndef _WIN32
     // the nvidia driver opens a /dev/nvidia fd per GPU allocation: a reload's
     // init spike passes the 1024 soft limit, so run at the hard limit

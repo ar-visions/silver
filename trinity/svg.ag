@@ -205,6 +205,8 @@ class SVGModel
         ]
         if [ !shapes ] shapes = vec SVGShape []
         el             shapes.clear[]
+        # the <svg> element's own fill, stroke ...: its shapes inherit
+        st = svg_resolve_state[ svg_node, st ]
         svg_walk[ shapes, svg_node.children, xf, st, '', '',
                   'sans-serif' ]
         # each shape's own filter: its gaussian, in page units

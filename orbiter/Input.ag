@@ -2437,6 +2437,7 @@ func orbiter.text_settings [] -> vec Prop
 
 func orbiter.on_frame [ w: Window ]
     open_pending[]
+    service_asks_tick[]
     software_sync[]
     tab_hold_frame[]
     carry_frame[]

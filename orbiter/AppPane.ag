@@ -122,7 +122,11 @@ element AppPane
     public func on_frame [ w: Window ]
         if [ w.pause_for != a ] return
         v : av[]
-        if [ v && v.want_full && !v.ended && screen && !screen.shut[] ]
+        # Escape always takes it off the screen, whatever the app
+        # does with keys: no app holds the whole screen against you
+        if [ screen && screen_escape[] ] screen_off = true
+        if [ v && v.want_full && !v.ended && screen && !screen.shut[]
+             && !screen_off ]
             screen.keep_front[]
             # the app takes the screen's size
             v.vw = f32[ screen.width ]
@@ -143,6 +147,13 @@ element AppPane
             log 'orbiter: {(v) ? v.app_mod : ''} left the screen'
         w.pause_for = null
         w.restyle = true
+
+    # an Escape pressed on the screen window
+    func screen_escape [] -> bool
+        for [ e: ScreenEvent ] in screen.events
+            if [ e.kind == 1 && e.code == 256 && e.state == 1 ]
+                return true
+        return false
 
     # the screen window's events to the app, in its points: the
     # picture is fitted to the screen as show draws it

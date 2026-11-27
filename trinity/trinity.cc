@@ -263,14 +263,14 @@ HOST_API int agent_path_send(const char* path, const char* line) {
 // one complete line per call (newline stripped); 0 = nothing pending
 HOST_API int agent_sock_line(char* out, int cap) {
     if (g_agent_srv < 0 || !out || cap < 2) return 0;
-    if (g_agent_cli < 0) {
-        g_agent_cli = accept(g_agent_srv, 0, 0);
-        if (g_agent_cli < 0) return 0;
-        fcntl(g_agent_cli, F_SETFL, fcntl(g_agent_cli, F_GETFL, 0) | O_NONBLOCK);
-        fcntl(g_agent_cli, F_SETFD, FD_CLOEXEC);
-        g_agent_len = 0;
-    }
     for (;;) {
+        if (g_agent_cli < 0) {
+            g_agent_cli = accept(g_agent_srv, 0, 0);
+            if (g_agent_cli < 0) return 0;
+            fcntl(g_agent_cli, F_SETFL, fcntl(g_agent_cli, F_GETFL, 0) | O_NONBLOCK);
+            fcntl(g_agent_cli, F_SETFD, FD_CLOEXEC);
+            g_agent_len = 0;
+        }
         for (int i = 0; i < g_agent_len; i++) {
             if (g_agent_buf[i] != '\n') continue;
             int n = (i < cap - 1) ? i : cap - 1;
@@ -284,12 +284,11 @@ HOST_API int agent_sock_line(char* out, int cap) {
         if (room <= 0) { g_agent_len = 0; return 0; }
         int r = (int)recv(g_agent_cli, g_agent_buf + g_agent_len, room, 0);
         if (r > 0) { g_agent_len += r; continue; }
-        if (r == 0 || (errno != EAGAIN && errno != EWOULDBLOCK)) {
-            close(g_agent_cli);
-            g_agent_cli = -1;
-            g_agent_len = 0;
-        }
-        return 0;
+        if (r < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return 0;
+        // a sender gone: take the next one waiting, in this same call
+        close(g_agent_cli);
+        g_agent_cli = -1;
+        g_agent_len = 0;
     }
 }
 

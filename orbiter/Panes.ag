@@ -61,6 +61,12 @@ BlurGround CodeBlur
         ev : cast EditorView [ parent ]
         if [ !ev ] return
         nav : bool [ ev.browse_active[] ]
+        # the navigator app shown in it: the frost too
+        orb : cast orbiter [ (ev.ux) ? ev.ux.app_object : null ]
+        pi : i32 ev.pane_index
+        if [ !nav && orb && pi >= 0 && orb.pane_live[ pi ] ]
+            av : AppView orb.pane_av[ pi ]
+            nav = av && !av.ended && av.app_mod == 'navigator'
         if [ !nav && (ev.is_console || ev.is_empty) ] return
         stage = (nav) ? BlurStage.frost : BlurStage.blur
         round = (ev.free) ? 8.0 : 0.0
@@ -711,7 +717,8 @@ element EditorView
             pristine = false
             if [ ux ] ux.restyle = true
         # browsing keeps the ground: only a bare new tab is clear
-        emp : bool [ !is_con && !file[] && !browse_active[] ]
+        emp : bool [ !is_con && !file[] && !browse_active[]
+            && !o.pane_live[ pane_index ] ]
         if [ is_empty != emp ]
             is_empty = emp
             pristine = false
@@ -1515,11 +1522,14 @@ Layer WinGroundLayer
         sw : f32 [ f32[ w.width ] ]
         sh : f32 [ f32[ w.height ] ]
         if [ sw <= 0.0 || sh <= 0.0 ] return
+        wg : cast WinGround [ parent ]
         cv.save[]
         # the window's corners
         cv.clip_rounded_rect[ 0.0, 0.0, bounds.w, bounds.h, 8.0, 8.0,
                               8.0, 8.0 ]
-        if [ w.frost_eff[] == 3 || !w.backdrop ]
+        if [ wg && wg.frosted ]
+            w.draw_blur[ cv, parent, BlurStage.frost ]
+        el [ w.frost_eff[] == 3 || !w.backdrop ]
             cv.fill_color[ w.solid_color ]
             cv.rect_to[ 0.0, 0.0, bounds.w, bounds.h ]
             cv.paint[]
@@ -1541,6 +1551,8 @@ Layer WinGroundLayer
 
 element WinGround
     ghost : true
+    # the navigator in it: the frost, as its overlay has
+    public frosted : bool
     public ground : WinGroundLayer []
 
 # a free window's shadow: under it, 24 px out each way
@@ -2428,7 +2440,7 @@ func orbiter.pane_views [] -> Elements
                          && pane_console[ i ].count > 0)
             && !(file_slot >= 0 && file_slot < open_files.count
                  && open_files[ file_slot ])
-            && !pane_browsing[ i ] ]
+            && !pane_browsing[ i ] && !pane_live[ i ] ]
         ev : EditorView [ pane_index: i, free: false,
             selected: (search_pane[] == 'pane{i}'), is_empty: empty ]
         # said every render, shown or not: a mounted pane keeps a
@@ -2491,7 +2503,9 @@ func orbiter.pane_views [] -> Elements
                     'l{sx}px t{sy}px w{sw}px h{shh}px' ] ]
             # its piece of the screen's ground, as a docked pane
             # has under it
+            gv : AppView (pane_live[ i ]) ? pane_av[ i ] : null
             t['ground{i}'] = WinGround [ topmost: true, hide: out,
+                frosted: gv && !gv.ended && gv.app_mod == 'navigator',
                 animated: fo > 0.0,
                 opacity: seen * (1.0 - fo) * (1.0 - fo),
                 blur_px: fo * (2.0 - fo) * 36.0,

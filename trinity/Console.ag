@@ -17,14 +17,12 @@ struct TermCell
     bg   : i32 [ -1 ]
     attr : i32 [ 0 ]
 
-# the shell's history kept at each command, and a blank line
-# before its prompt when a command ran since the last one; first
-# the end mark (OSC 133 D) with its exit code and command
+# the shell's history kept at each command, and the end mark
+# (OSC 133 D) with its exit code and command
 PROMPT_GAP : string [ '__e=$?; history -a; '
     + '__h=$(HISTTIMEFORMAT= history 1); __c=; '
     + '[ "$__h" != "$__p" ] && __c=$(sed "s/^ *[0-9]* *//" <<<"$__h"); '
-    + 'printf "\\033]133;D;%s;%s\\007" "$__e" "$__c"; '
-    + '[ -n "$__p" ] && [ "$__h" != "$__p" ] && echo; __p=$__h' ]
+    + 'printf "\\033]133;D;%s;%s\\007" "$__e" "$__c"; __p=$__h' ]
 
 # one command the shell ran: its line, exit code, output, time
 class ConsoleRun
@@ -165,10 +163,8 @@ class ConsoleSession
             el
                 # the prompt is its working folder, as it changes
                 setenv[ 'PS1', '\\w> ', 1 ]
-                # a blank line after a command, and after its output
-                # (only when one ran: an empty Enter adds none); the
-                # output's start mark (OSC 133 C) first
-                setenv[ 'PS0', '\\e]133;C\\a\n', 1 ]
+                # the output's start mark (OSC 133 C)
+                setenv[ 'PS0', '\\e]133;C\\a', 1 ]
                 setenv[ 'PROMPT_COMMAND', PROMPT_GAP, 1 ]
                 norc : string '--norc'
                 execl[ '/bin/bash', 'bash', norc.chars, null ]

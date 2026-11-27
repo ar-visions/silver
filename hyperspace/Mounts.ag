@@ -26,6 +26,37 @@ func hs_mount [ value: string ] -> HsMount
         tilt_deg: f32[ fields[4].real_value[] ],
         fov_deg: f32[ fields[5].real_value[] ] ]
 
+# a sysfs file's first line (its size says 4096 whatever it
+# holds, so read it a line, not whole); null when there is none
+func hs_sys_line [ file: string ] -> string
+    fh : handle fopen[ file.chars, 'r' ]
+    if [ !fh ] return null
+    b : local i8 [ 256 ]
+    line : string [ null ]
+    if [ fgets[ @b[0], 256, fh ] ] line = string [ @b[0] ]
+    fclose[ fh ]
+    if [ !line ] return null
+    return line.trim[]
+
+# a camera named by its serial and stream ('9468CBE3/2'): its
+# /dev/video node now (the numbers change from boot to boot); a
+# /dev path is taken as it is
+func hs_camera_node [ name: string ] -> string
+    if [ name.starts_with[ '/' ] ] return name
+    sl : i32 [ name.index_of[ '/' ] ]
+    if [ sl < 0 ] return name
+    serial : string name.mid[ 0, sl ]
+    want : string name.mid[ sl + 1, name.count - sl - 1 ]
+    for [ n: i32 0, n < 64, n += 1 ]
+        base : string '/sys/class/video4linux/video{n}'
+        it : string hs_sys_line[ '{base}/index' ]
+        if [ !it ] continue
+        st : string hs_sys_line[ '{base}/device/../serial' ]
+        if [ st && it == want && st == serial ]
+            return '/dev/video{n}'
+    log 'hyperspace: no camera {name} is plugged in'
+    return name
+
 func hs_rig_parse [ text: string ] -> HsRig
     rig : HsRig []
     for [ word: string ] in text.trim[].split[ ' ' ]
@@ -72,3 +103,6 @@ expect func t_hs_rig_text [] -> bool
         && rig.mounts[0].device == '/dev/video2'
         && rig.mounts[0].x_m < -0.19
         && hs_rig_text[ rig ].index_of[ 'camera=/dev/video2' ] >= 0
+
+expect func t_camera_node [] -> bool
+    return hs_camera_node[ '/dev/video2' ] == '/dev/video2'

@@ -781,7 +781,7 @@ Control SceneGrid
             # draw_card's x is the content's left: the box starts 4px
             # before it
             cx : f32 [ x0 + f32[ i % pr ] * cell_w[] + 4.0 ]
-            draw_card[ cv, orb, cards[ i ], cx, ry, cell_w[], cell_h[],
+            draw_card[ cv, orb.nav, cards[ i ], cx, ry, cell_w[], cell_h[],
                        i == hov ]
 
 # the empty pane's apps: glass cards over the clear space, our app

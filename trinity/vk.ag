@@ -1367,6 +1367,7 @@ class TexDefer
     mutable swap          : bool
     mutable defer_frame   : i64
 
+
 class vk_context
     public  user                : Au
     intern  instance            : VkInstance
@@ -1710,6 +1711,25 @@ class vk_context
     mutable wait_us    : vec f32
     # a bundled font's file, and the one the user chose over it
     mutable font_sub   : map string [ string ]
+    # the 4 x 4 textures of a constant (a slot with no picture), one a
+    # kind and value, shared by every pipeline that asks for it
+    mutable flat_tx    : map Texture [ string ]
+
+    # a constant's 4 x 4 texture, made once a kind and value (each
+    # upload waits on the GPU: hundreds of slots made one each)
+    public func flat_texture [ sampler: object ] -> Texture
+        fill : local u8 [ 256 ]
+        size : i32 [ 0 ]
+        pf   : Pixel [ Pixel.none ]
+        placeholder_image[ sampler, 1, fill, @size, @pf ]
+        key : string '{i32[ pf ]}:'
+        for [ i: i32 0, i < size, i += 1 ] key += '{fill[ i ]},'
+        if [ !flat_tx ] flat_tx = map Texture [ string ] []
+        if [ flat_tx.contains[ key ] ] return flat_tx[ key ]
+        tx : Texture [ vk: a, sampler: sampler, mip_levels: 1,
+                       surface: Surface.color ]
+        flat_tx[ key ] = tx
+        return tx
 
     # text in the bundled from draws in the file to; '' puts it back
     public func font_swap [ from: string, to: string ]
@@ -3342,6 +3362,8 @@ class Gpu
                                   radians[ 90.0 ] ]
                 if [ img ]
                     img.user = tx
+            el [ !img ]
+                tx = vk.flat_texture[ sampler ]
             el
                 # full mip chain: minification filters and the sampler's
                 # anisotropy only engage when mip_levels > 1
@@ -5781,7 +5803,8 @@ class Texture
                                 (depth > 1) ? depth : 1 ]
                     ]]
                 cmd.submit[ ]
-                vkDeviceWaitIdle[ vk.device ]
+                # its own copy done (the staging buffer goes after)
+                cmd.finish[ ]
                 vk.create_mipmaps[ vk_image, width, height,
                                    (depth > 1) ? depth : 1, mip_levels,
                                    layer_count ]

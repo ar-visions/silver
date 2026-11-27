@@ -1547,6 +1547,8 @@ func orbiter.over_hide [ cancel: bool ]
 #   record rect x y w h <file>   a part of it
 #   record window x y <file>     the window under x y
 #   record stop                  the take ends
+#   gaze x y | gaze none         the gaze, to the apps that take it
+#   service <name>               that service on while the app runs
 func orbiter.system_line [ line: string ]
     ws : vec string line.trim[].split[ ' ' ]
     if [ ws.count < 3 ] return
@@ -1556,6 +1558,26 @@ func orbiter.system_line [ line: string ]
     who  : string '{mod}-{slot}'
     if [ verb == 'hide' ]
         over_hide[ false ]
+        return
+    if [ verb == 'service' && ws.count >= 4 ]
+        nm : string ws[ 3 ]
+        if [ !service_of[ nm ] ] return
+        # the user's on: it stays; else for this app alone, unsaved
+        if [ !service_is_on[ nm ] ]
+            if [ !svc_asks ] svc_asks = vec string []
+            ask : string '{nm} {mod} {slot}'
+            if [ svc_asks.index_of[ ask ] < 0 ]
+                svc_asks.push[ ask ]
+                log 'system: {who} starts {nm}'
+        service_start[ service_of[ nm ] ]
+        return
+    if [ verb == 'gaze' && ws.count >= 4 ]
+        words : string ws[ 3 ]
+        if [ ws.count >= 5 ] words = '{words} {ws[ 4 ]}'
+        gaze_forward[ 'gaze', words ]
+        return
+    if [ verb == 'head' && ws.count >= 6 ]
+        gaze_forward[ 'head', '{ws[ 3 ]} {ws[ 4 ]} {ws[ 5 ]}' ]
         return
     # job <name> | job stop <name>: a line the module declared (export
     # jobs), run as the user outside its view; never any other line
@@ -1726,6 +1748,23 @@ func orbiter.job_stop [ mod: string, jn: string ]
     lf.save[ '{(was) ? was : ''}stopped\n', null ]
     df : path '{d}/{jn}.done'
     df.save[ 'stopped\n', null ]
+
+# the gaze (or the head) handed to every running app whose module
+# says export gaze (head), as its live prop: 'set gaze x y'
+func orbiter.gaze_forward [ prop: string, words: string ]
+    if [ !instances ] return
+    if [ !gaze_wants ] gaze_wants = map string [ string ] []
+    ln : string 'set {prop} {words}\n'
+    for [ av: AppView ] in instances
+        if [ !av || av.ended || !av.src ] continue
+        k : string '{prop} {av.src}'
+        if [ !gaze_wants.contains[ k ] ]
+            tx : string av.src.load[ typeid[ string ], null ]
+            yes : bool [ tx && (tx.starts_with[ 'export {prop}' ]
+                         || tx.index_of[ '\nexport {prop}' ] >= 0) ]
+            gaze_wants[ k ] = (yes) ? 'y' : 'n'
+        if [ gaze_wants[ k ] != 'y' ] continue
+        agent_sock_send[ av.sock_name[].chars, ln.chars ]
 
 func orbiter.sys_reply [ who: string, ln: string ]
     l2 : string '{ln}\n'
@@ -1921,6 +1960,11 @@ func orbiter.card_pop_items [] -> vec PopItem
         out.push[ PopItem [ icon: 'minus', label: 'Delete',
                             act: 'delete', danger: true ] ]
     if [ !ae.opens && !ae.agent_run && ae.module && ae.file ]
+        pk : string '{ae.file}'
+        on : bool [ pins && pins.index_of[ pk ] >= 0 ]
+        out.push[ PopItem [ icon: (on) ? 'minus' : 'add_instance',
+            label: (on) ? 'Remove from dock' : 'Add to dock',
+            act: 'dock' ] ]
         out.push[ PopItem [ icon: 'gear', label: 'Properties',
                             act: 'props' ] ]
     return out
@@ -1954,6 +1998,8 @@ func orbiter.card_pop_do []
         dock_icon_click[ DockIcon [ file: ae.file, module: true ] ]
     el [ act == 'props' ]
         app_info_open[ ae ]
+    el [ act == 'dock' ]
+        pin_dock[ ae ]
     el [ act == 'show' && card_pop_grid ]
         (cast AppsGrid [ card_pop_grid ]).toggle_drawer[ ae ]
     el [ act == 'delete' && ae.opens ]
@@ -2479,6 +2525,17 @@ func orbiter.store_apps [ store: string, group: string ] -> vec AppEntry
 # finished installing), and the cards anew when its folder moved
 func orbiter.store_poll []
     if [ !store_seen ] store_seen = map string [string] []
+    # an app exported (or deleted) since the list was read: read again
+    ex : path '{install_root[]}/export'
+    em : string '{ex.modified_time[]}'
+    if [ store_seen.contains[ '#export' ]
+         && store_seen[ '#export' ] != em ]
+        store_seen[ '#export' ] = em
+        app_list = null
+        apps_gen += 1
+        if [ ux ] ux.restyle = true
+        return
+    store_seen[ '#export' ] = em
     root : string '{path.path_startup[]}'
     # read here too: the apps view need not have been shown
     for [ ae: AppEntry ] in app_entries[]
@@ -3002,3 +3059,33 @@ func orbiter.switcher_pick [ iid: i32 ]
 func orbiter.switcher_shut []
     switcher = false
     if [ ux ] ux.restyle = true
+
+# a service an app started: once no app that asked runs, it ends
+# (unless the user has switched it on since)
+func orbiter.service_asks_tick []
+    if [ !svc_asks || svc_asks.count == 0 ] return
+    now : i64 epoch_millis[]
+    if [ now - svc_seen < 1000 ] return
+    svc_seen = now
+    keep : vec string []
+    gone : vec string []
+    for [ ask: string ] in svc_asks
+        ws : vec string ask.split[ ' ' ]
+        if [ ws.count < 3 ] continue
+        sl : i32 [ i32[ ws[ 2 ].integer_value[] ] ]
+        up : bool [ false ]
+        if [ instances ]
+            for [ v: AppView ] in instances
+                if [ v && !v.ended && v.slot == sl
+                     && v.app_mod == ws[ 1 ] ]
+                    up = true
+        if [ up ] keep.push[ ask ]
+        el gone.push[ ws[ 0 ] ]
+    svc_asks = keep
+    for [ nm: string ] in gone
+        still : bool [ false ]
+        for [ k: string ] in keep
+            if [ k.starts_with[ '{nm} ' ] ] still = true
+        if [ !still && !service_is_on[ nm ] ]
+            log 'orbiter: {nm} stopped: the app that asked for it ended'
+            service_stop[ nm ]

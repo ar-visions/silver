@@ -1147,7 +1147,7 @@ abstract live_app media_app
                 wait_start  : i64 [ epoch_micros[] ]
                 # out of view: a quarter second a frame (it still
                 # runs); animated: a refresh at most
-                lim : i64 [ (out_of_view) ? 250000
+                lim : i64 [ (out_of_view && !unseen_full_rate) ? 250000
                     : (win.anim_seen) ? 1000000 / i64[ hz ]
                     : 2000000 / i64[ hz ] ]
                 # the host asks this socket from its frame and waits:
@@ -8687,6 +8687,10 @@ Display Window
     # a blur of the backdrop on e's canvas, lined up with the window
     public func draw_blur [ cv: Canvas, e: element, stage: BlurStage ]
         bt : Texture blur_image[ stage ]
+        if [ !bt && backdrop && frost_eff[] != 3 ]
+            # asked now, drawn from the next frame: be in it
+            e.needs_frame = true
+            will_animate = true
         if [ !bt || !root || !root.bounds ] return
         if [ !blur_users ] blur_users = vec element []
         if [ blur_users.index_of[ e ] < 0 ] blur_users.push[ e ]
@@ -9111,6 +9115,9 @@ abstract media_app trinity
 
 # every frame drawn, changed or not (the socket's `animate 1`)
 force_animate : bool
+
+# out of view, still every frame (a service reading its cameras)
+unseen_full_rate : bool
 
 # frames drawn since the start; the stats' count resets each second
 frames_ever : i64

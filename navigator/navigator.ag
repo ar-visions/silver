@@ -2083,8 +2083,36 @@ class Navigator
         o.index_building = false
         o.index_lock.unlock[]
 
+# the app that claims a file's type (its export's extensions), when
+# it is an app and built; null else
+func nav_app_for [ p: path ] -> string
+    ex : path '{nav_install[]}/export'
+    if [ !ex.exists[] ] return null
+    want : string '\'.{p.ext[]}\''
+    for [ f: path ] in ex.ls[ null, false ]
+        fn : string f.filename[]
+        if [ !fn.ends_with[ '.agi' ] || fn.ends_with[ '.props.agi' ] ]
+            continue
+        tx : string f.load[ typeid[ string ], null ]
+        if [ !tx ] continue
+        at : i32 tx.index_of[ 'extensions:' ]
+        if [ at < 0 ] continue
+        rest : string tx.mid[ at, tx.count - at ]
+        nl : i32 rest.index_of[ '\n' ]
+        ln : string (nl > 0) ? rest.mid[ 0, nl ] : rest
+        if [ ln.index_of[ want ] < 0 ] continue
+        st : string f.stem[]
+        dash : i32 st.index_of[ '-' ]
+        md : string (dash >= 0)
+            ? st.mid[ dash + 1, st.count - dash - 1 ] : st
+        props : path '{ex}/{st}.props.agi'
+        bin : path '{nav_install[]}/bin/{md}'
+        if [ props.exists[] && bin.exists[] ] return md
+    return null
+
 # the app's host: a pick goes to orbiter over its socket as an
-# `app nav` line when the app was given one; alone, it is logged
+# `app nav` line (the one given, else a running orbiter's); alone,
+# the navigator opens it itself
 NavHost NavApp
     public opener : string
     public nav    : Navigator
@@ -2093,22 +2121,46 @@ NavHost NavApp
     # the list, to repaint
     public list   : element
 
-    func post [ line: string ]
+    # true when an orbiter took it
+    func post [ line: string ] -> bool
+        msg : string 'app nav {line}\n'
         if [ opener && opener.count > 0 ]
-            msg : string 'app nav {line}\n'
             agent_path_send[ opener.chars, msg.chars ]
-        el log 'navigator: {line}'
+            return true
+        rt : string getenv[ 'XDG_RUNTIME_DIR' ]
+        if [ !rt ] rt = '/tmp'
+        os : string '{rt}/trinity-orbiter.sock'
+        if [ agent_path_send[ os.chars, msg.chars ] != 0 ] return true
+        return false
+
+    # a program of its own, out of this one's session
+    func launch [ ln: string ]
+        run : command { setsid -f {ln} > /dev/null 2>&1 }
+        run.exec[ false ]
+        log 'navigator: opened {ln}'
+
+    # a file: the app that claims its type, else orbiter (source,
+    # text, anything)
+    func launch_for [ p: path ]
+        md : string nav_app_for[ p ]
+        bn : string (md) ? md : 'orbiter'
+        launch[ '{nav_install[]}/bin/{bn} "{p}"' ]
 
     func open_file [ p: path ]
-        post[ 'open {p}' ]
+        if [ !post[ 'open {p}' ] ] launch_for[ p ]
     func open_line [ p: path, line: i32 ]
-        post[ 'line {line} {p}' ]
+        if [ !post[ 'line {line} {p}' ] ] launch_for[ p ]
+    # a module: its app when built, else its source in orbiter
     func open_module [ mp: path ]
-        post[ 'module {mp}' ]
+        if [ post[ 'module {mp}' ] ] return
+        bin : path '{nav_install[]}/bin/{mp.stem[]}'
+        if [ bin.exists[] ] launch[ '"{bin}"' ]
+        el launch[ '{nav_install[]}/bin/orbiter "{mp}"' ]
     func open_url [ url: string ]
-        post[ 'url {url}' ]
+        if [ !post[ 'url {url}' ] ]
+            launch[ '{nav_install[]}/bin/aura "{url}"' ]
     func run_program [ p: path ]
-        post[ 'run {p}' ]
+        if [ !post[ 'run {p}' ] ] launch[ '"{p}"' ]
     func pick_instance [ iid: i32 ]
         post[ 'instance {iid}' ]
     func scene_choose [ nm: string ]

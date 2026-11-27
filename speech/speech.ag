@@ -45,6 +45,11 @@ import https://huggingface.co/openai/whisper-small/resolve/main/model.safetensor
     > mkdir -p {install}/models
     > cp {import_file} {install}/models/whisper-small.safetensors
 
+# whisper-tiny: dictation's net, the fastest (the same vocab)
+import https://huggingface.co/openai/whisper-tiny/resolve/main/model.safetensors
+    > mkdir -p {install}/models
+    > cp {import_file} {install}/models/whisper-tiny.safetensors
+
 import https://huggingface.co/openai/whisper-small/resolve/main/vocab.json
     > mkdir -p {install}/models
     > cp {import_file} {install}/models/whisper-vocab.json
@@ -84,7 +89,8 @@ func mel_hz [ m: f64 ] -> f64
     if [ m < 15.0 ] return 200.0 * m / 3.0
     return 1000.0 * exp[ 1.8562979903656263 / 27.0 * (m - 15.0) ]
 
-func whisper_mel [ c: AudioClip ] -> tensor
+# win: the frames to encode (100 a second); 0, the speech and 3 s
+func whisper_mel [ c: AudioClip, win: i32 ] -> tensor
     pcm : whisper_pcm[ c ]
     nfft : i32 [ 400 ]
     nb   : i32 [ 201 ]
@@ -96,6 +102,8 @@ func whisper_mel [ c: AudioClip ] -> tensor
     # or it repeats; the full 30 s window cost the encoder 10x on a
     # short take
     tt : i32 [ i32[ n16r / 160 ] + 300 ]
+    # an app's window: never shorter than its speech
+    if [ win > 0 ] tt = max[ win, i32[ n16r / 160 ] + 20 ]
     tt = ((tt + 1) / 2) * 2
     if [ tt > 3000 ] tt = 3000
     if [ tt < 100 ] tt = 100
@@ -151,7 +159,14 @@ func whisper_mel [ c: AudioClip ] -> tensor
     csp : @f32 [ @csf[0] ]
     snp : @f32 [ @snf[0] ]
     mmax : f32 [ -1.0e30f ]
+    # past the sound, the pcm is zeros: those frames are the floor
+    tz : i32 [ i32[ (n16r + 200) / 160 ] + 1 ]
     for [ t: i32 0, t < tt, t += 1 ]
+        if [ t > tz && t * hop + 200 < 480000 ]
+            for [ m: i32 0, m < 80, m += 1 ]
+                mel_t.floats[t * 80 + m] = -10.0f
+            if [ -10.0f > mmax ] mmax = -10.0f
+            continue
         base : i32 [ t * hop - 200 ]
         for [ i: i32 0, i < nfft, i += 1 ]
             j : i32 [ base + i ]
@@ -518,6 +533,8 @@ class WhisperJob
     # projects)
     public kx   : vec tensor
     public vx   : vec tensor
+    # the frames encoded (whisper_mel's win)
+    public win  : i32
 
 func spectra_whisper_thread [ arg: handle ] -> handle
     j : cast WhisperJob [ arg ]
@@ -525,10 +542,13 @@ func spectra_whisper_thread [ arg: handle ] -> handle
     if [ !enc ]
         c : AudioClip [ rate: 48000, channels: 1, frames: j.n,
                         pcm: j.pcm ]
-        m : whisper_mel[ c ]
-        mel_png[ m, path '/tmp/live-mel.png' ]
+        m : whisper_mel[ c, j.win ]
         if [ j.gpu ]
             enc = j.gpu.encode[ m ]
+            # the cross keys and values on the gpu too, not the cpu
+            j.gpu.cross_kv[ i32[ enc.tensor_shape[0] ] ]
+            j.kx = j.gpu.kx_out
+            j.vx = j.gpu.vx_out
         el
             enc = j.model.encode[ m ]
     if [ j.kx && j.vx ]
@@ -545,6 +565,8 @@ struct DictState
     feed    : vec i16
     feed_n  : i64
     feed_at : i64
+    # when the feed began (us): it plays at a mic's pace
+    feed_t0 : i64
     cap : spectra
     ok  : bool
     lvl : f32
@@ -586,12 +608,18 @@ struct DictState
     sp_start : i64
     sp_act   : i64
     sp_quiet : i32
-    seg_a    : i64
-    seg_b    : i64
+    # quiet blocks that end a take (0: 16, about 0.7 s)
+    sp_end : i32
+    # the window whisper encodes, in frames (0: the full 30 s)
+    win    : i32
+    # takes cut and waiting for whisper: start, end pairs
+    segs     : vec i64
     job_a    : i64
     job_b    : i64
     out_a    : i64
     out_b    : i64
+    # the room's own level: speech is judged against it
+    floor    : f32
 
 intern dict : DictState
 
@@ -619,6 +647,7 @@ func dictation_start [] -> i32
     # not held past this frame)
     fe : cstr [ getenv[ 'SILVER_DICT_FILE' ] ]
     dict.feed_at = 0
+    dict.feed_t0 = 0
     if [ fe ]
         fc : wav_load[ path [ fe ] ]
         if [ fc && fc.frames > 0 ]
@@ -629,12 +658,14 @@ func dictation_start [] -> i32
             log 'dictation: test feed {fe} ({fc.frames} samples at {fc.rate} Hz)'
     return 0
 
-# load whisper-small (the net and its vocab): on the loader thread
+# load whisper-tiny (the net and its vocab): on the loader thread
 func dict_load_net [] -> none
-    # the module's import installs whisper-small to install/models; a
-    # copy fetched by the speech tool (--whisper small) is the fallback
+    # the module's import installs whisper-tiny to install/models;
+    # small, or a copy fetched by the speech tool, the fallbacks
     inst : path.path_install[]
-    wm : path '{inst}/models/whisper-small.safetensors'
+    wm : path '{inst}/models/whisper-tiny.safetensors'
+    if [ !wm.exists[] ]
+        wm = path '{inst}/models/whisper-small.safetensors'
     if [ !wm.exists[] ]
         d_ : path.path_storage[ 'spectra' ]
         wm = path '{d_}/whisper-small.safetensors'
@@ -642,7 +673,7 @@ func dict_load_net [] -> none
         log 'dictation: no whisper weights — capture only'
         dict.net_fail = true
         return
-    log 'dictation: loading whisper-small…'
+    log 'dictation: loading {wm.filename[]}…'
     n8 : WhisperNet [ src: wm ]
     if [ !n8.valid ]
         log 'dictation: whisper load failed — capture only'
@@ -697,9 +728,19 @@ func dictation_poll [] -> bool
     if [ dict.feed_n > 0 ]
         fz : i64 [ dict.cap.size ]
         if [ dict.feed_at + fz > dict.feed_n ] return false
+        now : i64 Au.epoch_micros[]
+        if [ dict.feed_t0 == 0 ] dict.feed_t0 = now
+        if [ dict.feed_at + fz > (now - dict.feed_t0) * 48 / 1000 ]
+            return false
         for [ i: i64 0, i < fz, i += 1 ]
             dict.cap.buf[i] = dict.feed[ dict.feed_at + i ]
+            dict.cap.re[i] = dict.cap.buf[i] / 32768.0
+            dict.cap.im[i] = 0.0
         dict.feed_at += fz
+        fft[ dict.cap.re, dict.cap.im, i32[ fz ] ]
+        for [ i: i64 0, i < fz / 2, i += 1 ]
+            dict.cap.bins[i] = sqrt[ dict.cap.re[i] * dict.cap.re[i]
+                                     + dict.cap.im[i] * dict.cap.im[i] ]
     el [ !dict.cap.capture[] ] return false
     fmin : f32 [ 150.0 ]
     fmax : f32 [ 8000.0 ]
@@ -743,30 +784,46 @@ func dictation_poll [] -> bool
         if [ dict.wr > 1440000 ] dict.wr = 1440000
     return true
 
-# speech starts above the on level and ends after ~0.7 s under
-# the off level (or at 25 s); each span waits its turn for whisper
+# speech starts at 4x the room's level and ends after ~0.7 s
+# under 2.5x it (or at 25 s); each span waits its turn for whisper
 func stream_cut [ en: f32 ]
     if [ !dict.speaking ]
-        if [ en > 0.12 ]
+        if [ dict.floor <= 0.0 || en < dict.floor ]
+            dict.floor = dict.floor * 0.8 + en * 0.2
+        el
+            dict.floor += (en - dict.floor) * 0.002
+    on  : f32 [ max[ dict.floor * 4.0, 0.004 ] ]
+    act : f32 [ max[ dict.floor * 3.0, 0.0035 ] ]
+    off : f32 [ max[ dict.floor * 2.5, 0.003 ] ]
+    if [ !dict.speaking ]
+        if [ en > on ]
             dict.speaking = true
             dict.sp_start = dict.wr - 38400
             if [ dict.sp_start < 0 ] dict.sp_start = 0
             dict.sp_act   = dict.wr
             dict.sp_quiet = 0
     el
-        if [ en > 0.10 ] dict.sp_act = dict.wr
-        dict.sp_quiet = (en < 0.08) ? dict.sp_quiet + 1 : 0
-        if [ dict.sp_quiet >= 16 || dict.wr - dict.sp_start > 1200000 ]
+        if [ en > act ] dict.sp_act = dict.wr
+        dict.sp_quiet = (en < off) ? dict.sp_quiet + 1 : 0
+        end : i32 [ (dict.sp_end > 0) ? dict.sp_end : 16 ]
+        if [ dict.sp_quiet >= end || dict.wr - dict.sp_start > 1200000 ]
             dict.speaking = false
             e_ : i64 [ dict.sp_act + 16800 ]
             if [ e_ > dict.wr ] e_ = dict.wr
-            if [ dict.seg_b < 0 ] dict.seg_a = dict.sp_start
-            dict.seg_b = e_
-    if [ !dict.job && dict.seg_b >= 0 && dict.net ]
-        dict.job_a = dict.seg_a
-        dict.job_b = dict.seg_b
-        dict.seg_b = -1
-        dict_spawn[ dict.job_a, dict.job_b ]
+            if [ !dict.segs ] dict.segs = vec i64 []
+            dict.segs.push[ dict.sp_start ]
+            dict.segs.push[ e_ ]
+    next_take[]
+
+# the oldest waiting take to whisper, once the last is done
+func next_take []
+    if [ dict.job || !dict.net || !dict.segs ] return
+    if [ dict.segs.count < 2 ] return
+    dict.job_a = dict.segs[ 0 ]
+    dict.job_b = dict.segs[ 1 ]
+    dict.segs.shift[]
+    dict.segs.shift[]
+    dict_spawn[ dict.job_a, dict.job_b ]
 
 # a recording's dictation: listens until the next start or stop
 func dictation_stream_start [] -> i32
@@ -774,10 +831,34 @@ func dictation_stream_start [] -> i32
     if [ rc != 0 ] return rc
     dict.stream   = true
     dict.speaking = false
-    dict.seg_b    = -1
+    dict.segs     = vec i64 []
     dict.job_b    = -1
     log 'dictation: listening for the recording'
     return 0
+
+# short takes (a word or two): end one after this many quiet
+# blocks of 43 ms
+func dictation_end_after [ blocks: i32 ]
+    dict.sp_end = blocks
+
+# the seconds of sound whisper encodes a take in: 30 by default;
+# an app of short answers asks less (a take longer is never cut)
+func dictation_window [ seconds: f32 ]
+    dict.win = i32[ seconds * 100.0 ]
+
+# speech heard and not yet given back as words
+func dictation_hearing [] -> bool
+    if [ !dict.stream ] return false
+    waiting : bool [ dict.segs && dict.segs.count > 0 ]
+    return dict.speaking || dict.job != null || waiting
+
+# a voice is being heard right now
+func dictation_speaking [] -> bool
+    return dict.stream && dict.speaking
+
+# when the voice being heard began, epoch microseconds
+func dictation_voice_at [] -> i64
+    return dict.origin + dict.sp_start * 1000000 / 48000
 
 func dictation_streaming [] -> bool
     return dict.stream
@@ -789,11 +870,8 @@ func dictation_stream_take [] -> string
         dict.out_a = dict.job_a
         dict.out_b = dict.job_b
         dictation_harvest[]
-        if [ !dict.job && dict.seg_b >= 0 && dict.net ]
-            dict.job_a = dict.seg_a
-            dict.job_b = dict.seg_b
-            dict.seg_b = -1
-            dict_spawn[ dict.job_a, dict.job_b ]
+    # a take cut while whisper loaded waits for the next call
+    next_take[]
     return dictation_take[]
 
 # the last take's start, epoch microseconds, and its length
@@ -818,7 +896,8 @@ func dict_spawn [ a: i64, b: i64 ]
     for [ i7: i64 n5, i7 < tot, i7 += 1 ]
         buf[i7] = 0
     dict_write_wav[ buf, tot ]
-    j5 : WhisperJob [ model: dict.net, pcm: buf, n: tot ]
+    j5 : WhisperJob [ model: dict.net, pcm: buf, n: tot,
+                      win: (dict.win > 0) ? dict.win : 3000 ]
     j5.hold[]
     if [ dict.gpu && dict.gpu.threaded[] ] j5.gpu = dict.gpu
     # a gpu encoder with no compute queue of its own runs on this
@@ -827,7 +906,7 @@ func dict_spawn [ a: i64, b: i64 ]
     el [ dict.gpu ]
         c_ : AudioClip [ rate: 48000, channels: 1, frames: tot,
                          pcm: buf ]
-        m_ : whisper_mel[ c_ ]
+        m_ : whisper_mel[ c_, j5.win ]
         j5.enc = dict.gpu.encode[ m_ ]
         dict.gpu.cross_kv[ i32[ j5.enc.tensor_shape[0] ] ]
         j5.kx = dict.gpu.kx_out
@@ -1220,7 +1299,7 @@ element main : trinity
         if [ file && whisper && whisper.count > 0 ]
             c8 : caf_load[ file ]
             if [ !c8 ] exit[ 1 ]
-            mel8 : whisper_mel[ c8 ]
+            mel8 : whisper_mel[ c8, 0 ]
             if [ mel_png[ mel8, path out ] ]
                 log 'whisper mel: {out}'
             dst8 : whisper_weights[ whisper ]
@@ -1634,7 +1713,7 @@ element main : trinity
                                                          channels: 1,
                                                          frames: n5,
                                                          pcm: buf5 ]
-                                        m7 : whisper_mel[ c7 ]
+                                        m7 : whisper_mel[ c7, 0 ]
                                         mel_png[ m7, path '/tmp/live-mel.png' ]
                                         e7 : w_gpu.encode[ m7 ]
                                         e7.hold[]

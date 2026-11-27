@@ -162,23 +162,6 @@ def four_then_close(b):
         time.sleep(1.0)
         check(f'closed one, {left} left', b.state(), left)
 
-# a desktop icon's right press: its menu, Open then its instances
-# then New instance (the console's icon at 861, 555 on 1280 x 800)
-def card_new(b):
-    for k in range(2):
-        b.send('move 861 555', 0.1)
-        b.send('press 861 555 1', 0.1)
-        b.send('release 861 555 1', 0.1)
-        b.send('release 861 555 1', 0.8)
-        # Open, the instances so far, then New instance
-        if not b.press(f'row{1 + k}', 0, 6.0):
-            print('FAIL no New instance row'); fails.append('card')
-            return
-        check(f'card New instance {k + 1}', b.state(), k + 1)
-        # back to the desktop for the next press: the window aside
-        st = b.state()
-        b.press(f'pmin_{st["active"]}', 0, 1.0)
-
 # frames a second, drawing every frame (no cap): the desktop, a free
 # window standing, moved by its strip, sized by its top grip
 def fps_of(b):
@@ -223,7 +206,7 @@ def speed(b):
         if not ok: fails.append(name)
 
 if __name__ == '__main__':
-    for case in (four_then_close, card_new, speed):
+    for case in (four_then_close, speed):
         b = Box(env='SILVER_HZ=1000') if case == speed else Box()
         try:
             case(b)

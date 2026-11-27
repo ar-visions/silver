@@ -616,6 +616,15 @@ func vocab_part [ pctx: handle, it: u64 ] -> none
     if [ v0 >= nv ] return
     vocab_scan[ j.a, j.w, j.k, v0, v1, @j.v_best[ ix ], @j.v_val[ ix ] ]
 
+# one vocab part on its own thread (linux): the job and its index
+class vocab_task
+    public job : par_job
+    public it  : i64
+
+func vocab_task_run [ arg: object ]
+    vt : vocab_task [ arg ]
+    vocab_part[ cast handle [ vt.job ], u64[ vt.it ] ]
+
 op dense
     public units:              u32
     public in_dim:             u32
@@ -3189,6 +3198,15 @@ class whisper
     func init []
         st = safetensors [ src: src ]
         if [ !st.valid ] return
+        # the size from the weights: tiny, base, small ... (64 a head)
+        c1 : tensor st.tensor_named[ 'model.encoder.conv1.weight' ]
+        if [ c1 ]
+            dim = i32[ c1.tensor_shape[0] ]
+            heads = dim / 64
+        layers = 0
+        while [ st.tensor_named[
+            'model.encoder.layers.{layers}.fc1.bias' ] ]
+            layers += 1
         conv1_w = conv_repack[
             st.tensor_named[ 'model.encoder.conv1.weight' ] ]
         conv1_b = st.tensor_named[ 'model.encoder.conv1.bias' ]
@@ -3345,7 +3363,7 @@ class whisper
             x.floats[i] += pos.floats[i]
         h  : rows2[ t_h, dim ]
         a1 : rows2[ t_h, dim ]
-        f1 : rows2[ t_h, 3072 ]
+        f1 : rows2[ t_h, dim * 4 ]
         f2 : rows2[ t_h, dim ]
         for [ li: i32 0, li < layers, li += 1 ]
             n1 : layer_norm [ name: 'ln1', input: x, result: h,
@@ -3366,12 +3384,12 @@ class whisper
             n3.forward[]
             d1 : dense [ name: 'fc1', input: h, result: f1,
                          weights: fc1_w[li], bias: fc1_b[li],
-                         in_dim: dim, out_dim: 3072,
+                         in_dim: dim, out_dim: dim * 4,
                          activation: Activation.gelu ]
             d1.forward[]
             d2 : dense [ name: 'fc2', input: f1, result: f2,
                          weights: fc2_w[li], bias: fc2_b[li],
-                         in_dim: 3072, out_dim: dim ]
+                         in_dim: dim * 4, out_dim: dim ]
             d2.forward[]
             for [ i: i64 0, i < n2, i += 1 ]
                 x.floats[i] += f2.floats[i]
@@ -3391,7 +3409,7 @@ class whisper
                                                         + c] + dec_pos.floats[t * dim + c]
         h  : rows2[ n, dim ]
         a1 : rows2[ n, dim ]
-        f1 : rows2[ n, 3072 ]
+        f1 : rows2[ n, dim * 4 ]
         f2 : rows2[ n, dim ]
         for [ li: i32 0, li < layers, li += 1 ]
             n1 : layer_norm [ name: 'dln1', input: x, result: h,
@@ -3424,12 +3442,12 @@ class whisper
             n3.forward[]
             d1 : dense [ name: 'dfc1', input: h, result: f1,
                          weights: dfc1_w[li], bias: dfc1_b[li],
-                         in_dim: dim, out_dim: 3072,
+                         in_dim: dim, out_dim: dim * 4,
                          activation: Activation.gelu ]
             d1.forward[]
             d2 : dense [ name: 'dfc2', input: f1, result: f2,
                          weights: dfc2_w[li], bias: dfc2_b[li],
-                         in_dim: 3072, out_dim: dim ]
+                         in_dim: dim * 4, out_dim: dim ]
             d2.forward[]
             for [ i: i64 0, i < nd, i += 1 ]
                 x.floats[i] += f2.floats[i]
@@ -3612,7 +3630,7 @@ class whisper
         kn : rows2[ 1, dim ]
         vn : rows2[ 1, dim ]
         a1 : rows2[ 1, dim ]
-        f1 : rows2[ 1, 3072 ]
+        f1 : rows2[ 1, dim * 4 ]
         f2 : rows2[ 1, dim ]
         prow : new f32 [ 1600 ]
         for [ li: i32 0, li < layers, li += 1 ]
@@ -3666,12 +3684,12 @@ class whisper
             n3.forward[]
             d1 : dense [ name: 'kf1', input: h, result: f1,
                          weights: dfc1_w[li], bias: dfc1_b[li],
-                         in_dim: dim, out_dim: 3072,
+                         in_dim: dim, out_dim: dim * 4,
                          activation: Activation.gelu ]
             d1.forward[]
             d2 : dense [ name: 'kf2', input: f1, result: f2,
                          weights: dfc2_w[li], bias: dfc2_b[li],
-                         in_dim: 3072, out_dim: dim ]
+                         in_dim: dim * 4, out_dim: dim ]
             d2.forward[]
             for [ c2: i32 0, c2 < dim, c2 += 1 ]
                 x.floats[c2] += f2.floats[c2]
@@ -3691,8 +3709,13 @@ class whisper
             dispatch_apply_f[ 8, dispatch_get_global_queue[ 33, 0 ],
                               cast handle [ vj ], @vocab_part ]
         el
-            for [ it: i32 0, it < 8, it += 1 ]
-                vocab_part[ cast handle [ vj ], u64[ it ] ]
+            tasks : vec Au []
+            for [ it: i64 0, it < 8, it += 1 ]
+                tasks.push[ vocab_task [ job: vj, it: it ] ]
+            f : lambda [ arg: object ]
+                vocab_task_run[ arg ]
+            at : async [ work_fn: f, work: tasks ]
+            at.sync[ null ]
         best   : i32 [ vb[0] ]
         best_v : f32 [ vv[0] ]
         for [ it: i32 1, it < 8, it += 1 ]
@@ -3974,7 +3997,7 @@ class whisper_vk
     public vk    : vk_context
     public win   : Window
     public valid : bool
-    intern dim   : i32 [ 768 ]
+    intern dim   : i32
     intern b_mel : Buffer
     intern b_c1  : Buffer
     intern b_x   : Buffer
@@ -4057,6 +4080,7 @@ class whisper_vk
 
     func init []
         if [ !model || !model.valid || !vk ] return
+        dim = model.dim
         tmax : i32 [ 3000 ]
         hmax : i32 [ 1500 ]
         b_mel = work_buf[ i64[ tmax ] * 80 * 4, false ]
@@ -4067,11 +4091,11 @@ class whisper_vk
         b_k   = work_buf[ i64[ hmax ] * dim * 4, false ]
         b_v   = work_buf[ i64[ hmax ] * dim * 4, false ]
         b_a   = work_buf[ i64[ hmax ] * dim * 4, false ]
-        b_f1  = work_buf[ i64[ hmax ] * 3072 * 4, false ]
+        b_f1  = work_buf[ i64[ hmax ] * dim * 4 * 4, false ]
         b_out = work_buf[ i64[ hmax ] * dim * 4, true ]
-        b_zb  = work_buf[ 3072 * 4, false ]
+        b_zb  = work_buf[ dim * 4 * 4, false ]
         zp : @f32 [ b_zb.data ]
-        for [ i: i32 0, i < 3072, i += 1 ]
+        for [ i: i32 0, i < dim * 4, i += 1 ]
             zp[i] = 0.0f
         b_pos = upbuf[ model.pos ]
         # conv chain
@@ -4214,7 +4238,7 @@ class whisper_vk
                 gemm_pipe[ 'wg_l{li}_f1', g1, b_h,
                            upbuf[ model.fc1_w[li] ],
                            upbuf[ model.fc1_b[li] ], b_f1, hmax,
-                           3072 ] ]
+                           dim * 4 ] ]
             g2 : WgGemm [ vk: vk ]
             g2.hold[]
             s_g2.push[ g2 ]
@@ -4376,12 +4400,12 @@ class whisper_vk
             s_ln2[li].rows  = th
             s_ln2[li].dim   = dim
             s_g1[li].m_rows = th
-            s_g1[li].n_cols = 3072
+            s_g1[li].n_cols = dim * 4
             s_g1[li].k_deep = dim
             s_g1[li].act    = 1
             s_g2[li].m_rows = th
             s_g2[li].n_cols = dim
-            s_g2[li].k_deep = 3072
+            s_g2[li].k_deep = dim * 4
             s_a2[li].n_el   = nel
         s_lnf.rows = th
         s_lnf.dim  = dim

@@ -880,6 +880,10 @@ func orbiter.app_info_open [ ae: AppEntry ]
     info_items.push[ TrayEntry [ rule: true, depth: 1, check: -1 ] ]
     info_items.push[ own_entry[ 'Edit', 'edit', 1 ] ]
     info_items.push[ own_entry[ 'Launch', 'launch', 1 ] ]
+    pk : string '{ae.file}'
+    on : bool [ pins && pins.index_of[ pk ] >= 0 ]
+    info_items.push[ own_entry[ (on) ? 'Remove from dock'
+        : 'Add to dock', 'dock', 1 ] ]
     # its build gone (the source stays: a build brings it back)
     if [ can_delete[ ae ] ]
         dl : TrayEntry own_entry[ 'Delete', 'delete', 1 ]
@@ -1055,6 +1059,8 @@ func orbiter.app_info_pick [ i: i32 ]
         apps_pick[ active_pane, info_ae ]
     el [ e.action == 'edit' ]
         apps_code[ active_pane, info_ae ]
+    el [ e.action == 'dock' ]
+        pin_dock[ info_ae ]
     el [ e.action == 'delete' ]
         app_delete[ info_ae ]
         apps_gen += 1

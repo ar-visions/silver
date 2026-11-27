@@ -1,11 +1,18 @@
 # Star Reader: a question turns into its answer
 export software ['games']
+# orbiter hands it hyperspace's gaze (set gaze x y)
+export gaze ['screen']
 
 import vec
 import img
 import gltf
 import trinity
+import devices
+import speech
+import spectra
 import <stdlib.h>
+ifndef [ windows ]
+    import <unistd.h>
 
 class StarData
     public pos : vec f32
@@ -252,7 +259,28 @@ func star_data [] -> StarData
     return data
 
 func make_star_model [] -> GltfModel
-    data : star_data[]
+    return make_model[ star_data[] ]
+
+# a flat panel facing +z, 2 x 1 local units, for a star's label
+func label_data [] -> StarData
+    data : StarData [ pos: vec f32 [], nrm: vec f32 [], uv: vec f32 [],
+                      idx: vec u32 [] ]
+    for [ i: i32 0, i < 4, i += 1 ]
+        u : f32 [ f32[ i % 2 ] ]
+        v : f32 [ f32[ i / 2 ] ]
+        data.pos.push[ u * 2.0 - 1.0 ]
+        data.pos.push[ v - 0.5 ]
+        data.pos.push[ 0.0 ]
+        data.nrm.push[ 0.0 ]
+        data.nrm.push[ 0.0 ]
+        data.nrm.push[ 1.0 ]
+        data.uv.push[ 1.0 - u ]
+        data.uv.push[ 1.0 - v ]
+    star_triangle[ data, 0, 1, 2 ]
+    star_triangle[ data, 1, 3, 2 ]
+    return data
+
+func make_model [ data: StarData ] -> GltfModel
     vertices : i32 [ i32[ data.pos.count / 3 ] ]
     pos_bytes : i32 [ vertices * 12 ]
     uv_bytes : i32 [ vertices * 8 ]
@@ -348,91 +376,218 @@ ModelViewProject StarLit
     func fragment [] -> GLSL none {
         vec3 N = normalize(v_normal);
         vec3 V = normalize(ubo.eye.xyz - v_world_pos);
-        vec3 key = normalize(vec3(0.58, 0.70, 0.92));
-        vec3 fill = normalize(vec3(-0.18, -0.24, 1.0));
-        vec3 warm = normalize(vec3(0.08, -0.82, 0.48));
-        vec3 cyan = normalize(vec3(0.90, 0.38, 0.22));
-        vec3 violet = normalize(vec3(-0.88, 0.36, 0.20));
-        vec3 lower = normalize(vec3(0.12, -0.92, 0.18));
+        vec3 key = normalize(vec3(0.45, 0.80, 0.60));
+        vec3 fill = normalize(vec3(-0.70, 0.30, 0.65));
         float nv = clamp(dot(N, V), 0.0, 1.0);
         float edge = 1.0 - nv;
-        float fresnel = pow(edge, 5.0);
-        float depth = clamp(abs(v_local_pos.z) / 0.42,
-                            0.0, 1.0);
-        depth = smoothstep(0.08, 0.94, depth);
-        float core = 1.0 - smoothstep(0.08, 0.96,
-                                      length(v_local_pos.xy));
-        float key_dot = dot(N, key);
-        float key_wrap = clamp((key_dot + 0.72) / 1.72,
-                               0.0, 1.0);
-        float fill_wrap = clamp((dot(N, fill) + 0.58) / 1.58,
-                                0.0, 1.0);
-        float warm_wrap = clamp((dot(N, warm) + 0.42) / 1.42,
-                                0.0, 1.0);
-        float milk = depth * pow(key_wrap, 0.62);
-        milk *= core * (0.58 + 0.42 * fill_wrap);
-        float transmit = pow(max(-key_dot, 0.0), 1.18);
-        transmit *= pow(edge, 0.52) * (1.0 - depth * 0.48);
-        vec3 key_half = normalize(key + V);
-        vec3 fill_half = normalize(fill + V);
-        vec3 cyan_half = normalize(cyan + V);
-        vec3 violet_half = normalize(violet + V);
-        float broad = pow(max(dot(N, key_half), 0.0), 18.0);
-        float gloss = pow(max(dot(N, key_half), 0.0), 110.0);
-        float fill_gloss = pow(max(dot(N, fill_half), 0.0), 34.0);
-        float cyan_gloss = pow(max(dot(N, cyan_half), 0.0), 48.0);
-        float violet_gloss = pow(max(dot(N, violet_half), 0.0),
-                                 48.0);
-        float cyan_lit = max(dot(N, cyan), 0.0);
-        float violet_lit = max(dot(N, violet), 0.0);
-        float lower_lit = max(dot(N, lower), 0.0);
-        float cyan_angle = pow(cyan_lit, 0.72);
-        float violet_angle = pow(violet_lit, 0.72);
-        float cyan_sheen = pow(edge, 1.35) * cyan_angle;
-        float violet_sheen = pow(edge, 1.35) * violet_angle;
-        float lower_sheen = pow(edge, 3.20) * lower_lit;
-        vec3 deep_gold = ubo.tint.rgb * vec3(0.92, 0.78, 0.72);
-        vec3 lit_gold = vec3(1.0, 0.48, 0.045);
-        vec3 ivory = vec3(1.0, 0.93, 0.70);
-        vec3 base = mix(deep_gold, lit_gold, key_wrap * 0.78);
-        base *= 0.34 + key_wrap * 0.48 + fill_wrap * 0.24;
-        base += vec3(1.0, 0.34, 0.018) * warm_wrap * 0.16;
-        base = mix(base, ivory, clamp(milk * 0.48, 0.0, 0.46));
-        base += vec3(1.0, 0.22, 0.018) * transmit * 1.42;
-        float key_tangent = 1.0 - abs(dot(N, key));
-        float fill_tangent = 1.0 - abs(dot(N, fill));
-        float tangent_glow = pow(fill_tangent, 5.0);
-        tangent_glow = max(tangent_glow,
-                           pow(key_tangent, 7.0) * 0.62);
-        tangent_glow *= smoothstep(0.06, 0.44, nv);
-        base += vec3(1.0, 0.48, 0.025) * tangent_glow * 0.78;
-        float cyan_rim = clamp(cyan_sheen * 0.86
-                               + cyan_gloss * 0.28
-                               + fresnel * (0.14
-                               + cyan_angle * 0.78),
-                               0.0, 0.82);
-        float violet_rim = clamp(violet_sheen * 0.82
-                                 + violet_gloss * 0.26
-                                 + fresnel * (0.12
-                                 + violet_angle * 0.72),
-                                 0.0, 0.76);
-        float lower_rim = clamp(lower_sheen * 0.52, 0.0, 0.36);
-        base = mix(base, vec3(0.05, 0.74, 1.18), cyan_rim);
-        base = mix(base, vec3(0.84, 0.24, 1.16), violet_rim);
-        base = mix(base, vec3(0.92, 0.30, 1.08), lower_rim);
-        base += vec3(1.0, 0.93, 0.76) * fresnel * 0.34;
-        base += vec3(1.0, 0.97, 0.86) * broad * 0.52;
-        base += vec3(1.0, 0.99, 0.94) * gloss * 1.70;
-        base += vec3(0.80, 0.90, 1.0) * fill_gloss * 0.22;
-        base *= ubo.gain;
-        base = pow(clamp(base, vec3(0.0), vec3(1.0)),
-                   vec3(0.4545));
-        fragColor = vec4(base, 1.0);
+        vec2 lp = v_local_pos.xy;
+        float r = clamp(length(lp), 0.0, 1.0);
+        float thick = clamp(abs(v_local_pos.z) / 0.42, 0.0, 1.0);
+        vec3 cream = vec3(1.00, 0.90, 0.58);
+        vec3 butter = vec3(1.00, 0.70, 0.24);
+        vec3 gold = vec3(1.00, 0.50, 0.07);
+        vec3 amber = vec3(0.92, 0.32, 0.04);
+        vec3 ember = vec3(0.58, 0.14, 0.02);
+        vec3 body = mix(cream, butter, smoothstep(0.00, 0.38, r));
+        body = mix(body, gold, smoothstep(0.25, 0.75, r) * 0.90);
+        body = mix(body, amber, smoothstep(0.55, 1.00, r) * 0.75);
+        float bevel = smoothstep(0.10, 0.65, edge)
+                    * (1.0 - smoothstep(0.70, 0.95, edge));
+        body = mix(body, amber, bevel * 0.65);
+        body = mix(body, ember, smoothstep(0.80, 1.00, edge)
+                   * (1.0 - thick) * 0.55);
+        float kw = clamp((dot(N, key) + 0.5) / 1.5, 0.0, 1.0);
+        float fw = clamp((dot(N, fill) + 0.7) / 1.7, 0.0, 1.0);
+        vec3 col = body * (0.64 + 0.36 * kw + 0.08 * fw);
+        // depth: the light deep in the gold goes ember as it turns
+        col = mix(col, ember, pow(edge, 2.0) * 0.50);
+        col = mix(col, amber, (1.0 - kw) * 0.35);
+        // the light inside: a warm bright middle the orange grows from
+        col += vec3(1.00, 0.72, 0.30) * pow(1.0 - r, 1.5) * nv * 0.55;
+        vec2 sn = normalize(lp + vec2(1e-5));
+        float right = 1.0 - smoothstep(-0.70, 0.10, sn.x);
+        float upleft = smoothstep(0.20, 0.90,
+                                  dot(sn, normalize(vec2(0.8, 0.6))));
+        float down = 1.0 - smoothstep(-0.80, 0.30, sn.y);
+        vec3 rim_col = vec3(1.00, 0.74, 0.32);
+        rim_col = mix(rim_col, vec3(0.86, 0.56, 1.00), right);
+        rim_col = mix(rim_col, vec3(0.62, 0.92, 1.00), upleft);
+        rim_col = mix(rim_col, vec3(1.00, 0.62, 0.22),
+                      down * (1.0 - right) * 0.7);
+        vec2 q = vec2(abs(lp.x), lp.y);
+        vec2 k1 = vec2(0.809017, -0.587785);
+        vec2 k2 = vec2(-k1.x, k1.y);
+        q -= 2.0 * max(dot(k1, q), 0.0) * k1;
+        q -= 2.0 * max(dot(k2, q), 0.0) * k2;
+        q.x = abs(q.x);
+        q.y -= 0.92;
+        vec2 ba = 0.50 * vec2(-k1.y, k1.x) - vec2(0.0, 1.0);
+        float hq = clamp(dot(q, ba) / dot(ba, ba), 0.0, 0.92);
+        float sd = length(q - ba * hq)
+                 * sign(q.y * ba.x - q.x * ba.y) - 0.08;
+        float face = smoothstep(0.25, 0.70, abs(v_local_n.z));
+        float band = (1.0 - smoothstep(0.0, 0.15, -sd)) * face;
+        float fres = pow(edge, 1.4);
+        float soft = max(smoothstep(0.30, 0.95, edge), band);
+        // the sides glow gold through the depth
+        float side = 1.0 - face;
+        col = mix(col, vec3(1.00, 0.58, 0.14), side * 0.60);
+        col = mix(col, rim_col, soft * (0.25 + 0.40 * face));
+        col += rim_col * (fres * 0.12 + band * band * 0.25);
+        vec3 h = normalize(key + V);
+        float nh = max(dot(N, h), 0.0);
+        float sheen = pow(nh, 12.0) * 0.20;
+        float gloss = pow(nh, 70.0) * 1.30;
+        float spark = pow(nh, 400.0) * 2.50;
+        col += vec3(1.0, 0.99, 0.95) * (sheen + gloss + spark);
+        // shine: a bright window seen in the gloss, hard edged, and
+        // the lavender sky in the glancing edges
+        vec3 R = reflect(-V, N);
+        float win = smoothstep(0.62, 0.70, dot(R, key))
+                  * (1.0 - smoothstep(0.88, 0.95, dot(R, key)));
+        col += vec3(1.0, 0.98, 0.92) * win * face * 0.55;
+        // two soft side lights from a little behind: wrapped, broad
+        vec3 lr = normalize(vec3(1.0, 0.20, -0.40));
+        vec3 ll = normalize(vec3(-1.0, 0.35, -0.40));
+        float sr = smoothstep(0.15, 1.05,
+                              -lp.x * 0.75 + dot(N, lr) * 0.45);
+        float sl = smoothstep(0.25, 1.05,
+                              lp.x * 0.70 + dot(N, ll) * 0.45);
+        vec3 purple = vec3(0.72, 0.50, 1.00);
+        vec3 pale = vec3(0.96, 0.92, 1.00);
+        col = mix(col, purple, sr * 0.80);
+        col += purple * sr * 0.30;
+        col = mix(col, pale, sl * 0.45);
+        vec3 h2 = normalize(fill + V);
+        col += vec3(0.85, 0.95, 1.0)
+             * pow(max(dot(N, h2), 0.0), 90.0) * 0.35;
+        col *= ubo.gain;
+        col = col / (1.0 + 0.12 * max(col - 1.0, vec3(0.0)));
+        fragColor = vec4(clamp(col, vec3(0.0), vec3(1.0)), 1.0);
+    }
+
+enum LabelSurface
+    label : 0
+
+# a label on a star's face: its picture, fading in as the face
+# turns toward the eye
+ModelViewProject StarLabel
+    attrib label : LayoutBinding [ type:typeid[ LabelSurface ],
+        id:LabelSurface.label, count:1, format: typeid[ rgba8 ] ]
+    mutable eye  : vec4f
+    mutable fade : f32
+
+    attrib a_pos    : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_normal : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_uv     : VertexInput [ type:typeid[ vec2f ] ]
+
+    attrib v_world_pos : VertexOutput [ type:typeid[ vec3f ] ]
+    attrib v_normal    : VertexOutput [ type:typeid[ vec3f ] ]
+    attrib v_uv        : VertexOutput [ type:typeid[ vec2f ] ]
+
+    attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
+
+    func init []
+        model = mat4f.identity[]
+        view = mat4f.identity[]
+        proj = mat4f.identity[]
+        eye = vec4f [ 0.0, 0.0, 4.0, 1.0 ]
+
+    func vertex [] -> GLSL none {
+        vec4 world = ubo.model * vec4(a_pos, 1.0);
+        v_world_pos = world.xyz;
+        v_normal = mat3(ubo.model) * a_normal;
+        v_uv = a_uv;
+        gl_Position = ubo.proj * ubo.view * world;
+    }
+
+    func fragment [] -> GLSL none {
+        vec4 t = texture(label, v_uv);
+        vec3 V = normalize(ubo.eye.xyz - v_world_pos);
+        float facing = dot(normalize(v_normal), V);
+        float a = t.a * smoothstep(0.35, 0.90, facing) * ubo.fade;
+        if (a < 0.002) discard;
+        fragColor = vec4(t.rgb / max(t.a, 0.0001), a);
     }
 
 func ease [ value: f32 ] -> f32
     t : f32 [ clamp[ value, 0.0, 1.0 ] ]
     return t * t * (3.0 - 2.0 * t)
+
+# slow, then fast through the middle, then slow: a cubic each half
+func ease_square [ value: f32 ] -> f32
+    t : f32 [ clamp[ value, 0.0, 1.0 ] ]
+    if [ t < 0.5 ] return 4.0 * t * t * t
+    u : f32 [ 2.0 - 2.0 * t ]
+    return 1.0 - u * u * u * 0.5
+
+# a star's size at rest and looked at (world units), and its run:
+# the turn to its answer, the burst, the end (seconds)
+STAR_REST  : f32 [ 0.16 ]
+STAR_BIG   : f32 [ 0.40 ]
+STAR_TURN  : f32 [ 1.6 ]
+# the turn's length (seconds), and its label's lift off the face
+STAR_TURNING : f32 [ 0.83 ]
+LABEL_Z    : f32 [ 0.45 ]
+STAR_BURST : f32 [ 3.415 ]
+STAR_END   : f32 [ 6.015 ]
+# the flight through the stars: depth a second (of 2.95 deep)
+SPACE_SPEED : f32 [ 0.045 ]
+
+# a star's question: a x b, its answer the product
+func star_a [ index: i32 ] -> i32
+    return 2 + (index * 5 + 3) % 8
+
+func star_b [ index: i32 ] -> i32
+    return 3 + (index * 7 + 2) % 7
+
+# a word's number (0 to 19, the tens, hundred), -1 if none
+func number_word [ w: string ] -> i64
+    ones : vec string [] [ 'zero', 'one', 'two', 'three', 'four',
+        'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven',
+        'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen',
+        'seventeen', 'eighteen', 'nineteen' ]
+    tens : vec string [] [ 'twenty', 'thirty', 'forty', 'fifty',
+        'sixty', 'seventy', 'eighty', 'ninety' ]
+    for [ i: i32 0, i < ones.count, i += 1 ]
+        if [ w == ones[ i ] ] return i64[ i ]
+    for [ i: i32 0, i < tens.count, i += 1 ]
+        if [ w == tens[ i ] ] return i64[ 20 + i * 10 ]
+    if [ w == 'for' ] return 4
+    if [ w == 'ate' ] return 8
+    if [ w == 'hundred' ] return 100
+    return -1
+
+# the number in a take: its first digits, else its words (-1 none)
+func spoken_number [ said: string ] -> i64
+    low : string said.lcase[]
+    n : i64 [ low.count ]
+    digits : i64 [ -1 ]
+    total : i64 [ -1 ]
+    start : i64 [ -1 ]
+    for [ i: i64 0, i <= n, i += 1 ]
+        c : i32 [ 32 ]
+        if [ i < n ] c = (i32 low.chars[ i ]) & 255
+        if [ c >= 48 && c <= 57 ]
+            if [ digits < 0 ] digits = 0
+            digits = digits * 10 + i64[ c - 48 ]
+            continue
+        if [ digits >= 0 && c != 44 ] return digits
+        letter : bool [ c >= 97 && c <= 122 ]
+        if [ letter && start < 0 ] start = i
+        if [ letter || start < 0 ] continue
+        v : i64 number_word[ low.mid[ start, i - start ] ]
+        start = -1
+        if [ v < 0 ] continue
+        if [ total < 0 ] total = 0
+        if [ v == 100 ] total = max[ total, 1 ] * 100
+        el total += v
+    return total
+
+# a steady number 0..1 for an index
+func star_hash [ i: i32 ] -> f32
+    v : f32 [ sin[ f32[ i ] * 12.9898 + 78.233 ] * 43758.5453 ]
+    return v - floor[ v ]
 
 element StarView
     style : CSS {
@@ -444,8 +599,47 @@ element StarView
     mutable spark_shaders : vec StarLit
     mutable spark_models  : vec Model
     mutable geometry : GltfModel
-    mutable chosen_star : i32 [ 6 ]
+    # the star looked at (-1: none), since when (ms), and the one
+    # just burst (not taken again until the look leaves it)
+    mutable chosen_star : i32 [ -1 ]
+    mutable chosen_at : i64
+    mutable spent_star : i32 [ -1 ]
+    mutable gaze_candidate : i32 [ -1 ]
+    # each star (ms; 0: none): its right answer said, a wrong one
+    # said (it shakes its head), and a voice heard at it whose
+    # words are still coming
+    mutable said : vec i64
+    mutable shook : vec i64
+    mutable heard : vec i64
+    mutable hear_off : bool
+    # the stars answered: each left as its core and a small star
+    mutable won : vec bool
+    # each look's start: when (ms), then the star (-1: none)
+    mutable looks : vec i64
+    mutable gaze_since : i64
+    # each star's size, eased toward its goal
+    mutable sizes : vec f32
+    # the stars alone, the blur's source
+    mutable glow_cv : Canvas
+    # the chosen star's question and answer, each drawn once into a
+    # picture on a panel turning with the star
+    mutable ask_labels : vec StarLabel
+    mutable ask_cvs : vec Canvas
+    # the round: its first look (ms), wrong answers, and the end
+    # (all twelve swirled into one star with the score on it)
+    mutable round_at : i64
+    mutable misses : i32
+    mutable finale_at : i64
+    mutable round_secs : f32
+    mutable score : i64
+    mutable merged : bool
+    mutable answer_labels : vec StarLabel
     public preview_time : f32 [ -1.0 ]
+    # the burst's sound, and the run it last played for
+    mutable mixer : AudioMixer
+    mutable boom : AudioClip
+    mutable swell : AudioClip
+    mutable boomed : vec i64
 
     func setup [ cv: Canvas, w: Window ]
         geometry = GltfModel.open[ path 'models/star.gltf' ]
@@ -463,16 +657,40 @@ element StarView
             models.push[ model ]
         spark_shaders = vec StarLit []
         spark_models = vec Model []
-        for [ i: i32 0, i < 12, i += 1 ]
+        for [ i: i32 0, i < 72, i += 1 ]
             shader : StarLit [ vk: cv.vk, name: 'star-spark' ]
             model : Model [ vk: cv.vk, w: w, id: geometry,
                             s: shader, cull_none: true ]
             spark_shaders.push[ shader ]
             spark_models.push[ model ]
             models.push[ model ]
+        panel : make_model[ label_data[] ]
+        ask_labels = vec StarLabel []
+        answer_labels = vec StarLabel []
+        ask_cvs = vec Canvas []
+        for [ i: i32 0, i < 12, i += 1 ]
+            first : i32 star_a[ i ]
+            second : i32 star_b[ i ]
+            ask_cv : label_canvas[ cv, w ]
+            answer_cv : label_canvas[ cv, w ]
+            label_write[ ask_cv, '{first} × {second}' ]
+            label_write[ answer_cv, '{first * second}' ]
+            ask_cvs.push[ ask_cv ]
+            ask : StarLabel [ vk: cv.vk, name: 'star-ask-{i}',
+                              transparent: true ]
+            answer : StarLabel [ vk: cv.vk, name: 'star-answer-{i}',
+                                 transparent: true ]
+            asks : map Au [ string ] [ 'label': ask_cv.color ]
+            answers : map Au [ string ] [ 'label': answer_cv.color ]
+            models.push[ Model [ vk: cv.vk, w: w, id: panel,
+                s: ask, samplers: asks, cull_none: true ] ]
+            models.push[ Model [ vk: cv.vk, w: w, id: panel,
+                s: answer, samplers: answers, cull_none: true ] ]
+            ask_labels.push[ ask ]
+            answer_labels.push[ answer ]
         star_render = Render [ vk: cv.vk, w: w, wscale: 2.0,
             use_depth: true, tag: 'star-reader',
-            clear_color: vec4f [ 0.008, 0.012, 0.055, 1.0 ],
+            clear_color: vec4f [ 0.0, 0.0, 0.0, 0.0 ],
             models: models ]
         star_render.owner = a
         w.element_targets[ 'star_reader_{id}' ] = star_render
@@ -480,7 +698,7 @@ element StarView
     func grid_at [ index: i32 ] -> vec3f
         col : f32 [ f32[ index % 4 ] - 1.5 ]
         row : f32 [ 1.0 - f32[ index / 4 ] ]
-        return vec3f [ col * 0.62, row * 0.60, 0.0 ]
+        return vec3f [ 0.0 - col * 0.62, row * 0.60, 0.0 ]
 
     func grid_screen [ index: i32 ] -> vec2f
         at : vec3f grid_at[ index ]
@@ -488,18 +706,166 @@ element StarView
             ? bounds.w / bounds.h : 1.6 ]
         visible_h : f32 [ 8.0 * tan[ radians[ 16.0 ] ] ]
         return vec2f [ bounds.w * (0.5
-                       + at.x / (visible_h * aspect)),
+                       - at.x / (visible_h * aspect)),
                        bounds.h * (0.5 - at.y / visible_h) ]
 
+    func gaze_update [ w: Window ]
+        app : reader [ cast reader [ w.app_object ] ]
+        if [ !app || !app.gaze ] return
+        ws : vec string app.gaze.trim[].split[ ' ' ]
+        if [ ws.count < 2 ] return
+        gx : f32 [ f32[ ws[ 0 ].real_value[] ] ]
+        gy : f32 [ f32[ ws[ 1 ].real_value[] ] ]
+        monitor : rect w.on_monitor[]
+        if [ monitor.w <= 0.0 || monitor.h <= 0.0 ] return
+        origin : vec2f w.win_origin[ a ]
+        point : vec2f [ (gx + 0.5) * monitor.w
+                        - monitor.x - origin.x,
+                        (gy + 0.5) * monitor.h
+                        - monitor.y - origin.y ]
+        if [ point.x < 0.0 || point.y < 0.0
+             || point.x >= bounds.w || point.y >= bounds.h ] return
+        next : i32 gaze_pick[ point ]
+        now : i64 epoch_millis[]
+        if [ next != spent_star ] spent_star = -1
+        if [ next != gaze_candidate ]
+            gaze_candidate = next
+            gaze_since = now
+        if [ next != chosen_star && next != spent_star && !won[ next ]
+             && said[ next ] == 0 && now - gaze_since >= 300 ]
+            choose[ next, now ]
+
+    # a star chosen, and when, kept so a late answer finds its star
+    func choose [ star: i32, now: i64 ]
+        if [ star >= 0 && round_at == 0 ] round_at = now
+        chosen_star = star
+        chosen_at = now
+        if [ !looks ] looks = vec i64 []
+        looks.push[ now ]
+        looks.push[ i64[ star ] ]
+        if [ looks.count > 64 ]
+            looks.shift[]
+            looks.shift[]
+
+    # the star looked at when (ms), -1 if none
+    func chosen_when [ at: i64 ] -> i32
+        if [ !looks ] return chosen_star
+        star : i32 [ -1 ]
+        for [ i: i32 0, i < looks.count, i += 2 ]
+            if [ looks[ i ] > at ] break
+            star = i32[ looks[ i + 1 ] ]
+        return star
+
+    func gaze_pick [ point: vec2f ] -> i32
+        picked : i32 [ -1 ]
+        best : f32 [ 1.0e30 ]
+        for [ i: i32 0, i < 12, i += 1 ]
+            center : vec2f grid_screen[ i ]
+            dx : f32 [ point.x - center.x ]
+            dy : f32 [ point.y - center.y ]
+            distance : f32 [ dx * dx + dy * dy ]
+            if [ distance < best ]
+                best = distance
+                picked = i
+        return picked
+
+    func label_canvas [ cv: Canvas, w: Window ] -> Canvas
+        made : Canvas [ vk: cv.vk, w: w, width: 512, height: 256,
+                        load_existing: true ]
+        made.update[]
+        return made
+
+    # a label's picture: the text, dark purple, clear round it
+    func label_write [ lc: Canvas, text: string ]
+        lc.fresh_state[]
+        lc.clear_recorded[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
+        lc.set_font[ shared_font[ lc,
+            'fonts/StarReader-Math.ttf', 80 ] ]
+        lc.font_size[ 190.0 ]
+        lc.fill_color[ rgba [ r: 0.208, g: 0.149, b: 0.435, a: 1.0 ] ]
+        lc.draw_text[ text, rect [ x: 0.0, y: 0.0, w: 512.0, h: 256.0 ],
+            vec2f [ 0.5, 0.5 ], vec2f [ 0.5, -4.5 ],
+            Overflow.visible, null, false ]
+        lc.paint[]
+        lc.set_font[ null ]
+        lc.sync_all[]
+
+    func place_label [ lb: StarLabel, view: mat4f, projection: mat4f,
+                       eye: vec3f, fade: f32 ]
+        lb.view = view
+        lb.proj = projection
+        lb.eye = vec4f [ eye.x, eye.y, eye.z, 1.0 ]
+        lb.fade = fade
+
+    # pixels a world unit, at the stars' depth
+    func unit_px [] -> f32
+        return bounds.h / (8.0 * tan[ radians[ 16.0 ] ])
+
+    # seconds into a star's run: asking 0, -1 at rest
+    func star_time [ i: i32 ] -> f32
+        if [ preview_time >= 0.0 ]
+            return (i == chosen_star) ? preview_time : -1.0
+        if [ said[ i ] != 0 ]
+            ran : i64 [ epoch_millis[] - said[ i ] ]
+            return STAR_TURN + f32[ ran ] / 1000.0
+        if [ i == chosen_star || heard[ i ] != 0 ] return 0.0
+        return -1.0
+
+    # the head shake after a wrong answer: x (world units), roll
+    func wiggle [ i: i32 ] -> vec2f
+        if [ shook[ i ] == 0 ] return vec2f [ 0.0, 0.0 ]
+        dt : f32 [ f32[ epoch_millis[] - shook[ i ] ] / 1000.0 ]
+        if [ dt > 1.0 ] return vec2f [ 0.0, 0.0 ]
+        s : f32 [ sin[ dt * 30.0 ] * exp[ 0.0 - dt * 4.5 ] ]
+        return vec2f [ s * 0.05, s * 0.22 ]
+
+    # the mic: a number said while a star asks; right, it turns
+    func hear [ w: Window ]
+        if [ preview_time >= 0.0 || hear_off ] return
+        if [ !dictation_streaming[] ]
+            dictation_preload[]
+            if [ dictation_stream_start[] != 0 ] hear_off = true
+            # a number is a word or two: end the take 0.17 s after it
+            dictation_end_after[ 4 ]
+            return
+        dictation_gpu[ Canvas w.screen ]
+        for [ k: i32 0, k < 64, k += 1 ]
+            if [ !dictation_poll[] ] break
+        now : i64 epoch_millis[]
+        # a voice keeps the one star looked at as it began up
+        # until its words come, 4 s at most: noise is a voice too
+        if [ dictation_speaking[] ]
+            began : i64 [ dictation_voice_at[] / 1000 + 900 ]
+            first : i32 chosen_when[ began ]
+            if [ first >= 0 ] heard[ first ] = now
+        for [ i: i32 0, i < 12, i += 1 ]
+            if [ !dictation_hearing[] || now - heard[ i ] > 4000 ]
+                heard[ i ] = 0
+        words : string dictation_stream_take[]
+        if [ !words || words.count == 0 ] return
+        log 'star-reader: heard "{words}"'
+        # the star looked at as the word began (its take starts
+        # 0.8 s before the voice did), even if the look moved since
+        star : i32 chosen_when[ dictation_stream_at[] / 1000 + 900 ]
+        if [ star >= 0 ] heard[ star ] = 0
+        n : i64 spoken_number[ words ]
+        if [ n < 0 ] return
+        if [ star < 0 || won[ star ] || said[ star ] != 0 ] return
+        right : i64 [ star_a[ star ] * star_b[ star ] ]
+        if [ n == right ] said[ star ] = now
+        el
+            shook[ star ] = now
+            misses += 1
+
     func place_sparks [ view: mat4f, projection: mat4f, t: f32,
-                        center: vec3f ]
-        burst : f32 [ ease[ (t - 5.0) / 1.35 ] ]
-        life : f32 [ clamp[ (t - 5.0) / 1.8, 0.0, 1.0 ] ]
-        size : f32 [ sin[ life * 3.14159265 ] * 0.20 ]
-        if [ t < 5.0 ] size = 0.001
-        for [ i: i32 0, i < spark_shaders.count, i += 1 ]
-            angle : f32 [ f32[ i ] * 0.5235988 + 0.16 ]
-            reach : f32 [ burst * (1.55 + f32[ i % 4 ] * 0.16) ]
+                        center: vec3f, star: i32 ]
+        burst : f32 [ ease[ (t - STAR_BURST) / 1.35 ] ]
+        life : f32 [ clamp[ (t - STAR_BURST) / 1.8, 0.0, 1.0 ] ]
+        size : f32 [ sin[ life * 3.14159265 ] * 0.13 ]
+        if [ t < STAR_BURST ] size = 0.001
+        for [ i: i32 0, i < 6, i += 1 ]
+            angle : f32 [ f32[ i ] * 1.0471976 + 0.4 ]
+            reach : f32 [ burst * (0.62 + f32[ i % 3 ] * 0.08) ]
             z : f32 [ f32[ (i % 5) - 2 ] * 0.13 * burst ]
             at : vec3f [ center.x + cos[ angle ] * reach,
                          center.y + sin[ angle ] * reach, z ]
@@ -509,17 +875,154 @@ element StarView
             matrix = matrix.translate[ at ]
             matrix = matrix.rotate[ quatf [ spin ] ]
             matrix = matrix.scale[ vec3f [ size, size, size ] ]
-            shader : spark_shaders[ i ]
+            shader : spark_shaders[ star * 6 + i ]
             shader.model = matrix
             shader.view = view
             shader.proj = projection
             shader.eye = vec4f [ 0.0, 0.0, 4.0, 1.0 ]
-            shader.gain = 1.0 + (1.0 - life) * 0.8
+            shader.gain = 1.05
 
-    func animate [ w: Window ] -> f32
-        seconds : f32 [ ux.time * 1000.0 ]
-        t : f32 [ seconds - floor[ seconds / 7.2 ] * 7.2 ]
-        if [ preview_time >= 0.0 ] t = preview_time
+    # each star's burst: the boom; the end's big star: the swell
+    func burst_sound [ big: bool ]
+        if [ !mixer ]
+            mixer = AudioMixer [ sample_rate: 48000 ]
+            if [ !mixer.start[] ] return
+            boom = wav_load[ path 'sounds/boom.wav' ]
+            swell = wav_load[ path 'sounds/swell.wav' ]
+        mixer.play[ (big) ? swell : boom, false, 0.9 ]
+
+    # all twelve: the time, the share right, and their score
+    # (1000 for all right inside a minute)
+    func finale_start [ now: i64 ]
+        finale_at = now
+        merged = false
+        round_secs = f32[ now - round_at ] / 1000.0
+        right : f32 [ 12.0 / f32[ 12 + misses ] ]
+        quick : f32 [ min[ 1.0, 60.0 / max[ round_secs, 1.0 ] ] ]
+        score = i64[ 1000.0 * right * quick + 0.5 ]
+        label_write[ ask_cvs[ 0 ], '{score}' ]
+
+    # the share right, as a whole percent
+    func right_percent [] -> i64
+        return i64[ 1200.0 / f32[ 12 + misses ] + 0.5 ]
+
+    # the end: each star spirals in, star 0 grows into the big one
+    func finale_star [ i: i32, now: i64, view: mat4f,
+                       projection: mat4f, eye: vec3f ]
+        ft : f32 [ f32[ now - finale_at ] / 1000.0 ]
+        at : vec3f grid_at[ i ]
+        r0 : f32 [ sqrt[ at.x * at.x + at.y * at.y ] ]
+        a0 : f32 [ atan2[ at.y, at.x ] ]
+        p : f32 [ ease[ (ft - f32[ i ] * 0.07) / 2.2 ] ]
+        grow : f32 [ ease[ (ft - 3.0) / 0.9 ] ]
+        if [ grow > 0.0 && !merged ]
+            merged = true
+            burst_sound[ true ]
+        ang : f32 [ a0 + p * 12.566 ]
+        r : f32 [ r0 * (1.0 - p) ]
+        size : f32 [ STAR_REST * (0.6 + 0.4 * (1.0 - p)) ]
+        if [ i == 0 ] size = size * (1.0 - grow) + 0.62 * grow
+        el size *= 1.0 - grow
+        if [ size < 0.001 ] size = 0.001
+        spin : f32 [ p * 9.42 ]
+        sway : f32 [ sin[ ft * 1.3 ] * 0.25 ]
+        if [ i == 0 ] spin = (1.0 - grow) * spin + grow * sway
+        matrix : mat4f.identity[]
+        matrix = matrix.translate[ vec3f [ cos[ ang ] * r,
+            sin[ ang ] * r - 0.12 * grow, 0.08 + 0.3 * grow ] ]
+        turn : vec4f [ 0.0, 1.0, 0.0, spin ]
+        matrix = matrix.rotate[ quatf [ turn ] ]
+        matrix = matrix.scale[ vec3f [ size, size, size ] ]
+        shader : star_shaders[ i ]
+        shader.model = matrix
+        shader.view = view
+        shader.proj = projection
+        shader.eye = vec4f [ eye.x, eye.y, eye.z, 1.0 ]
+        shader.gain = 1.0 + 0.3 * (1.0 - p) + 0.25 * grow
+        lift : vec3f [ 0.0, 0.0, LABEL_Z ]
+        ask : StarLabel ask_labels[ i ]
+        answer : StarLabel answer_labels[ i ]
+        ask.model = matrix.translate[ lift ]
+        answer.model = ask.model
+        shown : f32 [ (i == 0) ? ease[ (ft - 3.6) / 0.6 ] : 0.0 ]
+        place_label[ ask, view, projection, eye, shown ]
+        place_label[ answer, view, projection, eye, 0.0 ]
+        place_sparks[ view, projection, -1.0, at, i ]
+
+    # the end over: the twelve back for another round
+    func finale_end []
+        finale_at = 0
+        round_at = 0
+        misses = 0
+        label_write[ ask_cvs[ 0 ], '{star_a[ 0 ]} × {star_b[ 0 ]}' ]
+        for [ i: i32 0, i < 12, i += 1 ]
+            won[ i ] = false
+            sizes[ i ] = STAR_REST
+
+    # the score's words under the big star
+    func draw_score [ cv: Canvas ]
+        if [ finale_at == 0 ] return
+        ft : f32 [ f32[ epoch_millis[] - finale_at ] / 1000.0 ]
+        if [ ft > 14.0 ]
+            finale_end[]
+            return
+        shown : f32 [ ease[ (ft - 3.8) / 0.8 ]
+                      * (1.0 - ease[ (ft - 13.0) / 1.0 ]) ]
+        if [ shown <= 0.0 ] return
+        secs : i64 [ i64[ round_secs + 0.5 ] ]
+        # the fonts: digits in the math one, words in the title one
+        parts : vec string [] [ '{secs / 60}', ' min ',
+            '{secs % 60}', ' sec    ', '{right_percent[]}',
+            ' percent right' ]
+        math : shared_font[ cv, 'fonts/StarReader-Math.ttf', 44 ]
+        title : shared_font[ cv, 'fonts/StarReader-Title.ttf', 44 ]
+        widths : vec f32 []
+        total : f32 [ 0.0 ]
+        for [ k: i32 0, k < parts.count, k += 1 ]
+            cv.set_font[ (k % 2 == 0) ? math : title ]
+            cv.font_size[ 44.0 ]
+            wd : f32 [ cv.measure_text[ parts[ k ] ].w ]
+            widths.push[ wd ]
+            total += wd
+        x : f32 [ (bounds.w - total) * 0.5 ]
+        cv.fill_color[ rgba [ r: 1.0, g: 0.95, b: 0.85, a: shown ] ]
+        for [ k: i32 0, k < parts.count, k += 1 ]
+            cv.set_font[ (k % 2 == 0) ? math : title ]
+            cv.font_size[ 44.0 ]
+            cv.draw_text[ parts[ k ],
+                rect [ x: x, y: bounds.h - 100.0, w: widths[ k ],
+                       h: 60.0 ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.5 ],
+                Overflow.visible, null, false ]
+            cv.paint[]
+            x += widths[ k ]
+        cv.set_font[ null ]
+
+    func animate [ w: Window ]
+        gaze_update[ w ]
+        now : i64 epoch_millis[]
+        # each run over: the star stays its core; all twelve, again
+        for [ i: i32 0, i < 12, i += 1 ]
+            t : f32 star_time[ i ]
+            if [ said[ i ] != 0 && said[ i ] != boomed[ i ]
+                 && t >= STAR_BURST ]
+                boomed[ i ] = said[ i ]
+                burst_sound[ false ]
+            if [ preview_time >= 0.0 || said[ i ] == 0
+                 || t <= STAR_END ] continue
+            sizes[ i ] = 0.0
+            won[ i ] = true
+            said[ i ] = 0
+            shook[ i ] = 0
+            if [ i == chosen_star ]
+                spent_star = i
+                choose[ -1, now ]
+        left : i32 [ 0 ]
+        for [ i: i32 0, i < 12, i += 1 ]
+            if [ !won[ i ] ] left += 1
+        if [ left == 0 && finale_at == 0 && preview_time < 0.0 ]
+            finale_start[ now ]
+        if [ preview_time >= 0.0 && chosen_star < 0 ] chosen_star = 6
         aspect : f32 [ (bounds.h > 0.0) ? bounds.w / bounds.h : 1.6 ]
         eye : vec3f [ 0.0, 0.0, 4.0 ]
         target : vec3f [ 0.0, 0.0, 0.0 ]
@@ -527,60 +1030,417 @@ element StarView
         view : mat4f.look_at[ eye, target, up ]
         projection : mat4f.perspective[ radians[ 32.0 ], aspect,
                                          0.05, 20.0 ]
-        turn : f32 [ ease[ (t - 2.0) / 1.25 ] * 3.14159265 ]
-        burst : f32 [ ease[ (t - 5.0) / 0.22 ] ]
+        lift : vec3f [ 0.0, 0.0, LABEL_Z ]
+        back : vec4f [ 0.0, 1.0, 0.0, 3.14159265 ]
         for [ i: i32 0, i < star_shaders.count, i += 1 ]
-            chosen : bool [ i == chosen_star ]
-            size : f32 [ (chosen) ? 0.40 : 0.25 ]
-            if [ chosen ] size *= 1.0 - burst
+            if [ finale_at != 0 ]
+                finale_star[ i, now, view, projection, eye ]
+                continue
+            t : f32 star_time[ i ]
+            up_now : bool [ t >= 0.0 ]
+            turn : f32 [ ease_square[ (t - STAR_TURN) / STAR_TURNING ]
+                         * 3.14159265 ]
+            burst : f32 [ ease[ (t - STAR_BURST) / 0.22 ] ]
+            if [ !up_now ]
+                turn = 0.0
+                burst = 0.0
+            shake : vec2f wiggle[ i ]
+            goal : f32 [ (up_now) ? STAR_BIG : STAR_REST ]
+            if [ won[ i ] && !up_now ] goal = 0.001
+            sizes[ i ] = filter_n[ sizes[ i ], goal, 0.12,
+                                   w.frame_factor ]
+            size : f32 [ sizes[ i ] ]
+            if [ preview_time >= 0.0 ] size = goal
+            size *= 1.0 - burst
             if [ size < 0.001 ] size = 0.001
             at : vec3f grid_at[ i ]
-            rotation : vec4f [ 0.0, 1.0, 0.0,
-                               (chosen) ? turn : 0.0 ]
+            rotation : vec4f [ 0.0, 1.0, 0.0, turn ]
             matrix : mat4f.identity[]
-            matrix = matrix.translate[ vec3f [ at.x, at.y,
-                (chosen) ? 0.08 : 0.0 ] ]
+            matrix = matrix.translate[ vec3f [ at.x + shake.x, at.y,
+                (up_now) ? 0.08 : 0.0 ] ]
             matrix = matrix.rotate[ quatf [ rotation ] ]
+            if [ shake.y != 0.0 ]
+                matrix = matrix.rotate[ quatf [ vec4f [ 0.0, 0.0, 1.0,
+                                                        shake.y ] ] ]
             matrix = matrix.scale[ vec3f [ size, size, size ] ]
+            grown : f32 [ clamp[ (size / STAR_BIG - 0.3) / 0.4,
+                                 0.0, 1.0 ] ]
+            gone : f32 [ clamp[ (t - STAR_BURST) / 0.12, 0.0, 1.0 ] ]
+            fade : f32 [ (up_now) ? grown * (1.0 - gone) : 0.0 ]
             shader : star_shaders[ i ]
             shader.model = matrix
             shader.view = view
             shader.proj = projection
             shader.eye = vec4f [ eye.x, eye.y, eye.z, 1.0 ]
-            shader.gain = (chosen) ? 1.12 + burst * 2.0 : 0.78
-        place_sparks[ view, projection, t, grid_at[ chosen_star ] ]
+            shader.gain = (up_now) ? 1.0 + burst * 2.0 : 0.94
+            ask : StarLabel ask_labels[ i ]
+            answer : StarLabel answer_labels[ i ]
+            ask.model = matrix.translate[ lift ]
+            turned : mat4f [ matrix.rotate[ quatf [ back ] ] ]
+            answer.model = turned.translate[ lift ]
+            place_label[ ask, view, projection, eye, fade ]
+            place_label[ answer, view, projection, eye, fade ]
+            place_sparks[ view, projection, t, at, i ]
         star_render.update[]
-        return t
 
-    func draw_problem [ cv: Canvas, t: f32 ]
-        turn : f32 [ ease[ (t - 2.0) / 1.25 ] * 3.14159265 ]
-        face_alpha : f32 [ abs[ cos[ turn ] ] ]
-        if [ face_alpha < 0.001 ] return
-        text : string [ (turn < 1.57079633) ? '7 × 8' : '56' ]
-        center : vec2f grid_screen[ chosen_star ]
-        cv.save[]
-        cv.set_font[ shared_font[ cv,
-            'fonts/StarReader-Math.ttf', 80 ] ]
-        cv.font_size[ 80 ]
-        cv.fill_color[ rgba [ r: 0.208, g: 0.149,
-                              b: 0.435, a: face_alpha ] ]
-        cv.draw_text[ text,
-            rect [ x: center.x - 140.0, y: center.y - 60.0,
-                   w: 280.0, h: 120.0 ],
-            vec2f [ 0.5, 0.5 ], vec2f [ 0.5, 0.5 ],
-            Overflow.visible, null, false ]
+    # the night: deep blue, lighter in its middle, faint stars
+    func draw_sky [ cv: Canvas ]
+        g : linear_gradient[ 0.0, 0.0, 0.0, bounds.h ]
+        g.add_stop[ 0.0, color_pack[ 30, 36, 112, 255 ] ]
+        g.add_stop[ 1.0, color_pack[ 12, 16, 62, 255 ] ]
+        cv.set_fill_gradient[ g ]
+        cv.rect_to[ 0.0, 0.0, bounds.w, bounds.h ]
         cv.paint[]
-        cv.set_font[ null ]
+        cv.clear_fill_gradient[]
+        rr : f32 [ max[ bounds.w, bounds.h ] * 0.6 ]
+        mid : radial_gradient[ bounds.w * 0.5, bounds.h * 0.45, 0.0,
+                               rr ]
+        mid.add_stop[ 0.0, color_pack[ 70, 70, 170, 70 ] ]
+        mid.add_stop[ 1.0, color_pack[ 70, 70, 170, 0 ] ]
+        cv.set_fill_gradient[ mid ]
+        cv.rect_to[ 0.0, 0.0, bounds.w, bounds.h ]
+        cv.paint[]
+        cv.clear_fill_gradient[]
+        draw_space[ cv ]
+
+    # the stars we fly through: points in a box ahead, coming nearer,
+    # each a streak from where it was a moment before; a fine dust
+    # far off that holds still, and soft colour clouds
+    func draw_space [ cv: Canvas ]
+        sec : f32 [ ux.time * 1000.0 ]
+        h : f32 [ bounds.h ]
+        px : f32 [ h / 800.0 ]
+        cv.save[]
+        cv.set_composite[ Composite.plus_lighter ]
+        clouds : vec vec4f [] [
+            vec4f [ 0.22, 0.30, 0.55, 0.0 ],
+            vec4f [ 0.78, 0.66, 0.45, 1.0 ],
+            vec4f [ 0.55, 0.18, 0.35, 2.0 ] ]
+        for [ k: i32 0, k < clouds.count, k += 1 ]
+            cl : vec4f clouds[ k ]
+            drift : f32 [ 0.03 * sin[ sec * 0.02 + cl.w ] ]
+            nx : f32 [ bounds.w * (cl.x + drift) ]
+            ny : f32 [ h * cl.y ]
+            nr : f32 [ h * cl.z ]
+            g : radial_gradient[ nx, ny, 0.0, nr ]
+            if [ k == 0 ]
+                g.add_stop[ 0.0, color_pack[ 90, 60, 170, 46 ] ]
+            if [ k == 1 ]
+                g.add_stop[ 0.0, color_pack[ 30, 110, 150, 36 ] ]
+            if [ k == 2 ]
+                g.add_stop[ 0.0, color_pack[ 170, 80, 60, 26 ] ]
+            g.add_stop[ 1.0, color_pack[ 60, 60, 140, 0 ] ]
+            cv.set_fill_gradient[ g ]
+            cv.rect_to[ 0.0, 0.0, bounds.w, h ]
+            cv.paint[]
+            cv.clear_fill_gradient[]
+        for [ i: i32 0, i < 260, i += 1 ]
+            hx : f32 star_hash[ 3000 + i * 3 ]
+            hy : f32 star_hash[ 3001 + i * 3 ]
+            hz : f32 star_hash[ 3002 + i * 3 ]
+            tw : f32 [ 0.75 + 0.25
+                       * sin[ sec * (0.9 + hz * 2.0) + hx * 40.0 ] ]
+            cv.fill_color[ rgba [ r: 0.80, g: 0.85, b: 1.0,
+                                  a: (0.10 + 0.30 * hz * hz) * tw ] ]
+            cv.arc[ hx * bounds.w, hy * h, px * (0.45 + 0.5 * hz),
+                    0.0, 6.2832 ]
+            cv.paint[]
+        cx : f32 [ bounds.w * (0.5 + 0.03 * sin[ sec * 0.071 ]) ]
+        cy : f32 [ h * (0.46 + 0.025 * cos[ sec * 0.053 ]) ]
+        fl : f32 [ h * 0.5 ]
+        depth : f32 [ 2.95 ]
+        trail : f32 [ SPACE_SPEED * depth * 0.07 ]
+        cv.fill_color[ rgba [ '#0000' ] ]
+        cv.set_stroke_cap[ Cap.round ]
+        for [ i: i32 0, i < 380, i += 1 ]
+            sx : f32 [ (star_hash[ 1000 + i * 5 ] * 2.0 - 1.0) * 1.8 ]
+            sy : f32 [ (star_hash[ 1001 + i * 5 ] * 2.0 - 1.0) * 1.1 ]
+            hd : f32 [ star_hash[ 1002 + i * 5 ] - sec * SPACE_SPEED ]
+            hb : f32 star_hash[ 1003 + i * 5 ]
+            hc : f32 star_hash[ 1004 + i * 5 ]
+            d : f32 [ 0.05 + depth * (hd - floor[ hd ]) ]
+            x : f32 [ cx + sx / d * fl ]
+            y : f32 [ cy + sy / d * fl ]
+            if [ x < -40.0 || y < -40.0 || x > bounds.w + 40.0
+                 || y > h + 40.0 ] continue
+            dt : f32 [ d + trail ]
+            tx : f32 [ cx + sx / dt * fl ]
+            ty : f32 [ cy + sy / dt * fl ]
+            if [ abs[ x - tx ] + abs[ y - ty ] < 0.6 ]
+                tx = x - 0.4
+            lum : f32 [ 0.25 + 0.75 * hb * hb * hb ]
+            near : f32 [ clamp[ 0.7 / d, 0.15, 2.5 ] ]
+            fade : f32 [ clamp[ (depth - d) / 0.6, 0.0, 1.0 ]
+                         * clamp[ (d - 0.05) / 0.06, 0.0, 1.0 ] ]
+            al : f32 [ clamp[ lum * near * 0.8, 0.0, 1.0 ] * fade ]
+            wd : f32 [ px * (0.6 + 1.6 * lum)
+                       * clamp[ near, 0.5, 2.2 ] ]
+            # its colour by its heat: blue-white, white, yellow, orange
+            col : rgba [ r: 1.0, g: 0.97, b: 0.92, a: al ]
+            if [ hc < 0.25 ]
+                col = rgba [ r: 0.70, g: 0.80, b: 1.0, a: al ]
+            el [ hc > 0.88 ]
+                col = rgba [ r: 1.0, g: 0.64, b: 0.36, a: al ]
+            el [ hc > 0.62 ]
+                col = rgba [ r: 1.0, g: 0.87, b: 0.62, a: al ]
+            if [ al * wd > px * 1.2 ]
+                gr : f32 [ wd * 5.0 ]
+                g : radial_gradient[ x, y, 0.0, gr ]
+                g.add_stop[ 0.0, color_pack[ u8[ col.r * 255.0 ],
+                    u8[ col.g * 255.0 ], u8[ col.b * 255.0 ],
+                    u8[ 90.0 * al ] ] ]
+                g.add_stop[ 1.0, color_pack[ 0, 0, 0, 0 ] ]
+                cv.set_fill_gradient[ g ]
+                cv.stroke_width[ 0.0 ]
+                cv.arc[ x, y, gr, 0.0, 6.2832 ]
+                cv.paint[]
+                cv.clear_fill_gradient[]
+                cv.fill_color[ rgba [ '#0000' ] ]
+            cv.stroke_color[ col ]
+            cv.stroke_width[ wd ]
+            cv.move_to[ tx, ty ]
+            cv.line_to[ x, y ]
+            cv.paint[]
+            if [ hb > 0.94 && al > 0.6 ]
+                sl : f32 [ wd * 9.0 ]
+                cv.stroke_color[ rgba [ r: col.r, g: col.g, b: col.b,
+                                        a: al * 0.45 ] ]
+                cv.stroke_width[ px * 0.7 ]
+                cv.move_to[ x - sl, y ]
+                cv.line_to[ x + sl, y ]
+                cv.paint[]
+                cv.move_to[ x, y - sl ]
+                cv.line_to[ x, y + sl ]
+                cv.paint[]
+        cv.stroke_width[ 0.0 ]
         cv.restore[]
+
+    # the glow: the stars blurred (a gaussian, wide and tight), added
+    # under the sharp stars
+    func draw_glow [ cv: Canvas, w: Window ]
+        full : rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ]
+        wi : i32 [ i32[ bounds.w ] ]
+        hi : i32 [ i32[ bounds.h ] ]
+        if [ !glow_cv ]
+            glow_cv = Canvas [ vk: cv.vk, w: w, width: wi, height: hi,
+                               load_existing: true ]
+            glow_cv.update[]
+        glow_cv.resize[ wi, hi ]
+        glow_cv.fresh_state[]
+        glow_cv.clear_recorded[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
+        glow_cv.draw_image[ star_render.color, full ]
+        u : f32 unit_px[]
+        cv.save[]
+        cv.set_composite[ Composite.plus_lighter ]
+        cv.set_opacity[ 0.55 ]
+        cv.filter_blur[ glow_cv, u * 0.10, u * 0.10, 0.0, 0.0,
+                        0.0, 0.0, 0.0, 0.0 ]
+        cv.set_opacity[ 0.45 ]
+        cv.filter_blur[ glow_cv, u * 0.035, u * 0.035, 0.0, 0.0,
+                        0.0, 0.0, 0.0, 0.0 ]
+        cv.restore[]
+        cv.draw_image[ star_render.color, full ]
+
+    # a five-pointed star's outline, centred, tips out at r
+    func star_shape [ cv: Canvas, x: f32, y: f32, r: f32 ]
+        for [ k: i32 0, k < 10, k += 1 ]
+            ang : f32 [ f32[ k ] * 0.6283185 - 1.5707963 ]
+            rk : f32 [ (k % 2 == 0) ? r : r * 0.45 ]
+            px : f32 [ x + cos[ ang ] * rk ]
+            py : f32 [ y + sin[ ang ] * rk ]
+            if [ k == 0 ] cv.move_to[ px, py ]
+            el cv.line_to[ px, py ]
+        cv.close_path[]
+
+    # what a star leaves: its core's glow and a small star of gold
+    func draw_left [ cv: Canvas, c: vec2f, alpha: f32 ]
+        u : f32 unit_px[]
+        sec : f32 [ ux.time * 1000.0 ]
+        beat : f32 [ 0.85 + 0.15 * sin[ sec * 2.4 + c.x * 0.01 ] ]
+        r : f32 [ u * STAR_REST * 0.62 ]
+        cv.save[]
+        cv.set_composite[ Composite.plus_lighter ]
+        gr : f32 [ r * 2.6 ]
+        g : radial_gradient[ c.x, c.y, 0.0, gr ]
+        g.add_stop[ 0.0, color_pack[ 255, 236, 190,
+                                     u8[ 190.0 * alpha * beat ] ] ]
+        g.add_stop[ 0.25, color_pack[ 255, 150, 50,
+                                      u8[ 110.0 * alpha * beat ] ] ]
+        g.add_stop[ 1.0, color_pack[ 255, 90, 20, 0 ] ]
+        cv.set_fill_gradient[ g ]
+        cv.arc[ c.x, c.y, gr, 0.0, 6.2832 ]
+        cv.paint[]
+        cv.clear_fill_gradient[]
+        cv.restore[]
+        cv.save[]
+        f : linear_gradient[ c.x, c.y - r, c.x, c.y + r ]
+        opaque : u8 [ 255.0 * alpha ]
+        f.add_stop[ 0.0, color_pack[ 255, 238, 170, opaque ] ]
+        f.add_stop[ 0.55, color_pack[ 255, 170, 50, opaque ] ]
+        f.add_stop[ 1.0, color_pack[ 230, 100, 20, opaque ] ]
+        cv.set_fill_gradient[ f ]
+        cv.stroke_color[ rgba [ r: 1.0, g: 0.95, b: 0.80,
+                                a: 0.85 * alpha ] ]
+        cv.stroke_width[ max[ 1.0, r * 0.06 ] ]
+        star_shape[ cv, c.x, c.y, r ]
+        cv.paint[]
+        cv.clear_fill_gradient[]
+        cv.stroke_width[ 0.0 ]
+        cv.fill_color[ rgba [ r: 1.0, g: 0.98, b: 0.90,
+                              a: 0.9 * alpha * beat ] ]
+        cv.arc[ c.x, c.y, r * 0.16, 0.0, 6.2832 ]
+        cv.paint[]
+        cv.restore[]
+
+    # the stars answered, and those bursting as their light fades
+    func draw_won [ cv: Canvas ]
+        for [ i: i32 0, i < 12, i += 1 ]
+            t : f32 star_time[ i ]
+            if [ won[ i ] && t < 0.0 ]
+                draw_left[ cv, grid_screen[ i ], 1.0 ]
+            if [ t < STAR_BURST ] continue
+            come : f32 [ ease[ (t - STAR_BURST - 0.9) / 0.9 ] ]
+            if [ come > 0.0 ]
+                draw_left[ cv, grid_screen[ i ], come ]
+
+    # the burst: a white-gold flash and its star, rays, a gold ring,
+    # glitter, cyan and violet arcs round it, crystals thrown out
+    func draw_burst [ cv: Canvas, star: i32 ]
+        t : f32 star_time[ star ]
+        if [ t < STAR_BURST ] return
+        bt : f32 [ t - STAR_BURST ]
+        if [ bt > STAR_END - STAR_BURST ] return
+        c : vec2f grid_screen[ star ]
+        r : f32 [ unit_px[] * STAR_BIG ]
+        out : f32 [ ease[ bt / 0.9 ] ]
+        fade : f32 [ 1.0 - clamp[ (bt - 1.0) / 1.4, 0.0, 1.0 ] ]
+        flash : f32 [ clamp[ bt / 0.12, 0.0, 1.0 ] * fade ]
+        cv.save[]
+        cv.set_composite[ Composite.plus_lighter ]
+        fr : f32 [ r * (0.6 + 0.8 * out) ]
+        g : radial_gradient[ c.x, c.y, 0.0, fr ]
+        g.add_stop[ 0.0, color_pack[ 255, 250, 225,
+                                     u8[ 255.0 * flash ] ] ]
+        g.add_stop[ 0.35, color_pack[ 255, 205, 90,
+                                      u8[ 170.0 * flash ] ] ]
+        g.add_stop[ 1.0, color_pack[ 255, 170, 40, 0 ] ]
+        cv.set_fill_gradient[ g ]
+        cv.arc[ c.x, c.y, fr, 0.0, 6.2832 ]
+        cv.paint[]
+        cv.clear_fill_gradient[]
+        # rays
+        cv.fill_color[ rgba [ r: 1.0, g: 0.80, b: 0.34,
+                              a: 0.45 * fade ] ]
+        for [ k: i32 0, k < 48, k += 1 ]
+            h : f32 star_hash[ 200 + k ]
+            ang : f32 [ f32[ k ] * 0.1308997 + bt * 0.15 ]
+            len : f32 [ r * (0.7 + 0.9 * h) * out ]
+            wd : f32 [ 0.025 + 0.025 * star_hash[ 260 + k ] ]
+            cv.move_to[ c.x + cos[ ang - wd ] * r * 0.2,
+                        c.y + sin[ ang - wd ] * r * 0.2 ]
+            cv.line_to[ c.x + cos[ ang ] * len,
+                        c.y + sin[ ang ] * len ]
+            cv.line_to[ c.x + cos[ ang + wd ] * r * 0.2,
+                        c.y + sin[ ang + wd ] * r * 0.2 ]
+            cv.close_path[]
+            cv.paint[]
+        # the gold ring
+        cv.fill_color[ rgba [ '#0000' ] ]
+        ring_r : f32 [ r * (0.5 + 0.75 * out) ]
+        cv.stroke_color[ rgba [ r: 1.0, g: 0.70, b: 0.25,
+                                a: 0.30 * fade ] ]
+        cv.stroke_width[ 9.0 ]
+        cv.arc[ c.x, c.y, ring_r, 0.0, 6.2832 ]
+        cv.paint[]
+        cv.stroke_color[ rgba [ r: 1.0, g: 0.86, b: 0.48,
+                                a: 0.90 * fade ] ]
+        cv.stroke_width[ 2.5 ]
+        cv.arc[ c.x, c.y, ring_r, 0.0, 6.2832 ]
+        cv.paint[]
+        # cyan and violet arcs, tilted orbits round the flash
+        for [ o: i32 0, o < 2, o += 1 ]
+            cv.save[]
+            cv.translate[ c.x, c.y ]
+            cv.rotate[ (o == 0) ? -0.55 : 0.55 ]
+            cv.scale_xy[ 1.0, 0.42 ]
+            col : rgba [ (o == 0)
+                ? rgba [ r: 0.35, g: 0.80, b: 1.0, a: 0.9 * fade ]
+                : rgba [ r: 0.70, g: 0.45, b: 1.0, a: 0.9 * fade ] ]
+            st : f32 [ bt * 2.2 + f32[ o ] * 3.14159 ]
+            ar : f32 [ r * (1.05 + 0.45 * out) ]
+            glow : rgba [ r: col.r, g: col.g, b: col.b,
+                          a: col.a * 0.30 ]
+            cv.stroke_color[ glow ]
+            cv.stroke_width[ 10.0 ]
+            cv.arc[ 0.0, 0.0, ar, st, st + 2.4 ]
+            cv.paint[]
+            cv.stroke_color[ col ]
+            cv.stroke_width[ 3.0 ]
+            cv.arc[ 0.0, 0.0, ar, st, st + 2.4 ]
+            cv.paint[]
+            cv.restore[]
+        cv.stroke_width[ 0.0 ]
+        # glitter
+        for [ k: i32 0, k < 160, k += 1 ]
+            h : f32 star_hash[ 400 + k ]
+            ang : f32 [ star_hash[ 500 + k ] * 6.2832 ]
+            d : f32 [ r * (0.3 + 1.4 * h) * out ]
+            tw : f32 [ 0.5 + 0.5 * sin[ bt * 18.0 + f32[ k ] ] ]
+            cv.fill_color[ rgba [ r: 1.0, g: 0.88, b: 0.55,
+                                  a: 0.9 * fade * tw ] ]
+            cv.arc[ c.x + cos[ ang ] * d, c.y + sin[ ang ] * d,
+                    0.8 + 1.6 * star_hash[ 600 + k ], 0.0, 6.2832 ]
+            cv.paint[]
+        # crystals thrown out
+        for [ k: i32 0, k < 7, k += 1 ]
+            ang : f32 [ f32[ k ] * 0.8975979 + 0.3 ]
+            d : f32 [ r * (0.9 + 0.5 * star_hash[ 700 + k ]) * out ]
+            x : f32 [ c.x + cos[ ang ] * d ]
+            y : f32 [ c.y + sin[ ang ] * d ]
+            q : f32 [ r * 0.09 ]
+            cv.fill_color[ rgba [ r: 1.0, g: 0.78, b: 0.32,
+                                  a: 0.95 * fade ] ]
+            cv.move_to[ x, y - q * 1.4 ]
+            cv.line_to[ x + q, y ]
+            cv.line_to[ x, y + q * 1.4 ]
+            cv.line_to[ x - q, y ]
+            cv.close_path[]
+            cv.paint[]
+        cv.restore[]
+        # the star of light at its middle
+        core : f32 [ clamp[ bt / 0.15, 0.0, 1.0 ]
+                     * (1.0 - clamp[ (bt - 0.8) / 1.0, 0.0, 1.0 ]) ]
+        if [ core > 0.0 ]
+            cv.fill_color[ rgba [ r: 1.0, g: 0.98, b: 0.88, a: core ] ]
+            star_shape[ cv, c.x, c.y, r * 0.55 ]
+            cv.paint[]
 
     public func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen ] return
         cv : Canvas [ w.screen ]
         if [ !star_render ] setup[ cv, w ]
-        t : f32 [ animate[ w ] ]
-        cv.draw_image[ star_render.color,
-            rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ] ]
-        draw_problem[ cv, t ]
+        if [ !sizes ]
+            sizes = vec f32 []
+            won = vec bool []
+            said = vec i64 []
+            shook = vec i64 []
+            heard = vec i64 []
+            boomed = vec i64 []
+            for [ i: i32 0, i < 12, i += 1 ]
+                sizes.push[ STAR_REST ]
+                won.push[ false ]
+                said.push[ 0 ]
+                shook.push[ 0 ]
+                heard.push[ 0 ]
+                boomed.push[ 0 ]
+        hear[ w ]
+        animate[ w ]
+        draw_sky[ cv ]
+        draw_glow[ cv, w ]
+        for [ i: i32 0, i < 12, i += 1 ]
+            draw_burst[ cv, i ]
+        if [ finale_at == 0 ] draw_won[ cv ]
+        draw_score[ cv ]
         cv.fill_color[ '#fff3d9' ]
         cv.set_font[ shared_font[ cv,
             'fonts/StarReader-Title.ttf', 56 ] ]
@@ -592,12 +1452,25 @@ element StarView
         cv.paint[]
         cv.set_font[ null ]
 
-element main : trinity
+# our own hyperspace started: kept across a live reload, which
+# would else start a second on the same cameras
+persist gaze_spawned : bool
+
+element reader : trinity
     width  : i32 [ 1280 ]
     height : i32 [ 800 ]
     public title : string [ 'Star Reader' ]
     public test_geometry : bool
     public preview : f32 [ -1.0 ]
+    # hyperspace's gaze: 'x y' from the monitor's middle (-0.5 to
+    # 0.5), or none
+    public [ Live ] gaze : string
+    # orbiter's socket: in orbiter, orbiter runs the gaze service
+    public [ Launch ] opener : string
+    mutable full_started : bool
+    # the gaze last asked for (ms), and whether any has come
+    mutable gaze_asked : i64
+    mutable gaze_came : bool
 
     func init []
         if [ !test_geometry ] return
@@ -606,6 +1479,57 @@ element main : trinity
             exit[ 0 ]
         log 'star-reader: focused geometry test failed'
         exit[ 1 ]
+
+    # alone, our own hyperspace sends the gaze here
+    public func on_agent [ s: string ]
+        ws : vec string s.trim[].split[ ' ' ]
+        if [ ws.count < 5 || ws[ 0 ] != 'system'
+             || ws[ 3 ] != 'gaze' ] return
+        gz : string ws[ 4 ]
+        if [ ws.count >= 6 ] gz = '{gz} {ws[ 5 ]}'
+        gaze = gz
+        gaze_came = true
+
+    # the cameras on: in orbiter its hyperspace service (it ends
+    # with us); alone a hyperspace of our own, which ends when we do
+    func gaze_on []
+        if [ preview >= 0.0 ] return
+        if [ gaze ] gaze_came = true
+        now : i64 epoch_millis[]
+        if [ gaze_came || now - gaze_asked < 3000 ] return
+        first : bool [ gaze_asked == 0 ]
+        gaze_asked = now
+        if [ opener && opener.count > 0 ]
+            sl : i32 host_slot[]
+            ln : string 'app system star-reader {sl} service'
+            ln = '{ln} hyperspace\n'
+            agent_path_send[ opener.chars, ln.chars ]
+            return
+        if [ !first || gaze_spawned ] return
+        gaze_spawned = true
+        rt : string getenv[ 'XDG_RUNTIME_DIR' ]
+        if [ !rt ] rt = '/tmp'
+        # one already running (another app's): it takes us too
+        hs : string '{rt}/trinity-hyperspace.sock'
+        jl : string 'app join {getpid[]} {rt}/trinity-reader.sock\n'
+        if [ agent_path_send[ hs.chars, jl.chars ] != 0 ]
+            log 'star-reader: joined the running hyperspace'
+            return
+        log 'star-reader: starting hyperspace for the gaze'
+        run : command {
+            ../../bin/hyperspace --hidden true --view gaze
+            --owner {getpid[]}
+            --opener {rt}/trinity-reader.sock > /dev/null 2>&1 &
+        }
+        run.exec[ false ]
+
+    public func on_frame [ w: Window ]
+        gaze_on[]
+        if [ full_started ] return
+        full_started = true
+        if [ hidden ] return
+        display = DisplayMode.Screen
+        w.set_fullscreen[ true ]
 
     public func render [] -> Elements
         elements : Elements []
@@ -644,3 +1568,11 @@ func star_geometry_valid [] -> bool
 
 expect func t_star_geometry [] -> bool
     return star_geometry_valid[]
+
+expect func t_spoken_number [] -> bool
+    if [ spoken_number[ ' 56.' ] != 56 ] return false
+    if [ spoken_number[ 'Fifty-six.' ] != 56 ] return false
+    if [ spoken_number[ "It's forty two" ] != 42 ] return false
+    if [ spoken_number[ 'one hundred' ] != 100 ] return false
+    if [ spoken_number[ 'Hello there.' ] != -1 ] return false
+    return true

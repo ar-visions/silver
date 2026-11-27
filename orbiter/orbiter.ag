@@ -193,6 +193,12 @@ element orbiter : trinity # implements compiler
     intern dev_soft : vec Software
     # the ones running, by module
     intern svc_views : map AppView [ string ]
+    # services started for apps, not the user: 'name module slot'
+    # each; one ends once every app that asked for it has
+    intern svc_asks : vec string
+    intern svc_seen : i64
+    # each instance's module file: whether it takes the gaze (y, n)
+    intern gaze_wants : map string [ string ]
     mutable home_back  : bool
     # what each agent says it is doing (research, writing, build,
     # testing, done) and its few words
@@ -1295,6 +1301,8 @@ element orbiter : trinity # implements compiler
 
     public func system_line [ line: string ]
 
+    func gaze_forward [ prop: string, words: string ]
+
     func arg_word [ s: string ] -> string
 
     func sys_reply [ who: string, ln: string ]
@@ -1729,6 +1737,8 @@ element orbiter : trinity # implements compiler
     func service_start [ ae: AppEntry ]
 
     func service_stop [ nm: string ]
+
+    func service_asks_tick []
 
     func service_toggle [ nm: string ]
 
