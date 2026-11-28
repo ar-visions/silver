@@ -1,0 +1,718 @@
+# flora: plants grown by rules, every part bent by Perlin noise,
+# drawn as 3D Gaussian splats; a plant module gives its growth
+# (a Plant subclass), this its Gaussians, levels and viewer
+export 1.0.0
+
+import vec
+import img
+import gltf
+import trinity
+
+enum PlantMap
+    splats : 0
+    order  : 1
+
+# a quad round each Gaussian's screen ellipse; six rows a Gaussian:
+# middle and opacity, three axes (one sigma, world), colour, wind
+# (x height on the plant, y along its branch, z branch, w twig seed)
+ModelViewProject SplatLit
+    mutable eye  : vec4f
+    # x y z: the sun's way; w: the view's height (px)
+    mutable sun  : vec4f
+    # x: the wind's clock (s); y: its strength
+    mutable wind : vec4f
+
+    attrib splats : StorageBuffer [ type:typeid[ PlantMap ],
+        id:PlantMap.splats, count:1, format: typeid[ vec4f ] ]
+    # the draw order: Gaussian numbers, four a row
+    attrib order : StorageBuffer [ type:typeid[ PlantMap ],
+        id:PlantMap.order, count:1, format: typeid[ vec4f ] ]
+
+    attrib a_pos    : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_normal : VertexInput [ type:typeid[ vec3f ] ]
+
+    attrib v_g   : VertexOutput [ type:typeid[ vec3f ] ]
+    attrib v_col : VertexOutput [ type:typeid[ vec3f ] ]
+    attrib v_n   : VertexOutput [ type:typeid[ vec3f ] ]
+    attrib v_pos : VertexOutput [ type:typeid[ vec3f ] ]
+    # its kind: 0 soft, 0.25-0.45 a needle (with its light), 1 wood
+    attrib v_s   : VertexOutput [ type:typeid[ f32 ] ]
+    # the pixel's place on the quad (world, at the middle's depth)
+    # and the splat's three axes: solids find their surface there
+    attrib v_p   : VertexOutput [ type:typeid[ vec3f ] ]
+    attrib v_a1  : VertexOutput [ type:typeid[ vec3f ] ]
+    attrib v_a2  : VertexOutput [ type:typeid[ vec3f ] ]
+    attrib v_a3  : VertexOutput [ type:typeid[ vec3f ] ]
+
+    attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
+
+    func init [ ]
+        model = mat4f.identity[]
+        view  = mat4f.identity[]
+        proj  = mat4f.identity[]
+
+    # smooth noise in time, -1..1, its own stream by seed
+    func wn [ x: float, s: float ] -> GLSL float {
+        float i = floor(x);
+        float f = x - i;
+        float a = fract(sin(i * 12.9898 + s * 78.233) * 43758.5453);
+        float b = fract(sin((i + 1.0) * 12.9898 + s * 78.233)
+                        * 43758.5453);
+        return mix(a, b, f * f * (3.0 - 2.0 * f)) * 2.0 - 1.0;
+    }
+
+    func vertex [] -> GLSL none {
+        int   k  = gl_InstanceIndex;
+        int   gi = int(order[k >> 2][k & 3]);
+        int   i  = gi * 6;
+        vec4  s0 = splats[i];
+        vec3  a1 = splats[i + 1].xyz;
+        vec3  a2 = splats[i + 2].xyz;
+        vec3  a3 = splats[i + 3].xyz;
+        vec4  wd = splats[i + 5];
+        // wind: the trunk sways at its top, a tenth at its middle,
+        // its foot still; each branch on its own clock the same way
+        // along its length (wd.y a share of it), its root locked to
+        // the trunk; the needles flutter likewise
+        float t  = ubo.wind.x;
+        float st = ubo.wind.y;
+        vec3  dir = vec3(0.94, 0.0, 0.34);
+        float tr = (0.7 * wn(t * 0.35, 1.3) + 0.3 * wn(t * 0.9, 5.1))
+                 * pow(wd.x, 3.17) * 0.12 * st;
+        float fb = pow(clamp(wd.y, 0.0, 1.0), 3.17);
+        float bb = fb * 0.1 * st;
+        vec3  dsp = dir * tr
+                  + vec3(0.35 * wn(t * 0.6 + wd.z, 2.0),
+                         wn(t * 0.8 + wd.z, 7.0),
+                         0.35 * wn(t * 0.6 + wd.z, 4.0)) * bb;
+        if (wd.w > 0.0)
+            dsp += vec3(wn(t * 2.7 + wd.w, 1.0),
+                        wn(t * 3.1 + wd.w, 3.0),
+                        wn(t * 2.9 + wd.w, 8.0)) * 0.006 * st * fb;
+        vec3  c  = s0.xyz + dsp;
+        gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+        mat4  pv = ubo.proj * ubo.view;
+        vec4  cc = pv * vec4(c, 1.0);
+        vec4  e1 = pv * vec4(c + a1, 1.0);
+        vec4  e2 = pv * vec4(c + a2, 1.0);
+        vec4  e3 = pv * vec4(c + a3, 1.0);
+        if (min(min(cc.w, e1.w), min(e2.w, e3.w)) < 0.05) return;
+        // the three axes as screen vectors (px)
+        float Hp = ubo.sun.w;
+        float Wp = Hp * abs(ubo.proj[1][1] / ubo.proj[0][0]);
+        vec2  hv = 0.5 * vec2(Wp, Hp);
+        vec2  c2 = cc.xy / cc.w * hv;
+        vec2  v1 = e1.xy / e1.w * hv - c2;
+        vec2  v2 = e2.xy / e2.w * hv - c2;
+        vec2  v3 = e3.xy / e3.w * hv - c2;
+        float sxx = v1.x * v1.x + v2.x * v2.x + v3.x * v3.x;
+        float sxy = v1.x * v1.y + v2.x * v2.y + v3.x * v3.y;
+        float syy = v1.y * v1.y + v2.y * v2.y + v3.y * v3.y;
+        // a pixel's blur, the opacity kept (Mip-Splatting)
+        float d0 = max(sxx * syy - sxy * sxy, 1e-8);
+        sxx += 0.3;
+        syy += 0.3;
+        float d1 = sxx * syy - sxy * sxy;
+        float op = s0.w * sqrt(d0 / d1);
+        if (op < 0.004) return;
+        // wood under about a pixel wide: left to the needles (it
+        // is opaque; drawn, a far branch would show a pixel thick)
+        if (splats[i + 4].w > 0.5 && op < 0.5 * s0.w) return;
+        float mid = 0.5 * (sxx + syy);
+        float rad = sqrt(max(0.25 * (sxx - syy) * (sxx - syy)
+                             + sxy * sxy, 0.0));
+        float l1 = mid + rad;
+        float l2 = max(mid - rad, 0.01);
+        if (l1 > Hp * Hp) return;
+        vec2  q1 = (abs(sxy) > 1e-6)
+                 ? normalize(vec2(sxy, l1 - sxx))
+                 : ((sxx >= syy) ? vec2(1.0, 0.0) : vec2(0.0, 1.0));
+        vec2  q2 = vec2(-q1.y, q1.x);
+        vec2  of = (q1 * sqrt(l1) * a_pos.x + q2 * sqrt(l2) * a_pos.y)
+                 * 3.0;
+        v_g   = vec3(a_pos.xy * 3.0, op);
+        v_col = splats[i + 4].rgb;
+        v_s   = splats[i + 4].w;
+        v_n   = normalize(a3);
+        v_pos = c;
+        // the corner's world place along the view's right and up
+        vec2  dv  = of / hv * cc.w
+                  / vec2(ubo.proj[0][0], ubo.proj[1][1]);
+        vec3  vr  = vec3(ubo.view[0][0], ubo.view[1][0],
+                         ubo.view[2][0]);
+        vec3  vu  = vec3(ubo.view[0][1], ubo.view[1][1],
+                         ubo.view[2][1]);
+        v_p   = c + vr * dv.x + vu * dv.y;
+        v_a1  = a1;
+        v_a2  = a2;
+        v_a3  = a3;
+        gl_Position = vec4(cc.xy + of / hv * cc.w, cc.z, cc.w);
+    }
+
+    func fragment [] -> GLSL none {
+        float al = exp(-0.5 * dot(v_g.xy, v_g.xy)) * v_g.z;
+        if (al < 0.004) discard;
+        vec3  ns  = v_n;
+        vec3  V   = normalize(ubo.eye.xyz - v_pos);
+        // a needle shows either face; bark keeps its outward face
+        float nd  = (v_s > 0.2 && v_s < 0.5) ? 1.0 : 0.0;
+        if (nd > 0.5 && dot(ns, V) < 0.0) ns = -ns;
+        vec3  L   = normalize(ubo.sun.xyz);
+        float wr  = 0.25 * nd + 0.05;
+        float lam = clamp((dot(ns, L) + wr) / (1.0 + wr), 0.0, 1.0);
+        // the sun through thin needles from behind (bark: none)
+        float tr  = max(dot(-ns, L), 0.0) * 0.45 * nd;
+        vec3  c   = v_col * (vec3(1.0, 0.95, 0.86) * 2.4
+                             * (lam + tr * vec3(0.8, 1.0, 0.45))
+                           + vec3(0.42, 0.52, 0.72) * (0.3 + 0.3 * nd));
+        // a needle (kind 0.25 + 0.2 x its light): a waxy shine from
+        // the sun, more at a glance, none deep in the shade
+        if (v_s > 0.2 && v_s < 0.5) {
+            float oc = (v_s - 0.25) / 0.2;
+            vec3  H  = normalize(L + V);
+            float sp = pow(max(dot(ns, H), 0.0), 40.0);
+            float fr = 0.04 + 0.96 * pow(1.0 - max(dot(ns, V), 0.0),
+                                         5.0);
+            c += vec3(1.0, 0.95, 0.86) * 2.4 * sp
+               * (0.25 + 0.75 * fr) * 0.35 * oc;
+        }
+        c = c / (c + vec3(1.0));
+        fragColor = vec4(pow(c, vec3(1.0 / 2.2)), al);
+    }
+
+# the wood: drawn first, opaque, each pixel's depth where the eye's
+# ray meets its ellipsoid, so the depth test settles every overlap
+SplatLit SolidLit
+    func fragment [] -> GLSL none {
+        vec3  ro = ubo.eye.xyz;
+        vec3  rd = normalize(v_p - ro);
+        vec3  X;
+        vec3  ns;
+        {
+            // the wood's ellipsoid at 1.6 sigma: the ray's first hit,
+            // its surface's own way there
+            vec3  i1 = v_a1 / max(dot(v_a1, v_a1), 1e-12) / 1.6;
+            vec3  i2 = v_a2 / max(dot(v_a2, v_a2), 1e-12) / 1.6;
+            vec3  i3 = v_a3 / max(dot(v_a3, v_a3), 1e-12) / 1.6;
+            vec3  qo = vec3(dot(ro - v_pos, i1), dot(ro - v_pos, i2),
+                            dot(ro - v_pos, i3));
+            vec3  qd = vec3(dot(rd, i1), dot(rd, i2), dot(rd, i3));
+            float qa = dot(qd, qd);
+            float qb = dot(qo, qd);
+            float qc = dot(qo, qo) - 1.0;
+            float ds = qb * qb - qa * qc;
+            if (ds < 0.0) discard;
+            float t  = (-qb - sqrt(ds)) / qa;
+            X = ro + rd * t;
+            vec3  q  = qo + qd * t;
+            ns = normalize(i1 * q.x + i2 * q.y + i3 * q.z);
+        }
+        vec4  xc = ubo.proj * ubo.view * vec4(X, 1.0);
+        gl_FragDepth = xc.z / xc.w;
+        vec3  V   = -rd;
+        if (dot(ns, V) < 0.0) ns = -ns;
+        vec3  L   = normalize(ubo.sun.xyz);
+        float lam = clamp((dot(ns, L) + 0.25) / 1.25, 0.0, 1.0);
+        vec3  c   = v_col * (vec3(1.0, 0.95, 0.86) * 2.4 * lam
+                                + vec3(0.42, 0.52, 0.72) * 0.6);
+        c = c / (c + vec3(1.0));
+        fragColor = vec4(pow(c, vec3(1.0 / 2.2)), 1.0);
+    }
+
+# the picture over the window
+element PlantLayer
+    style : CSS {
+        area: l0 t0 r0 b0
+    }
+    public tex : Texture
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !tex ] return
+        cv : Canvas [ w.screen ]
+        cv.draw_image[ tex, rect [ x: 0.0, y: 0.0, w: bounds.w,
+                                   h: bounds.h ] ]
+
+# a plant grown by rules from its settings; its levels of detail
+# one after another in src (24 floats a Gaussian), each level's
+# soft and solid lists. A subclass grows one level in build
+class Plant
+    # its height (m), seed; the levels built, from first; the
+    # viewer's ground disc
+    public tall    : f32 [ 1.0 ]
+    public seed    : i32 [ 7 ]
+    public levels  : i32 [ 7 ]
+    public first   : i32 [ 0 ]
+    public ground  : bool [ true ]
+    # the Gaussians, their count; each level's lists start at
+    # soft_at and hard_at; the most soft and solid in a level
+    public src     : vec f32
+    public n       : i32
+    public soft    : vec i32
+    public hard    : vec i32
+    public soft_at : vec i32
+    public hard_at : vec i32
+    public most    : i32
+    public mhard   : i32
+    # where each level's Gaussians start in src (and one past)
+    public level_at : vec i32
+    public rs      : i64
+    # the 12 gradient ways of the noise
+    public gtab    : vec f32
+    # what put writes as wind: height, along, branch, twig
+    public wf_h    : f32
+    public wf_s    : f32
+    public wf_b    : f32
+    public wf_t    : f32
+    # put's kind: 0 soft, 0.25-0.45 a leaf (its light), 1 solid
+    public solid   : f32
+    # the level being built, its coarseness (2 ^ level)
+    public level   : i32
+    public coarse  : f32 [ 1.0 ]
+
+    # every level, one after the other
+    public func make []
+        src  = vec f32 []
+        n    = 0
+        soft = vec i32 []
+        hard = vec i32 []
+        soft_at = vec i32 []
+        hard_at = vec i32 []
+        most = 0
+        mhard = 0
+        level_at = vec i32 []
+        gtab = vec f32 [] [ 1.0, 1.0, 0.0, -1.0, 1.0, 0.0, 1.0, -1.0,
+            0.0, -1.0, -1.0, 0.0, 1.0, 0.0, 1.0, -1.0, 0.0, 1.0, 1.0,
+            0.0, -1.0, -1.0, 0.0, -1.0, 0.0, 1.0, 1.0, 0.0, -1.0, 1.0,
+            0.0, 1.0, -1.0, 0.0, -1.0, -1.0 ]
+        for [ lv: i32 first, lv < levels, lv += 1 ]
+            level  = lv
+            coarse = f32[ 1 << lv ]
+            from : i32 [ n ]
+            level_at.push[ n ]
+            soft_at.push[ i32[ soft.count ] ]
+            hard_at.push[ i32[ hard.count ] ]
+            build*[]
+            for [ i: i32 from, i < n, i += 1 ]
+                if [ src[ i * 24 + 19 ] > 0.5 ] hard.push[ i ]
+                el soft.push[ i ]
+            most  = max[ most, i32[ soft.count ] - soft_at[ lv ] ]
+            mhard = max[ mhard, i32[ hard.count ] - hard_at[ lv ] ]
+        soft_at.push[ i32[ soft.count ] ]
+        hard_at.push[ i32[ hard.count ] ]
+        level_at.push[ n ]
+
+    # one level's Gaussians (the plant's own)
+    func build []
+        return
+
+    # the light a point gets (the plant's own; 1 none)
+    func shade [ c: vec3f ] -> f32
+        return 1.0
+
+    # the viewer's ground: a disc of soft grass Gaussians, radius
+    # r (m); the draws are taken with or without it
+    func ground_disc [ r0: f32 ]
+        for [ k: i32 0, k < 600, k += 1 ]
+            an : f32 [ rnd[] * 6.2831853 ]
+            r  : f32 [ sqrt[ rnd[] ] * r0 ]
+            gs : f32 [ (0.3 + rnd[] * 0.35) * r0 / 6.6 ]
+            sh : f32 [ 0.55 + 0.45 * min[ r / (r0 * 0.545), 1.0 ] ]
+            if [ !ground ] continue
+            put[ vec3f [ cos[ an ] * r, -0.02, sin[ an ] * r ], 0.9,
+                 vec3f [ gs, 0.0, 0.0 ], vec3f [ 0.0, 0.0, gs ],
+                 vec3f [ 0.0, 0.01, 0.0 ],
+                 vec3f [ (0.05 + rnd[] * 0.03) * sh,
+                         (0.07 + rnd[] * 0.04) * sh, 0.02 * sh ] ]
+
+    # a number 0..1 from the plant's own sequence
+    func rnd [] -> f32
+        rs = (rs * 1664525 + 1013904223) % 4294967296
+        return f32[ rs ] / 4294967296.0
+
+    # a lattice point's gradient (one of 12)
+    func corner [ x: i64, y: i64, z: i64 ] -> i64
+        h : i64 [ (x * 73856093 + y * 19349663 + z * 83492791
+                   + i64[ seed ] * 2654435) % 2147483648 ]
+        if [ h < 0 ] h += 2147483648
+        h = (h * 1103515245 + 12345) % 2147483648
+        h = (h * 1103515245 + 12345) % 2147483648
+        return (h / 65536) % 12
+
+    func gdot [ x: i64, y: i64, z: i64, fx: f32, fy: f32,
+                fz: f32 ] -> f32
+        g : i64 [ corner[ x, y, z ] * 3 ]
+        return gtab[ g ] * fx + gtab[ g + 1 ] * fy + gtab[ g + 2 ] * fz
+
+    # Perlin's gradient noise, about -1..1
+    func noise [ x: f32, y: f32, z: f32 ] -> f32
+        x0 : f32 [ floor[ x ] ]
+        y0 : f32 [ floor[ y ] ]
+        z0 : f32 [ floor[ z ] ]
+        ix : i64 [ i64[ x0 ] ]
+        iy : i64 [ i64[ y0 ] ]
+        iz : i64 [ i64[ z0 ] ]
+        fx : f32 [ x - x0 ]
+        fy : f32 [ y - y0 ]
+        fz : f32 [ z - z0 ]
+        u  : f32 [ fx * fx * fx * (fx * (fx * 6.0 - 15.0) + 10.0) ]
+        v  : f32 [ fy * fy * fy * (fy * (fy * 6.0 - 15.0) + 10.0) ]
+        w  : f32 [ fz * fz * fz * (fz * (fz * 6.0 - 15.0) + 10.0) ]
+        a  : f32 [ gdot[ ix, iy, iz, fx, fy, fz ] ]
+        b  : f32 [ gdot[ ix + 1, iy, iz, fx - 1.0, fy, fz ] ]
+        c  : f32 [ gdot[ ix, iy + 1, iz, fx, fy - 1.0, fz ] ]
+        d  : f32 [ gdot[ ix + 1, iy + 1, iz, fx - 1.0, fy - 1.0, fz ] ]
+        e  : f32 [ gdot[ ix, iy, iz + 1, fx, fy, fz - 1.0 ] ]
+        f  : f32 [ gdot[ ix + 1, iy, iz + 1, fx - 1.0, fy, fz - 1.0 ] ]
+        g  : f32 [ gdot[ ix, iy + 1, iz + 1, fx, fy - 1.0, fz - 1.0 ] ]
+        h  : f32 [ gdot[ ix + 1, iy + 1, iz + 1, fx - 1.0, fy - 1.0,
+                         fz - 1.0 ] ]
+        ab : f32 [ a + (b - a) * u ]
+        cd : f32 [ c + (d - c) * u ]
+        ef : f32 [ e + (f - e) * u ]
+        gh : f32 [ g + (h - g) * u ]
+        lo : f32 [ ab + (cd - ab) * v ]
+        hi : f32 [ ef + (gh - ef) * v ]
+        return lo + (hi - lo) * w
+
+    # two octaves
+    func noise2o [ x: f32, y: f32, z: f32 ] -> f32
+        return noise[ x, y, z ] * 0.7
+             + noise[ x * 2.3 + 11.3, y * 2.3, z * 2.3 ] * 0.3
+
+    func unit [ v: vec3f ] -> vec3f
+        l : f32 [ max[ sqrt[ v.x * v.x + v.y * v.y + v.z * v.z ],
+                       1e-6 ] ]
+        return vec3f [ v.x / l, v.y / l, v.z / l ]
+
+    func cross3 [ u: vec3f, v: vec3f ] -> vec3f
+        return vec3f [ u.y * v.z - u.z * v.y, u.z * v.x - u.x * v.z,
+                       u.x * v.y - u.y * v.x ]
+
+    func sc [ v: vec3f, s: f32 ] -> vec3f
+        return vec3f [ v.x * s, v.y * s, v.z * s ]
+
+    # one Gaussian, with the wind put is set to
+    func put [ c: vec3f, op: f32, a1: vec3f, a2: vec3f, a3: vec3f,
+               col: vec3f ]
+        k  : f32 shade*[ c ]
+        vs : vec f32 [] [ c.x, c.y, c.z, op, a1.x, a1.y, a1.z, 0.0,
+                          a2.x, a2.y, a2.z, 0.0, a3.x, a3.y, a3.z, 0.0,
+                          col.x * k, col.y * k, col.z * k, solid,
+                          wf_h, wf_s, wf_b, wf_t ]
+        for [ v: f32 ] in vs
+            src.push[ v ]
+        n += 1
+
+
+# a plant in the viewer: its levels built, drawn with this
+# camera (a drag orbits, the wheel zooms), the level by its height
+# on screen, else detail; wind its strength
+element PlantView
+    style : CSS {
+        area: l0 t0 r0 b0
+    }
+    public plant  : Plant
+    public detail : i32 [ -1 ]
+    public wind   : f32 [ 1.0 ]
+    public layer : PlantLayer
+    mutable lit    : SplatLit
+    mutable mdl    : Model
+    mutable target : Render
+    mutable buf    : Buffer
+    mutable obuf   : Buffer
+    # the solids' numbers (drawn in any order, depth tested)
+    mutable sbuf   : Buffer
+    mutable solid_lit : SolidLit
+    mutable mdl_solid : Model
+    # the soft splats' count (sorted far to near); the solids'
+    mutable nsoft  : i32
+    mutable nsolid : i32
+    # the sort's lists
+    mutable keys   : vec i32
+    mutable order  : vec i32
+    mutable spare  : vec i32
+    # the level shown
+    mutable shown   : i32 [ -1 ]
+    mutable sorted_at : vec3f
+    mutable started : i64
+    mutable yaw    : f32
+    mutable pitch  : f32    [ 0.12 ]
+    mutable dist   : f32    [ 26.0 ]
+    mutable yaw_to   : f32
+    mutable pitch_to : f32  [ 0.12 ]
+    mutable dist_to  : f32  [ 26.0 ]
+    mutable dragging : bool
+    mutable lastx  : f32
+    mutable lasty  : f32
+
+    func init []
+        animated = true
+
+    public func on_press [ ev: Event ]
+        dragging = true
+        lastx = ev.mouse.pos.x
+        lasty = ev.mouse.pos.y
+
+    public func on_release [ ev: Event ]
+        dragging = false
+
+    public func on_move [ ev: Event ]
+        if [ !dragging ] return
+        if [ ev.mouse.state == 0 ]
+            dragging = false
+            return
+        dx : f32 [ ev.mouse.pos.x - lastx ]
+        dy : f32 [ ev.mouse.pos.y - lasty ]
+        lastx = ev.mouse.pos.x
+        lasty = ev.mouse.pos.y
+        yaw_to  += dx * 0.008
+        pitch_to = clamp[ pitch_to + dy * 0.008, -0.4, 1.5 ]
+
+    public func on_wheel [ ev: Event ]
+        zf : f32 [ 1.0 - f32[ ev.mouse.wheel_delta.y ] * 0.06 ]
+        dist_to = clamp[ dist_to * zf, 0.5, 400.0 ]
+
+    # far to near along the look: 16-bit depth keys, two radix passes
+    func sort_write [ eye: vec3f, fw: vec3f ]
+        lo : f32 [ 1e30 ]
+        hi : f32 [ -1e30 ]
+        sb : i32 [ plant.soft_at[ shown ] ]
+        for [ i: i32 0, i < nsoft, i += 1 ]
+            o : i32 [ plant.soft[ sb + i ] * 24 ]
+            d : f32 [ (plant.src[ o ] - eye.x) * fw.x
+                      + (plant.src[ o + 1 ] - eye.y) * fw.y
+                      + (plant.src[ o + 2 ] - eye.z) * fw.z ]
+            keys[ i ] = i32[ d * 1000.0 ]
+            lo = min[ lo, d ]
+            hi = max[ hi, d ]
+        sk : f32 [ 65535.0 / max[ hi - lo, 1e-4 ] ]
+        for [ i: i32 0, i < nsoft, i += 1 ]
+            dv : f32 [ f32[ keys[ i ] ] / 1000.0 ]
+            keys[ i ] = i32[ (hi - dv) * sk ]
+            order[ i ] = i
+        cnt : vec i32 []
+        for [ b: i32 0, b < 257, b += 1 ]
+            cnt.push[ 0 ]
+        for [ pass: i32 0, pass < 2, pass += 1 ]
+            shf : i32 [ pass * 8 ]
+            for [ b: i32 0, b < 257, b += 1 ]
+                cnt[ b ] = 0
+            for [ i: i32 0, i < nsoft, i += 1 ]
+                kb : i32 [ ((keys[ order[ i ] ] >> shf) & 255) + 1 ]
+                cnt[ kb ] += 1
+            for [ b: i32 1, b < 257, b += 1 ]
+                cnt[ b ] += cnt[ b - 1 ]
+            for [ i: i32 0, i < nsoft, i += 1 ]
+                j  : i32 [ order[ i ] ]
+                kb : i32 [ (keys[ j ] >> shf) & 255 ]
+                spare[ cnt[ kb ] ] = j
+                cnt[ kb ] += 1
+            for [ i: i32 0, i < nsoft, i += 1 ]
+                order[ i ] = spare[ i ]
+        od : @f32 [ obuf.data ]
+        for [ k: i32 0, k < nsoft, k += 1 ]
+            ov : i32 [ plant.soft[ sb + order[ k ] ] ]
+            od[ k ] = f32[ ov ]
+        sorted_at = eye
+
+    # the quad each Gaussian is drawn on: corners -1..1
+    func quad [] -> GltfModel
+        tsz : i32 [ 4 * 12 * 2 + 4 * 8 + 6 * 4 ]
+        data : new u8 [ tsz ]
+        pf : @f32 [ data ]
+        cs : vec f32 [] [ -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0 ]
+        for [ k: i32 0, k < 4, k += 1 ]
+            pf[ k * 3 ]     = cs[ k * 2 ]
+            pf[ k * 3 + 1 ] = cs[ k * 2 + 1 ]
+            pf[ k * 3 + 2 ] = 0.0
+            pf[ 12 + k * 3 ]     = 0.0
+            pf[ 12 + k * 3 + 1 ] = 0.0
+            pf[ 12 + k * 3 + 2 ] = 1.0
+            pf[ 24 + k * 2 ]     = 0.0
+            pf[ 24 + k * 2 + 1 ] = 0.0
+        iu : @u32 [ @data[ 128 ] ]
+        ix : vec u32 [] [ 0, 1, 2, 0, 2, 3 ]
+        for [ k: i32 0, k < 6, k += 1 ]
+            iv : u32 [ ix[ k ] ]
+            iu[ k ] = iv
+        bufs : vec GltfBuffer []
+        bufs += GltfBuffer [ byteLength: u64[ tsz ], data: data ]
+        views : vec BufferView []
+        views += BufferView [ buffer: 0, byteOffset: 0,
+                              byteLength: 48 ]
+        views += BufferView [ buffer: 0, byteOffset: 48,
+                              byteLength: 48 ]
+        views += BufferView [ buffer: 0, byteOffset: 96,
+                              byteLength: 32 ]
+        views += BufferView [ buffer: 0, byteOffset: 128,
+                              byteLength: 24 ]
+        accs : vec Accessor []
+        accs += Accessor [ bufferView: 0,
+            componentType: ComponentType.FLOAT,
+            type: CompoundType.VEC3, count: 4 ]
+        accs += Accessor [ bufferView: 1,
+            componentType: ComponentType.FLOAT,
+            type: CompoundType.VEC3, count: 4 ]
+        accs += Accessor [ bufferView: 2,
+            componentType: ComponentType.FLOAT,
+            type: CompoundType.VEC2, count: 4 ]
+        accs += Accessor [ bufferView: 3,
+            componentType: ComponentType.UNSIGNED_INT,
+            type: CompoundType.SCALAR, count: 6 ]
+        am : map i64 [ string ] [ ]
+        am[ 'POSITION' ]   = i64[ 0 ]
+        am[ 'NORMAL' ]     = i64[ 1 ]
+        am[ 'TEXCOORD_0' ] = i64[ 2 ]
+        prs : vec Primitive []
+        prs += Primitive [ name: 'splat', attributes: am,
+                           indices: u64[ 3 ], material: 0,
+                           mode: Mode.TRIANGLES ]
+        mshs : vec Mesh []
+        mshs += Mesh [ name: 'splat', primitives: prs ]
+        nds : vec Node []
+        nds += Node [ name: 'splat', mesh: 0 ]
+        sn : vec i64 []
+        sn += i64[ 0 ]
+        scns : vec Scene []
+        scns += Scene [ name: 'scene', nodes: sn ]
+        return GltfModel [ nodes: nds, meshes: mshs, scenes: scns,
+            scene: 0, buffers: bufs, bufferViews: views,
+            accessors: accs ]
+
+    func setup [ cv: Canvas, w: Window ]
+        t0 : i64 [ epoch_micros[] ]
+        plant.make[]
+        log 'flora: built in {(epoch_micros[] - t0) / 1000} ms'
+        # framed to its height
+        dist    = plant.tall * 2.17
+        dist_to = dist
+        nsoft  = plant.most
+        nsolid = plant.mhard
+        keys  = vec i32 []
+        order = vec i32 []
+        spare = vec i32 []
+        for [ i: i32 0, i < nsoft, i += 1 ]
+            keys.push[ 0 ]
+            order.push[ 0 ]
+            spare.push[ 0 ]
+        buf = Buffer [ vk: cv.vk, size: i64[ plant.n ] * 96,
+            u_storage: true, m_host_visible: true,
+            m_host_coherent: true ]
+        d : @f32 [ buf.data ]
+        for [ i: i32 0, i < plant.n * 24, i += 1 ]
+            d[ i ] = plant.src[ i ]
+        obuf = Buffer [ vk: cv.vk, size: i64[ (nsoft + 4) / 4 ] * 16,
+            u_storage: true, m_host_visible: true,
+            m_host_coherent: true ]
+        sbuf = Buffer [ vk: cv.vk, size: i64[ (nsolid + 4) / 4 ] * 16,
+            u_storage: true, m_host_visible: true,
+            m_host_coherent: true ]
+        solid_lit = SolidLit [ vk: cv.vk, name: 'flora-solid' ]
+        hm : map Au [ string ] [ ]
+        hm[ 'splats' ] = buf
+        hm[ 'order' ]  = sbuf
+        mdl_solid = Model [ vk: cv.vk, w: w, s: solid_lit,
+                            cull_none: true, samplers: hm ]
+        mdl_solid.id = quad[]
+        lit = SplatLit [ vk: cv.vk, name: 'flora', transparent: true ]
+        sm : map Au [ string ] [ ]
+        sm[ 'splats' ] = buf
+        sm[ 'order' ]  = obuf
+        mdl = Model [ vk: cv.vk, w: w, s: lit, cull_none: true,
+                      samplers: sm ]
+        mdl.id = quad[]
+        gw : i32 [ i32[ bounds.w * 2.0 ] ]
+        gh : i32 [ i32[ bounds.h * 2.0 ] ]
+        target = Render [ vk: cv.vk, w: w, width: gw, height: gh,
+            use_depth: true,
+            clear_color: vec4f [ 0.55, 0.66, 0.78, 1.0 ],
+            models: array Model [ mdl_solid, mdl ], tag: 'flora' ]
+        target.owner  = a
+        target.wscale = 0.0
+        target.skip   = true
+        w.element_targets[ 'flora_{id}' ] = target
+        shown = -1
+        show[ 0 ]
+        started = epoch_micros[]
+
+    # level lv shown: its solids' numbers written, both counts set,
+    # sorted again at the next draw
+    func show [ lv: i32 ]
+        if [ lv == shown ] return
+        shown  = lv
+        nsoft  = plant.soft_at[ lv + 1 ] - plant.soft_at[ lv ]
+        nsolid = plant.hard_at[ lv + 1 ] - plant.hard_at[ lv ]
+        sd : @f32 [ sbuf.data ]
+        for [ k: i32 0, k < nsolid, k += 1 ]
+            hv : i32 [ plant.hard[ plant.hard_at[ lv ] + k ] ]
+            sd[ k ] = f32[ hv ]
+        for [ pp: Pipeline ] in mdl.pipelines
+            pp.instances = nsoft
+        for [ pp: Pipeline ] in mdl_solid.pipelines
+            pp.instances = nsolid
+        sorted_at = vec3f [ 1e9, 0.0, 0.0 ]
+        log 'flora: level {lv}: {nsoft} soft, {nsolid} solid'
+
+    # the level for the plant's height on screen (px), a tenth
+    # either way kept before it changes
+    func level_for [ px: f32 ] -> i32
+        top : i32 [ plant.levels - plant.first - 1 ]
+        if [ detail >= 0 ] return min[ detail, top ]
+        cuts : vec f32 [] [ 350.0, 150.0, 60.0, 25.0, 10.0, 4.0 ]
+        lv : i32 [ top ]
+        for [ c: i32 0, c < top, c += 1 ]
+            hy : f32 [ (shown <= c) ? 0.9 : 1.1 ]
+            if [ px >= cuts[ c ] * hy ]
+                lv = c
+                break
+        return lv
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        ux.will_animate = true
+        cv : Canvas [ w.screen ]
+        if [ !target ] setup[ cv, w ]
+        yaw   += (yaw_to   - yaw)   * 0.2
+        pitch += (pitch_to - pitch) * 0.2
+        dist  += (dist_to  - dist)  * 0.2
+        tgt : vec3f [ 0.0, plant.tall * 0.45, 0.0 ]
+        cp  : f32 [ cos[ pitch ] ]
+        eye : vec3f [ tgt.x + sin[ yaw ] * cp * dist,
+                      tgt.y + sin[ pitch ] * dist,
+                      tgt.z + cos[ yaw ] * cp * dist ]
+        fl  : f32 [ max[ dist, 0.001 ] ]
+        fw  : vec3f [ (tgt.x - eye.x) / fl, (tgt.y - eye.y) / fl,
+                      (tgt.z - eye.z) / fl ]
+        # the plant's height on screen picks its level
+        tpx : f32 [ plant.tall / (2.0 * dist * 0.4228) * bounds.h ]
+        show[ level_for[ tpx ] ]
+        # sorted again once the eye has moved a centimetre
+        mx : f32 [ eye.x - sorted_at.x ]
+        my : f32 [ eye.y - sorted_at.y ]
+        mz : f32 [ eye.z - sorted_at.z ]
+        if [ mx * mx + my * my + mz * mz > 0.0001 ]
+            sort_write[ eye, fw ]
+        asp : f32 [ bounds.w / bounds.h ]
+        prj : mat4f [ mat4f.perspective[ 0.8f, asp, 0.05f, 500.0f ] ]
+        prj.m[5] = 0.0 - prj.m[5]
+        lit.model = mat4f.identity[]
+        lit.view  = mat4f.look_at[ eye, tgt, vec3f [ 0.0, 1.0, 0.0 ] ]
+        lit.proj  = prj
+        lit.eye   = vec4f [ eye.x, eye.y, eye.z, 1.0 ]
+        lit.sun   = vec4f [ 0.5, 0.75, 0.35, bounds.h * 2.0 ]
+        lit.wind  = vec4f [ f32[ epoch_micros[] - started ] / 1000000.0,
+                            wind, 0.0, 0.0 ]
+        solid_lit.model = lit.model
+        solid_lit.view  = lit.view
+        solid_lit.proj  = lit.proj
+        solid_lit.eye   = lit.eye
+        solid_lit.sun   = lit.sun
+        solid_lit.wind  = lit.wind
+        target.draw[]
+        target.seal[]
+        if [ layer ] layer.tex = target.color
+
+    public func render [] -> Elements
+        e : Elements [ ]
+        e['layer'] = PlantLayer [ animated: true ]
+        return e

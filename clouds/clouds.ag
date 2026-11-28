@@ -6,6 +6,7 @@ import vec
 import img
 import trinity
 import scenes
+import tls
 
 import <stdio.h>
 import <stdlib.h>
@@ -38,6 +39,7 @@ enum CloudSurface
     envmap  : 7
     gdepth  : 8
     blue    : 10
+    starcell : 11
     tvar    : 5
 
 # ---------------------------------------------------------------
@@ -474,6 +476,130 @@ func clouds_bake []
 
 # bump bake_version whenever CloudBake changes: the stamp hashes
 # only the wrapper below
+# the catalogue's three numbers (00h 05m 09.9s, +45° 13′ 45″) as one:
+# the first plus a sixtieth of the second and of the third's
+func sexagesimal [ s: string ] -> f64
+    c : cstr [ s.chars ]
+    parts : vec f64 [ 3 ]
+    k : i32 [ 0 ]
+    v : f64 [ 0.0 ]
+    frac : f64 [ 0.0 ]
+    seen : bool [ false ]
+    for [ i: i32 0, i < s.count, i += 1 ]
+        ch : i32 [ c[ i ] ]
+        if [ ch >= 48 && ch <= 57 ]
+            dg : f64 [ f64[ ch - 48 ] ]
+            if [ frac > 0.0 ]
+                v += dg * frac
+                frac = frac / 10.0
+            el
+                v = v * 10.0 + dg
+            seen = true
+        el [ ch == 46 && seen ]
+            frac = 0.1
+        el [ seen ]
+            if [ k < 3 ] parts[ k ] = v
+            k += 1
+            v = 0.0
+            frac = 0.0
+            seen = false
+    if [ seen && k < 3 ] parts[ k ] = v
+    return parts[ 0 ] + parts[ 1 ] / 60.0 + parts[ 2 ] / 3600.0
+
+# a catalogue line's quoted value for a key ('' none)
+func star_field [ ln: string, key: string ] -> string
+    at : i32 [ ln.index_of[ '"{key}": "' ] ]
+    if [ at < 0 ] return ''
+    from : i32 [ at + key.count + 5 ]
+    rest : string ln.mid[ from, ln.count - from ]
+    q : i32 [ rest.index_of[ '"' ] ]
+    if [ q < 0 ] return ''
+    return rest.mid[ 0, q ]
+
+# a 0..1 value as a byte
+func star_byte [ v: f32 ] -> u8
+    c : f32 [ (v < 0.0) ? 0.0 : ((v > 1.0) ? 1.0 : v) ]
+    return u8[ i32[ c * 255.0 + 0.5 ] ]
+
+# the Yale Bright Star Catalogue (9,110 stars to magnitude 6.5,
+# J2000; brettonw's json copy, MIT): each star written into every
+# cell of a 1024 x 512 sky (right ascension across, declination
+# down) within 0.3 degrees of it, the brightest kept: r g its offset
+# east and north of the cell's middle (0.3 degrees each way), b its
+# brightness, a its colour (hot blue 0 to cool red 1)
+export func star_catalog []
+    out : path '../clouds/baked/starcell.png'
+    force : getenv[ 'SILVER_EXPORT_FORCE' ]
+    if [ !force && out.exists[] ]
+        log 'clouds: star catalogue current'
+        return
+    dir : path.path_storage[ 'clouds' ]
+    src : path '{dir}/bsc5-short.json'
+    if [ !src.exists[] ]
+        n : i64 [
+            Http.download[
+                'https://raw.githubusercontent.com/brettonw/YaleBrightStarCatalog/master/bsc5-short.json', src ] ]
+        log 'clouds: fetched the bright star catalogue ({n} bytes)'
+    tx : string src.load[ typeid[ string ], null ]
+    if [ !tx || tx.count == 0 ]
+        log 'clouds: no star catalogue at {src}'
+        return
+    W : i32 [ 1024 ]
+    H : i32 [ 512 ]
+    img : Image [ width: W, height: H, format: Pixel.rgba8,
+                  linear: true ]
+    d : @u8 [ img.vdata[] ]
+    for [ i: i32 0, i < W * H * 4, i += 1 ]
+        d[ i ] = 0
+    reach : f64 [ 0.3 / 57.29578 ]
+    kept : i32 [ 0 ]
+    # one star a line: { "Dec": "..", "K": "..", "RA": "..", "V": ".." }
+    for [ ln: string ] in tx.split[ '\n' ]
+        rs : string star_field[ ln, 'RA' ]
+        ds : string star_field[ ln, 'Dec' ]
+        vs : string star_field[ ln, 'V' ]
+        if [ rs.count == 0 || ds.count == 0 || vs.count == 0 ] continue
+        mag : f32 [ vs.real_value[] ]
+        if [ mag > 6.5 ] continue
+        sg : f64 [ (ds.chars[ 0 ] == 45) ? -1.0 : 1.0 ]
+        ra : f64 [ sexagesimal[ rs ] * 0.2617994 ]
+        de : f64 [ sg * sexagesimal[ ds ] / 57.29578 ]
+        kv : f32 [ 6000.0 ]
+        ks : string star_field[ ln, 'K' ]
+        if [ ks.count > 0 ] kv = ks.real_value[]
+        ci : f32 [ (10000.0 - kv) / 7000.0 ]
+        bright : u8 [ star_byte[ (7.0 - mag) / 9.0 ] ]
+        sx : f64 [ cos[ de ] * cos[ ra ] ]
+        sy : f64 [ cos[ de ] * sin[ ra ] ]
+        sz : f64 [ sin[ de ] ]
+        y0 : i32 [ i32[ (0.5 - (de + reach) / 3.14159265) * f64[ H ] ] ]
+        y1 : i32 [ i32[ (0.5 - (de - reach) / 3.14159265) * f64[ H ] ] ]
+        for [ y: i32 max[ y0, 0 ], y <= min[ y1, H - 1 ], y += 1 ]
+            dc : f64 [ (0.5 - (f64[ y ] + 0.5) / f64[ H ]) * 3.14159265 ]
+            cd : f64 [ max[ cos[ dc ], 0.002 ] ]
+            hw : f64 [ min[ reach / cd + 6.2832 / f64[ W ], 3.1416 ] ]
+            xc : f64 [ ra / 6.2831853 * f64[ W ] ]
+            span : i32 [ i32[ hw / 6.2831853 * f64[ W ] ] + 1 ]
+            for [ j: i32 0 - span, j <= span, j += 1 ]
+                x : i32 [ (i32[ xc ] + j + W * 4) % W ]
+                rc : f64 [ (f64[ x ] + 0.5) / f64[ W ] * 6.2831853 ]
+                # the star seen from the cell's middle: east, north
+                ex : f64 [ 0.0 - sx * sin[ rc ] + sy * cos[ rc ] ]
+                nx : f64 [ 0.0 - sx * sin[ dc ] * cos[ rc ]
+                           - sy * sin[ dc ] * sin[ rc ] + sz * cos[ dc ] ]
+                ox : f64 [ ex / reach ]
+                oy : f64 [ nx / reach ]
+                if [ ox * ox + oy * oy > 1.0 ] continue
+                i : i32 [ (y * W + x) * 4 ]
+                if [ d[ i + 2 ] >= bright ] continue
+                d[ i ]     = star_byte[ f32[ ox ] * 0.5 + 0.5 ]
+                d[ i + 1 ] = star_byte[ f32[ oy ] * 0.5 + 0.5 ]
+                d[ i + 2 ] = bright
+                d[ i + 3 ] = star_byte[ ci ]
+        kept += 1
+    img.png[ out ]
+    log 'clouds: {kept} stars written to {out}'
+
 func bake_version [] -> i32
     return 8
 
@@ -588,6 +714,10 @@ ModelViewProject NubisSky
     attrib gdepth  : LayoutBinding [ type:typeid[ CloudSurface ],
                                      id: CloudSurface.gdepth,  count:1,
                                      format: typeid[ f32 ] ]
+    # the bright stars by sky cell (star_catalog)
+    attrib starcell : LayoutBinding [ type:typeid[ CloudSurface ],
+                                      id: CloudSurface.starcell,
+                                      count:1, format: typeid[ rgba8 ] ]
     # blue noise 64^2: the march's per-pixel jitter
     attrib blue    : LayoutBinding [ type:typeid[ CloudSurface ],
                                      id: CloudSurface.blue,    count:1,
@@ -698,8 +828,9 @@ ModelViewProject NubisSky
         float ng = ubo.key_tint.w;
         if (ng > 0.0) {{
             float lum = dot(L, vec3(0.2126, 0.7152, 0.0722));
-            L = mix(L, vec3(lum) * vec3(0.66, 0.82, 1.16), ng);
-            L += vec3(0.0016, 0.0022, 0.0044) * ng;
+            // the moon's glow in the air a quarter: the sky stays dark
+            L = mix(L, vec3(lum) * vec3(0.66, 0.82, 1.16) * 0.25, ng);
+            L += vec3(0.0005, 0.0007, 0.0014) * ng;
         }}
         return vec4(L, Ta);
     }
@@ -731,7 +862,9 @@ ModelViewProject NubisSky
 
     # weather at p: x coverage, y type, z height scale
     func weather_at [ p: @vec3f ] -> GLSL vec3f {
-        vec2 uv = (p.xz + ubo.world.xy) / ubo.scales.w + 0.5;
+        // the clouds' places drift with the wind, as their noise does
+        vec2 uv = (p.xz + ubo.world.xy + ubo.wind.xz * ubo.wind.w)
+                / ubo.scales.w + 0.5;
         vec4 w  = texture(weather, uv);
         // fields stretched to 0..1 from the bake's 10th..90th percentiles
         float fr = clamp(remap(w.r, 0.30, 0.72, 0.0, 1.0), 0.0, 1.0);
@@ -869,19 +1002,116 @@ ModelViewProject NubisSky
 
     # the galaxy, and only where the sky has gone dark enough to show
     # it. the band is tilted off the horizon and turns with the hours
-    func night_stars [ d: @vec3f ] -> GLSL vec3f {
-        float ng = ubo.key_tint.w;
-        if (ng <= 0.001) return vec3(0.0);
-        float ca = 0.6216;
-        float sa = 0.7833;
-        vec3  r  = vec3(d.x, d.y * ca - d.z * sa, d.y * sa + d.z * ca);
-        float u  = atan(r.z, r.x) * 0.15915494 + 0.5 + ubo.sea_b.w;
-        float v  = acos(clamp(r.y, -1.0, 1.0)) * 0.31830989;
-        vec3  c  = texture(stars, vec2(u, v)).rgb;
-        // squaring holds the band and drops the wash between the stars.
-        // low in the sky there is too much air to see any of it
-        float up = smoothstep(0.03, 0.70, d.y);
-        return c * c * ng * 0.05 * up;
+    func night_stars [ d: @vec3f, bg: @vec3f ] -> GLSL vec3f {
+        float ng  = ubo.key_tint.w;
+        float lat = ubo.world.w;
+        if (lat == 0.0) {{
+            if (ng <= 0.001) return vec3(0.0);
+            float ca = 0.6216;
+            float sa = 0.7833;
+            vec3  r  = vec3(d.x, d.y * ca - d.z * sa,
+                            d.y * sa + d.z * ca);
+            float u  = atan(r.z, r.x) * 0.15915494 + 0.5 + ubo.sea_b.w;
+            float v  = acos(clamp(r.y, -1.0, 1.0)) * 0.31830989;
+            vec3  c  = texture(stars, vec2(u, v)).rgb;
+            // squaring holds the band and drops the wash between the
+            // stars. low in the sky there is too much air to see it
+            float up = smoothstep(0.03, 0.70, d.y);
+            return c * c * ng * 0.05 * up;
+        }}
+        // the sky's frame (x east, y up, z north) to the stars'
+        // (J2000): world.w the latitude, world.z the sidereal angle
+        float sl = sin(lat);
+        float cl = cos(lat);
+        float sd = clamp(d.y * sl + d.z * cl, -1.0, 1.0);
+        float ha = atan(-d.x, d.y * cl - d.z * sl);
+        float ra = ubo.world.z - ha;
+        float cd = sqrt(max(1.0 - sd * sd, 0.0));
+        vec3  e  = vec3(cd * cos(ra), cd * sin(ra), sd);
+        vec3  o  = vec3(0.0);
+        // the galaxy's band where it truly is (Gaia's map is by
+        // galactic longitude, its middle the galaxy's centre)
+        if (ng > 0.001) {{
+            float gx = dot(e, vec3(-0.0548756, -0.8734371, -0.4838350));
+            float gy = dot(e, vec3( 0.4941094, -0.4448296,  0.7469822));
+            float gz = dot(e, vec3(-0.8676661, -0.1980764,  0.4559838));
+            float u  = 0.5 - atan(gy, gx) * 0.15915494;
+            float v  = 0.5 - asin(clamp(gz, -1.0, 1.0)) * 0.31830989;
+            vec3  c  = texture(stars, vec2(u, v)).rgb;
+            float up = smoothstep(0.03, 0.70, d.y);
+            o += c * c * ng * 0.05 * up;
+        }}
+        // the star in this sky cell, as a small sprite
+        float rs = atan(e.y, e.x);
+        if (rs < 0.0) rs += 6.2831853;
+        float ds = asin(sd);
+        ivec2 sz = textureSize(starcell, 0);
+        ivec2 cc = ivec2(int(rs / 6.2831853 * float(sz.x)) % sz.x,
+                   clamp(int((0.5 - ds / 3.14159265) * float(sz.y)),
+                         0, sz.y - 1));
+        vec4  s  = texelFetch(starcell, cc, 0);
+        if (s.b <= 0.0) return o;
+        float rc = (float(cc.x) + 0.5) / float(sz.x) * 6.2831853;
+        float dc = (0.5 - (float(cc.y) + 0.5) / float(sz.y))
+                 * 3.14159265;
+        vec2  me = vec2(-e.x * sin(rc) + e.y * cos(rc),
+                        -e.x * sin(dc) * cos(rc)
+                        - e.y * sin(dc) * sin(rc) + e.z * cos(dc));
+        vec2  so = (s.rg * 2.0 - 1.0) * 0.0052360;
+        float px = length(me - so) / max(ubo.sea_b.z, 1e-6);
+        float mag = 7.0 - s.b * 9.0;
+        // seen only against a dark enough sky: the faintest star
+        // seen, 6.2 dark, falls 2.5 magnitudes a tenfold brighter sky
+        float sk  = max(dot(bg, vec3(0.2126, 0.7152, 0.0722)), 1e-7);
+        float lim = 6.2 - 2.5 * log(max(sk / 0.005, 1.0)) / 2.302585;
+        float air = 1.0 / max(d.y, 0.04);
+        lim -= 0.12 * (air - 1.0);
+        float vis = clamp((lim - mag) / 0.6, 0.0, 1.0);
+        if (vis <= 0.0) return o;
+        // the air shakes each star's light on its own clock: the
+        // faint ones flicker most, the low ones more still
+        float seed = (rc + so.x / max(cos(dc), 0.01)) * 131.7
+                   + (dc + so.y) * 317.3;
+        float h1  = fract(sin(seed * 12.9898) * 43758.5453);
+        float h2  = fract(sin(seed * 78.233) * 43758.5453);
+        float tt  = float(ubo.frame) / 60.0;
+        float ta  = tt * (4.0 + 8.0 * h1) + h2 * 97.0;
+        float ia  = floor(ta);
+        float na  = mix(fract(sin((ia + seed) * 1.731) * 43758.5453),
+                        fract(sin((ia + 1.0 + seed) * 1.731)
+                              * 43758.5453),
+                        smoothstep(0.0, 1.0, ta - ia));
+        float tb  = tt * (9.0 + 14.0 * h2) + h1 * 53.0;
+        float ib  = floor(tb);
+        float nb  = mix(fract(sin((ib + seed) * 2.917) * 43758.5453),
+                        fract(sin((ib + 1.0 + seed) * 2.917)
+                              * 43758.5453),
+                        smoothstep(0.0, 1.0, tb - ib));
+        float nz  = (na * 0.65 + nb * 0.35) * 2.0 - 1.0;
+        float faint = clamp((mag - 0.5) / 4.5, 0.0, 1.0);
+        float amp = clamp((0.12 + 0.6 * faint)
+                          * (1.0 + 0.08 * (air - 1.0)), 0.0, 0.95);
+        float tw  = max(1.0 + amp * nz, 0.0);
+        // a sharp core (half a pixel) and a faint tail that curves
+        // down to nothing by a few pixels; brighter stars carry a
+        // stronger, longer tail, all of it gone by the cell's 0.3
+        // degrees
+        float far_ = 0.0052360 / max(ubo.sea_b.z, 1e-6);
+        float fl  = pow(10.0, -0.4 * mag) * exp(-0.12 * (air - 1.0));
+        float wide = log(1.0 + fl * 40.0) / 3.7;
+        float tq  = 1.0 / (1.0 + px * px * 0.3);
+        float g   = exp(-px * px / 0.6)
+                  + wide * 0.35 * tq * sqrt(tq)
+                    * (1.0 - smoothstep(2.5, 5.0 + 2.0 * wide, px));
+        g *= 1.0 - smoothstep(far_ * 0.5, far_, px);
+        vec3  col = mix(vec3(0.72, 0.82, 1.0), vec3(1.0, 0.95, 0.88),
+                        clamp(s.a * 2.0, 0.0, 1.0));
+        col = mix(col, vec3(1.0, 0.7, 0.45),
+                  clamp(s.a * 2.0 - 1.0, 0.0, 1.0));
+        // the peak levels off (never a clipped block): past it a
+        // brighter star shows as a wider glow
+        float pk  = 3.0 * (1.0 - exp(-fl * 40.0 / 3.0));
+        return o + col * pk * tw * g * vis;
     }
 
     # light arriving at a point from the strike: the chain lights the
@@ -1073,6 +1303,47 @@ ModelViewProject NubisSky
         vec2  ndc = vec2(uvj.x * 2.0 - 1.0, 1.0 - uvj.y * 2.0);
         vec3  o   = ubo.cam_pos.xyz;
         vec3  d   = normalize(ubo.cam_fwd.xyz + ubo.cam_right.xyz * (ndc.x * ubo.cam_right.w) + ubo.cam_up.xyz * (ndc.y * ubo.cam_up.w));
+        // the shadow pass: sunlight through the clouds onto the ground
+        // (the sea's own), over env.y metres square round the eye
+        if (ubo.env.x > 1.5) {{
+            vec2  sx = (v_uv - 0.5) * ubo.env.y;
+            vec3  sp = vec3(sx.x, 0.0, sx.y);
+            // each cloud's footprint: its density where the sun's ray
+            // from here crosses eight heights through the layer, a
+            // thickness each (a low sun's whole path reads as bands)
+            vec3  Cs = vec3(0.0, -ubo.layer.z, 0.0);
+            vec3  su = ubo.sun_dir.xyz;
+            // cast as if the sun were 35 degrees up at least (its way
+            // kept): a low sun lays each shadow far off and along it
+            float sel = max(asin(clamp(su.y, -1.0, 1.0)), 0.61);
+            vec2  sxz = normalize(su.xz + vec2(1e-5));
+            su = vec3(sxz.x * cos(sel), sin(sel), sxz.y * cos(sel));
+            float sh = 1.0;
+            if (ubo.sun_dir.y > 0.02) {{
+                float od = 0.0;
+                float th = (ubo.layer.y - ubo.layer.x) / 8.0;
+                for (int i = 0; i < 8; i++) {{
+                    float hk = ubo.layer.x + th * (float(i) + 0.5);
+                    vec2  ak = ray_sphere(sp - Cs, su, ubo.layer.z + hk);
+                    vec3  q  = sp + su * ak.y;
+                    od += cloud_density(q, height_frac(q),
+                        weather_at(q), 1.0, 4.0).x * th;
+                }}
+                sh = exp(-od * ubo.light_b.w * ubo.env.z);
+            }}
+            // the sky's light: the cloud straight above, any hour
+            float ov = 0.0;
+            float tv = (ubo.layer.y - ubo.layer.x) / 8.0;
+            for (int i = 0; i < 8; i++) {{
+                vec3 q = sp + vec3(0.0,
+                    ubo.layer.x + tv * (float(i) + 0.5), 0.0);
+                ov += cloud_density(q, height_frac(q),
+                    weather_at(q), 1.0, 4.0).x * tv;
+            }}
+            float sv = exp(-ov * ubo.light_b.w * ubo.env.z);
+            fragColor = vec4(sh, sv, sh, 1.0);
+            return;
+        }}
         // the environment pass walks the whole sky instead of the frame:
         // longitude across, latitude down, so the sea can sample it
         if (ubo.env.x > 0.5) {{
@@ -1144,7 +1415,7 @@ ModelViewProject NubisSky
             float sd = smoothstep(0.99985, 0.99995, mu);
             bg += vec3(1.0, 0.96, 0.9) * sd * sky.a * ubo.sun_dir.w * 0.5;
             // stars sit behind the air, so the haze thins them out
-            bg += night_stars(d) * sky.a;
+            bg += night_stars(d, bg) * sky.a;
         }} else if (!over) {{
             vec3  gp  = o + d * tg.x;
             vec3  up  = normalize(gp - C);
@@ -1369,7 +1640,10 @@ ModelViewProject NubisSky
                 steps_taken += 1.0;
                 if (!in_cloud) {{
                     // outside an island: leap by the island distance field
-                    float isd = texture(island, (p.xz + ubo.world.xy) / ubo.scales.w + 0.5).r * 255.0 - 1.5;
+                    vec2  iuv = (p.xz + ubo.world.xy
+                              + ubo.wind.xz * ubo.wind.w)
+                              / ubo.scales.w + 0.5;
+                    float isd = texture(island, iuv).r * 255.0 - 1.5;
                     if (isd > 0.0) {{
                         float leap = isd * (ubo.scales.w / 256.0) / max(length(d.xz), 0.02);
                         t_done = t;
@@ -1662,11 +1936,21 @@ class CloudWorld
     # the lightning's rate: 0 none, 1 as the weather gives
     public bolts      : f32 [ 1.0 ]
     public bolt_dark  : f32
+    # the stars' place: sidereal angle and latitude (radians)
+    public sidereal   : f32
+    public latitude   : f32
     public wseed      : u32 [ 7919 ]
     public sky        : NubisSky
     public vmodel     : Model
     public env_model  : Model
     public env_render : Render
+    # sunlight through the clouds onto the ground: 256 x 256 over
+    # shadow_side metres round the eye (1 lit, 0 under a thick cloud)
+    public shadow_model  : Model
+    public shadow_render : Render
+    public shadow_side   : f32 [ 80000.0 ]
+    # how dark under a cloud (its footprint's optical depth times it)
+    public shadow_strength : f32 [ 0.2 ]
     public wave_buf   : Buffer
     public wave_n     : i32
     public wave_wind  : f32 [ -1.0 ]
@@ -1692,6 +1976,7 @@ class CloudWorld
     public edt_f      : vec f32
     public edt_d      : vec f32
     public tx_blue    : Texture
+    public tx_starcell : Texture
 
     func sat [ v: f32 ] -> f32
         return (v < 0.0) ? 0.0 : ((v > 1.0) ? 1.0 : v)
@@ -1894,12 +2179,32 @@ class CloudWorld
         if [ u > 0.52 ] e += 0.32 * exp[ 0.0 - 12.0 * (u - 0.52) ]
         return e
 
+    # where the clouds are densest, from here: x z metres, z the
+    # coverage (the weather map read every 500 m across its tile)
+    public func densest [] -> vec4f
+        bx : f32 [ 0.0 ]
+        bz : f32 [ 0.0 ]
+        bc : f32 [ -1.0 ]
+        gz : f32 [ -30000.0 ]
+        while [ gz < 30000.0 ]
+            gx : f32 [ -30000.0 ]
+            while [ gx < 30000.0 ]
+                c : f32 cov_at[ gx, gz ]
+                if [ c > bc ]
+                    bc = c
+                    bx = gx
+                    bz = gz
+                gx += 500.0
+            gz += 500.0
+        return vec4f [ bx, bz, bc, 0.0 ]
+
     # the weather field at a spot, read exactly as the shader reads it
     func cov_at [ x: f32, z: f32 ] -> f32
         wd : @u8 [ wimg.vdata[] ]
         ww : i32 [ wimg.width ]
-        u : f32 [ (x + cam_x) / 60000.0 + 0.5 ]
-        v : f32 [ (z + cam_z) / 60000.0 + 0.5 ]
+        dw : vec4f [ sky.wind ]
+        u : f32 [ (x + cam_x + dw.x * dw.w) / 60000.0 + 0.5 ]
+        v : f32 [ (z + cam_z + dw.z * dw.w) / 60000.0 + 0.5 ]
         px : i32 [ (u - floor[ u ]) * f32[ ww ] ]
         py : i32 [ (v - floor[ v ]) * f32[ ww ] ]
         i : i32 [ (py * ww + px) * 4 ]
@@ -1917,8 +2222,9 @@ class CloudWorld
     func top_at [ x: f32, z: f32 ] -> f32
         wd : @u8 [ wimg.vdata[] ]
         ww : i32 [ wimg.width ]
-        u : f32 [ (x + cam_x) / 60000.0 + 0.5 ]
-        v : f32 [ (z + cam_z) / 60000.0 + 0.5 ]
+        dw : vec4f [ sky.wind ]
+        u : f32 [ (x + cam_x + dw.x * dw.w) / 60000.0 + 0.5 ]
+        v : f32 [ (z + cam_z + dw.z * dw.w) / 60000.0 + 0.5 ]
         px : i32 [ (u - floor[ u ]) * f32[ ww ] ]
         py : i32 [ (v - floor[ v ]) * f32[ ww ] ]
         bch : f32 [ f32[ wd[ (py * ww + px) * 4 + 2 ] ] / 255.0 ]
@@ -2042,6 +2348,8 @@ class CloudWorld
         tx_stars   = noise_texture[ vk, w, stars, 1, 1 ]
         blue_png : path '{baked}/blue.png'
         tx_blue    = noise_texture[ vk, w, blue_png, 1, 1 ]
+        cell_png : path '{baked}/starcell.png'
+        tx_starcell = noise_texture[ vk, w, cell_png, 1, 1 ]
         wimg = Image [ uri: weather_png, linear: true ]
         wimg.hold[]
         timg = Image [ uri: tops_png, linear: true ]
@@ -2055,7 +2363,8 @@ class CloudWorld
                                'weather': tx_weather,
                                'island': tx_island, 'tvar': tx_tvar,
                                'waves': wave_buf, 'stars': tx_stars,
-                               'blue': tx_blue, 'gdepth': tx_weather ]
+                               'blue': tx_blue, 'gdepth': tx_weather,
+                               'starcell': tx_starcell ]
         # the environment pass: the SAME shader instance, told to draw
         # the whole sky into a small mipped map the sea reflects. each
         # draw snapshots the uniforms, so the flag can differ per pass
@@ -2068,6 +2377,13 @@ class CloudWorld
             models: [ env_model ] ]
         env_render.hold[]
         smp[ 'envmap' ] = env_render.color
+        shadow_model = Model [ vk: vk, w: w, s: sky, samplers: smp ]
+        shadow_model.hold[]
+        shadow_render = Render [ vk: vk, w: w, width: 512, height: 512,
+            wscale: 0.0, tag: 'cloud-shadow',
+            clear_color: vec4f [ 1.0, 1.0, 1.0, 1.0 ],
+            models: [ shadow_model ] ]
+        shadow_render.hold[]
         vmodel = Model [ vk: vk, w: w, s: sky, samplers: smp ]
         vmodel.hold[]
 
@@ -2111,7 +2427,7 @@ class CloudWorld
             if [ bi == 2 ] sky.bolt_c = bv
             if [ bi == 3 ] sky.bolt_d = bv
         sky.bolt_col = vec4f [ 0.82, 0.88, 1.0, be ]
-        sky.world    = vec4f [ cam_x, cam_z, 0.0, 0.0 ]
+        sky.world    = vec4f [ cam_x, cam_z, sidereal, latitude ]
         sky.layer    = vec4f [ 1500.0, 6000.0, 6371000.0, 6471000.0 ]
         sky.tops     = vec4f [ 1100.0, 1800.0, 3000.0, 0.0 ]
         sky.light_a  = vec4f [ 0.6, 1.4, 0.18, 1.0 ]
@@ -2121,6 +2437,15 @@ class CloudWorld
 
     # the sky into the environment map first, then its mip chain, so
     # the sea's reflection has something filtered to read
+    # the clouds' shadow on the ground, drawn into its map
+    public func shadow_pass []
+        if [ !shadow_render ] return
+        was : vec4f [ sky.env ]
+        sky.env = vec4f [ 2.0, shadow_side, shadow_strength, 0.0 ]
+        shadow_render.update[]
+        shadow_render.draw[]
+        sky.env = was
+
     public func env_pass [ jitter: vec4f ]
         sky.env    = vec4f [ 1.0, 0.0, 0.0, 0.0 ]
         sky.jitter = vec4f [ 0.0, 0.0, 1.0, 0.0 ]
@@ -2195,6 +2520,12 @@ element SkyView
     public view_mode : i32
     public wscale    : f32 [ 0.5 ]
     public night     : f32
+    # the key light's strength over its own (a sun or moon fading)
+    public light_scale : f32 [ 1.0 ]
+    # the stars' place: the sidereal angle (radians) and the
+    # latitude (0: the old turned picture)
+    public sidereal : f32
+    public latitude : f32
     public speed     : f32
     public bolts     : f32 [ 1.0 ]
     mutable last_dt  : f32 [ 0.016 ]
@@ -2245,6 +2576,15 @@ element SkyView
     # this frame's steps and their ms, for a host's slow frame log
     mutable trace    : string
     mutable tr_at    : i64
+    # the cloud field moved by these metres; overhead: once built,
+    # moved so its densest clouds stand over the eye
+    public shift_x   : f32
+    public shift_z   : f32
+    public overhead  : bool
+    intern over_done : bool
+    # the light the reflection's sky was last drawn under
+    intern env_sun   : vec4f
+    intern env_night : f32
 
     func sat [ v: f32 ] -> f32
         return (v < 0.0) ? 0.0 : ((v > 1.0) ? 1.0 : v)
@@ -2350,6 +2690,15 @@ element SkyView
         if [ !world || !world.env_render ] return null
         return world.env_render.color
 
+    # the clouds' shadow on the ground (see CloudWorld.shadow_render)
+    # and the metres its square spans round the eye
+    public func shadow_map [] -> Texture
+        if [ !world || !world.shadow_render ] return null
+        return world.shadow_render.color
+
+    public func shadow_side [] -> f32
+        return (world) ? world.shadow_side : 0.0
+
     # the sky's picture: over a host's ground each pixel holds the
     # cloud before it alone, premultiplied; null without a ground
     public func over_ground [] -> Texture
@@ -2404,8 +2753,10 @@ element SkyView
         if [ !world ]
             world = CloudWorld [ cur: cur, wseed: 987654321 ]
         world.cur     = cur
-        world.cam_x   = cam_x
-        world.cam_z   = cam_z
+        world.cam_x   = cam_x + shift_x
+        world.sidereal = sidereal
+        world.latitude = latitude
+        world.cam_z   = cam_z + shift_z
         world.seconds = seconds
         world.bolts   = bolts
         if [ !vrender ]
@@ -2424,6 +2775,16 @@ element SkyView
             # drawn here once its camera is set: a frame late else
             vrender.skip = true
             w.element_targets[ 'sky_{id}' ] = vrender
+        # the densest clouds over the eye, once: the weather map read
+        # every 500 m across its 60 km tile
+        if [ overhead && !over_done && world.wimg ]
+            over_done = true
+            bm : vec4f world.densest[]
+            shift_x += bm.x
+            shift_z += bm.y
+            world.cam_x = cam_x + shift_x
+            world.cam_z = cam_z + shift_z
+            log 'clouds: densest ({bm.z}) moved overhead'
         frame += 1
         sdt : f32 [ seconds - last_secs ]
         if [ sdt <= 0.0 ] sdt = 0.016
@@ -2476,7 +2837,8 @@ element SkyView
         sky.sun_dir   = vec4f [ se * sin[ cur.sun_az ],
                                 sin[ cur.sun_el ],
                                 se * cos[ cur.sun_az ],
-                                22.0 * (1.0 - night) + 1.3 * night ]
+                                (22.0 * (1.0 - night) + 1.3 * night)
+                                * light_scale ]
         sky.wind      = vec4f [ cur.wind * 0.8, 0.0, cur.wind * 0.6,
                                 seconds ]
         sky.weather_a = vec4f [ cur.coverage, cur.ctype, 0.0,
@@ -2514,10 +2876,22 @@ element SkyView
             world.vmodel.rebind_model[]
             if [ bmodel ] bmodel.rebind_model[]
         code : f32 [ log2[ ground_far + 1.0 ] ]
-        # the reflection's sky changes slowly: once a second
-        if [ frame % 60 == 1 ]
+        # the reflection's sky (and a ground's sky light): once a
+        # second, or sooner when the light has moved (a fast day)
+        sd : vec4f [ sky.sun_dir ]
+        dm : f32 [ sd.x * env_sun.x + sd.y * env_sun.y
+                   + sd.z * env_sun.z ]
+        dw : f32 [ sd.w - env_sun.w ]
+        if [ frame % 60 == 1 || dm < 0.99999 || night != env_night
+             || dw * dw > 0.0001 * env_sun.w * env_sun.w + 1e-6 ]
+            env_sun   = sd
+            env_night = night
             world.env_pass[ sky.jitter ]
             tr[ 'env' ]
+        # the clouds' shadow for a host's ground, every other frame
+        if [ ground_depth && frame % 2 == 0 ]
+            world.shadow_pass[]
+            tr[ 'shadow' ]
         tr[ 'setup' ]
         r : rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ]
         if [ ground_depth && !no_sky ]
@@ -2525,7 +2899,7 @@ element SkyView
                 bmodel = Model [ vk: cv.vk, w: w, s: sky,
                                  samplers: world.vmodel.samplers ]
                 bmodel.hold[]
-                back = Render [ vk: cv.vk, w: w, wscale: wscale * 0.5,
+                back = Render [ vk: cv.vk, w: w, wscale: wscale,
                                 tag: 'clouds-back',
                     clear_color: vec4f [ 0.0, 0.0, 0.0, 1.0 ],
                     models: [ bmodel ] ]
@@ -2534,7 +2908,7 @@ element SkyView
                 back.owner = a
                 back.skip = true
                 w.element_targets[ 'skyback_{id}' ] = back
-            back.wscale = wscale * 0.5
+            back.wscale = wscale
             back.update[]
             # sea_b.z = the angle one pixel covers: the wave LOD
             bh : f32 [ back.height ]
@@ -2542,9 +2916,13 @@ element SkyView
                                  seconds * 0.0008 ]
             sky.ground = vec4f [ 1.0, code, 1.0,
                                  (sea_only) ? 1.0 : 0.0 ]
+            # no history here: a jitter would shake the stars
+            bj : vec4f [ sky.jitter ]
+            sky.jitter = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
             back.draw[]
             tr[ 'back' ]
             back.seal[]
+            sky.jitter = bj
             tr[ 'back-wait' ]
             back_ms = back.gpu_us / 1000.0
             if [ sea_only || no_clouds ]

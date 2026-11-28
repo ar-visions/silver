@@ -3741,6 +3741,8 @@ class Pipeline
     # run-once compute: static subdiv chains record a single time
     public  run_once : bool
     mutable ran_once : bool
+    # copies of the model a draw makes (gl_InstanceIndex); 0 is 1
+    public  instances : i32
 
     public   func dispatch [ f: handle ]
         if [ !vk_compute ]
@@ -3832,13 +3834,15 @@ class Pipeline
 
         vkCmdBindVertexBuffers[ frame, 0, 1, @vbo.vertex.vk_buffer,
                                 offsets ]
+        copies : u32 [ (instances > 1) ? instances : 1 ]
         if [ vbo.index ]
             vkCmdBindIndexBuffer[ frame, vbo.index.vk_buffer, 0,
                 vbo.index_type[ ] ]
-            vkCmdDrawIndexed[ frame, vbo.index_count, 1, 0, 0, 0 ]
+            vkCmdDrawIndexed[ frame, vbo.index_count, copies,
+                              0, 0, 0 ]
         el
             vkCmdDraw[ frame, (count < 0) ? vbo.vertex_count : count,
-                       1, first, 0 ]
+                       copies, first, 0 ]
 
     public   func bind_resources [ ]
         vk.bindres_calls += 1

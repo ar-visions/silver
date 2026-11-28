@@ -1,6 +1,7 @@
 # Alaska terrain textures
 
-Each PNG is a 1024 x 1024 pixel, top-down terrain texture.
+Each PNG is a top-down terrain texture. Most are 1024 x 1024
+pixels; the flower meadow is 2048 x 2048 pixels.
 
 - `alaska-dark-rock-1024.png`: charcoal fractured rock
 - `alaska-sparse-forest-1024.png`: dark spruce and rocky soil
@@ -11,6 +12,7 @@ Each PNG is a 1024 x 1024 pixel, top-down terrain texture.
 - `alaska-wet-land-1024.png`: saturated mossy ground
 - `alaska-spruce-forest-1024.png`: spruce forest from above
 - `alaska-alpine-meadow-alder-1024.png`: meadow with alder
+- `alaska-flower-meadow-2048.png`: grass and small wildflowers
 - `alaska-glacier-ice-1024.png`: weathered glacier ice
 - `alaska-grey-beach-gravel-1024.png`: grey coastal gravel
 

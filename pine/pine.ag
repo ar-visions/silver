@@ -1,0 +1,543 @@
+# pine: one spruce grown by rules, every part bent by Perlin noise,
+# drawn as 3D Gaussian splats (flora)
+export 1.0.0
+
+import vec
+import img
+import gltf
+import trinity
+import flora
+
+# one spruce grown by rules from its settings, every part bent
+# by Perlin noise (a flora Plant)
+Plant PineTree
+    # branches up (0 level and drooping, 1 up); crown width (x);
+    # droop of the branches (x); share of the branches grown
+    # (gaps); needle hue (-1 blue .. 1 yellow); the top's lean (m,
+    # the seed's way); crown outline's power (low a full cone,
+    # high a spire). Levels 4 to 6 are far: branch clumps, a blob
+    # a branch, crown discs
+    public lift    : f32 [ 0.5 ]
+    public width   : f32 [ 1.0 ]
+    public droop   : f32 [ 1.0 ]
+    public full    : f32 [ 1.0 ]
+    public hue     : f32 [ 0.0 ]
+    public lean    : f32 [ 0.0 ]
+    public shape   : f32 [ 0.85 ]
+    # the primary being grown: its length (m); the whorls' heights
+    mutable prim_L : f32 [ 1.0 ]
+    mutable whorls : vec f32
+    # needles placed; the needled shoot length (m)
+    mutable needles : i32
+    mutable shoot   : f32
+
+    # variant k of the forest's 32: its settings drawn from k
+    public func vary [ k: i32 ]
+        rs = i64[ k ] * 2654435761 % 4294967296 + 99
+        seed  = 101 + k * 37
+        tall  = 8.0 + 12.0 * rnd[]
+        lift  = 0.8 * rnd[]
+        width = 0.75 + 0.5 * rnd[]
+        droop = 0.6 + 0.9 * rnd[]
+        full  = 0.8 + 0.2 * rnd[]
+        hue   = 1.6 * rnd[] - 0.8
+        lean  = 0.04 * tall * rnd[] * rnd[]
+        shape = 0.7 + 0.4 * rnd[]
+
+    # the light a point gets under the crown: low down more
+    # branches above block the sun, in by the trunk too (needles
+    # on top of their own inward dark)
+    func shade [ c: vec3f ] -> f32
+        if [ c.y < 0.0 ] return 1.0
+        yr : f32 [ clamp[ c.y / tall, 0.0, 1.0 ] ]
+        dn : f32 [ 0.3 + 0.7 * pow[ yr, 0.8 ] ]
+        cr : f32 crown_r[ yr ]
+        rr : f32 [ clamp[ sqrt[ c.x * c.x + c.z * c.z ] / cr,
+                          0.0, 1.0 ] ]
+        ld : f32 [ (solid > 0.2 && solid < 0.5) ? 0.4 : 0.6 ]
+        return dn * (ld + (1.0 - ld) * rr * rr)
+
+    # the trunk's middle at height y: it wanders, never straight
+    func axis [ y: f32 ] -> vec3f
+        H  : f32 [ tall ]
+        yr : f32 [ y / H ]
+        la : f32 [ f32[ seed ] * 2.3999632 ]
+        ln : f32 [ lean * yr * yr ]
+        return vec3f [ H * (0.012 * noise[ yr * 2.5, 1.7, 0.3 ]
+                            + 0.004 * noise[ yr * 11.0, 2.9, 0.3 ])
+                       + cos[ la ] * ln,
+                       y,
+                       H * (0.012 * noise[ yr * 2.5, 5.3, 0.9 ]
+                            + 0.004 * noise[ yr * 11.0, 7.1, 0.9 ])
+                       + sin[ la ] * ln ]
+
+    # the crown's reach (m) at a share of the height
+    func crown_r [ yr: f32 ] -> f32
+        return (0.3 * tall * (1.0 - yr) + 0.3) * width
+
+    # its radius at height y round the way az: a taper, a flare at
+    # the foot, bumps all over
+    func girth [ y: f32, az: f32 ] -> f32
+        H  : f32 [ tall ]
+        r0 : f32 [ 0.012 * H + 0.04 ]
+        r  : f32 [ r0 * pow[ max[ 1.0 - y / H, 0.0 ], 0.9 ] + 0.012
+                   + r0 * 0.7 * exp[ 0.0 - y / 0.5 ] ]
+        # its shape from the 3D noise its skin passes through:
+        # broad swells and lean, then knots
+        ax : vec3f axis[ y ]
+        px : f32 [ ax.x + cos[ az ] * r ]
+        pz : f32 [ ax.z + sin[ az ] * r ]
+        bump : f32 [ 1.0 + 0.16 * noise[ px * 2.2, y * 0.9, pz * 2.2 ]
+                     + 0.07 * noise[ px * 9.0, y * 3.5, pz * 9.0 ] ]
+        # swollen at each whorl, where its branches leave
+        sw : f32 [ 0.0 ]
+        if [ whorls ]
+            for [ yw: f32 ] in whorls
+                dy : f32 [ (y - yw) / 0.13 ]
+                if [ dy > -3.0 && dy < 3.0 ]
+                    sw = max[ sw, exp[ 0.0 - dy * dy ] ]
+        return r * bump * (1.0 + 0.24 * sw)
+
+    # the bark: soft flat splats on the trunk's skin, furrowed
+    func trunk []
+        H : f32 [ tall ]
+        g : f32 [ coarse ]
+        keep : i64 [ rs ]
+        wf_b = 0.0
+        wf_s = 0.0
+        wf_t = 0.0
+        # its bark: flat soft splats a row every 7 cm, each twice
+        # over its neighbours, lifted a little, each its own colour;
+        # a coarser level fewer and larger
+        rows : i32 [ i32[ H / (0.07 * g) ] ]
+        for [ k: i32 0, k < rows, k += 1 ]
+            y  : f32 [ (f32[ k ] + rnd[] * 0.5) * 0.07 * g ]
+            ax : vec3f axis[ y ]
+            up : vec3f unit[ vec3f [ axis[ y + 0.05 ].x - ax.x, 0.05,
+                                     axis[ y + 0.05 ].z - ax.z ] ]
+            wf_h = y / H
+            # its top tenth fades out into the leader
+            tq : f32 [ clamp[ (wf_h - 0.88) / 0.12, 0.0, 1.0 ] ]
+            tf : f32 [ 1.0 - tq * tq * (3.0 - 2.0 * tq) ]
+            r0 : f32 girth[ y, 0.0 ]
+            nj : i32 [ max[ 6, i32[ 6.2831853 * r0 / (0.05 * g) ] ] ]
+            for [ j: i32 0, j < nj, j += 1 ]
+                az : f32 [ (f32[ j ] + f32[ k % 2 ] * 0.5 + rnd[] * 0.4)
+                           * 6.2831853 / f32[ nj ] ]
+                r  : f32 girth[ y, az ]
+                rd : vec3f [ cos[ az ], 0.0, sin[ az ] ]
+                tg : vec3f [ 0.0 - sin[ az ], 0.0, cos[ az ] ]
+                lf : f32 [ 0.03 + rnd[] * 0.1 ]
+                nm : vec3f unit[ vec3f [ rd.x + up.x * lf, up.y * lf,
+                                         rd.z + up.z * lf ] ]
+                pu : vec3f unit[ cross3[ nm, tg ] ]
+                fu : f32 [ noise[ az * 2.2, y * 0.6, 4.4 ] * 0.5 + 0.5 ]
+                tn : f32 [ 0.55 + 0.55 * rnd[] ]
+                br : f32 [ (0.4 + 0.6 * fu) * tn * 1.8 ]
+                hu : f32 [ noise[ az * 1.3, y * 0.4, 6.1 ] * 0.5 + 0.5 ]
+                col : vec3f [ (0.11 + 0.04 * hu) * br,
+                              (0.09 + 0.012 * hu) * br,
+                              (0.08 - 0.012 * hu) * br ]
+                put[ vec3f [ ax.x + rd.x * r, y, ax.z + rd.z * r ],
+                     0.95 * tf,
+                     sc[ pu, 0.05 * g * (0.8 + 0.5 * rnd[]) ],
+                     sc[ tg, 0.03 * g * (0.8 + 0.5 * rnd[]) ],
+                     sc[ nm, 0.004 ], col ]
+        rs = keep
+
+    # an axis grown from its parent's middle p0: its own way d0,
+    # length L, base radius r0, its order (1 primary, 2 secondary,
+    # 3 shoot), its own noise sd; ps how far along its primary it
+    # starts; yr its height on the tree; pd the parent's way there,
+    # pr its radius: it leaves along pd, curving out to its own way
+    # within 2.5 parent radii, swollen there in a collar
+    func grow [ p0: vec3f, d0: vec3f, L: f32, r0: f32, ord: i32,
+                sd: f32, ps: f32, yr: f32, pd: vec3f, pr: f32 ]
+        p  : vec3f p0
+        dt : vec3f d0
+        d  : vec3f pd
+        ds : f32 [ (ord == 1) ? 0.04 : ((ord == 2) ? 0.03 : 0.02) ]
+        bl : f32 [ pr * 4.0 + 0.01 ]
+        side  : f32 [ (rnd[] > 0.5) ? 1.0 : -1.0 ]
+        kid   : f32 [ bl + ((ord == 1) ? 0.12 + rnd[] * 0.1
+                                       : 0.02 + rnd[] * 0.04) ]
+        # needles on the young part: the last ~0.9 m of growth
+        leafy : f32 [ (ord == 3) ? 0.0 : max[ L - 0.9, 0.0 ] ]
+        wand  : f32 [ (ord == 1) ? 0.05 : ((ord == 2) ? 0.08 : 0.12) ]
+        sag   : f32 [ ((ord == 1) ? 0.5 * (1.0 - yr * 0.7)
+                    : ((ord == 2) ? 0.9 * (1.0 - yr * 0.6) : 0.4))
+                    * (1.0 - 0.7 * lift) * droop ]
+        # the parent's wood colour, the collar's at its root
+        # the bark's own mean colour, as the trunk's splats
+        pc : vec3f [ 0.075, 0.056, 0.046 ]
+        if [ ord == 1 ] prim_L = max[ L, 0.1 ]
+        # a coarser level: wood every g-th step, g as long; no
+        # secondaries' wood from level 2
+        gi : i32 [ i32[ coarse ] ]
+        si : i32 [ 0 ]
+        nc : f32 [ bl ]
+        s  : f32 [ 0.0 ]
+        while [ s < L ]
+            h  : f32 [ (s < bl) ? ds * 0.4 : ds ]
+            fr : f32 [ s / L ]
+            # its own wander, gravity heavier out along it, the tip
+            # of a primary turning up
+            nx : f32 noise2o[ s * 1.6, sd, 0.5 ]
+            ny : f32 noise2o[ s * 1.6, sd, 3.7 ]
+            nz : f32 noise2o[ s * 1.6, sd, 7.9 ]
+            dy : f32 [ dt.y + ny * wand * h / ds - sag * h * fr ]
+            if [ ord == 1 && fr > 0.7 ]
+                dy += (0.03 + 0.05 * lift) * (fr - 0.7) / 0.3
+            dt = unit[ vec3f [ dt.x + nx * wand * h / ds, dy,
+                               dt.z + nz * wand * h / ds ] ]
+            # out of its parent: from the parent's way to its own,
+            # the bend itself rippled by noise
+            x  : f32 [ clamp[ s / bl, 0.0, 1.0 ] ]
+            w  : f32 [ clamp[ x * x * (3.0 - 2.0 * x)
+                              + 0.08 * noise[ s * 7.0, sd, 4.2 ]
+                              * x * (1.0 - x) * 4.0, 0.0, 1.0 ] ]
+            d = unit[ vec3f [ pd.x + (dt.x - pd.x) * w,
+                              pd.y + (dt.y - pd.y) * w,
+                              pd.z + (dt.z - pd.z) * w ] ]
+            p = vec3f [ p.x + d.x * h, p.y + d.y * h, p.z + d.z * h ]
+            r : f32 [ r0 * (1.0 - fr * 0.85) ]
+            # the collar: swollen where it leaves, its swell rippled
+            cl : f32 [ pow[ 1.0 - w, 2.0 ]
+                       * (1.4 + 0.1 * noise[ s * 3.0, sd, 9.1 ]) ]
+            rw : f32 [ r * (1.0 + cl) ]
+            # how far out along its primary, a share of its length
+            wf_s = clamp[ (ps + s) / prim_L, 0.0, 1.0 ]
+            # the wood: shoots are hidden by their needles
+            sv : vec3f unit[ cross3[ d, vec3f [ 0.0, 1.0, 0.0 ] ] ]
+            uv : vec3f cross3[ sv, d ]
+            si += 1
+            if [ ord < 3 && (si - 1) % gi == 0
+                 && (ord == 1 || level < 2) && (fr < 0.7 || level < 2)
+                 && level < 4 ]
+                wt : f32 [ 0.9 + 0.1 * noise[ s * 3.0, sd, 2.0 ] ]
+                # bark from its root, its own wood, then the needles'
+                # green toward its tip
+                wx : f32 [ pc.x ]
+                wy : f32 [ pc.y ]
+                wz : f32 [ pc.z ]
+                gx : f32 [ clamp[ (fr - 0.55) / 0.45, 0.0, 1.0 ] ]
+                lg : f32 [ gx * gx * (3.0 - 2.0 * gx) ]
+                # its last 30% fades out: soft there, never a point
+                fq : f32 [ clamp[ (fr - 0.7) / 0.3, 0.0, 1.0 ] ]
+                fa : f32 [ 1.0 - fq * fq * (3.0 - 2.0 * fq) ]
+                solid = (fr > 0.7) ? 0.0 : 1.0
+                # inside its bark where the collar is wrapped
+                rv : f32 [ (ord == 1 && s < bl) ? rw * 0.93 : rw ]
+                # long for smooth joins, but never past its own tip
+                # long beside its girth: one smooth tube, no beads
+                hl : f32 [ min[ max[ h * 2.6 * coarse, rv * 3.0 ],
+                                max[ L - s, 0.0 ] / 1.6 ] ]
+                put[ p, fa, sc[ d, max[ hl, rv ] ], sc[ sv, rv ],
+                     sc[ uv, rv ],
+                     vec3f [ (wx + (0.035 - wx) * lg) * wt,
+                             (wy + (0.07 - wy) * lg) * wt,
+                             (wz + (0.04 - wz) * lg) * wt ] ]
+                solid = 0.0
+            # a primary's collar wrapped in bark splats outside the
+            # trunk, every other step
+            if [ ord == 1 && s < bl && (i32[ s / h ] % 2) == 0
+                 && level < 2 ]
+                ta : vec3f axis[ p.y ]
+                tx : f32 [ p.x - ta.x ]
+                tz : f32 [ p.z - ta.z ]
+                if [ sqrt[ tx * tx + tz * tz ] > pr * 0.85 ]
+                    collar_bark[ p, d, sv, uv, rw ]
+            if [ s >= leafy ]
+                needle_step[ p, d, sv, uv, r, h, sd, L - s, yr, fr ]
+            # far: a primary's foliage as clumps along it (4), or
+            # one blob over it (5)
+            if [ ord == 1 && level == 4 && s >= nc ]
+                nc += 0.35
+                clump[ p, sd, yr, sc[ d, 0.25 ],
+                       sc[ sv, 0.12 + 0.2 * min[ L - s, 1.6 ] / 1.6 ],
+                       sc[ uv, 0.08 ], -1.0 ]
+            if [ ord == 1 && level == 5 && s >= L * 0.55 && nc < 1e8 ]
+                nc = 1e9
+                clump[ vec3f [ p.x - d.x * L * 0.05, p.y,
+                               p.z - d.z * L * 0.05 ],
+                       sd, yr, sc[ d, L * 0.35 ],
+                       sc[ sv, 0.15 + 0.2 * min[ L, 1.6 ] ],
+                       sc[ uv, 0.15 ], -1.0 ]
+            # side axes, either side by turns, a little off level
+            if [ ord < 3 && s >= kid && fr < 0.94 ]
+                kid += (ord == 1) ? 0.07 + rnd[] * 0.05
+                                  : 0.04 + rnd[] * 0.03
+                an : f32 [ 0.9 + 0.25 * noise[ s * 2.0, sd, 5.0 ] ]
+                cd : vec3f unit[ vec3f [
+                    d.x * cos[ an ] + sv.x * side * sin[ an ],
+                    d.y * cos[ an ] - 0.15,
+                    d.z * cos[ an ] + sv.z * side * sin[ an ] ] ]
+                side = 0.0 - side
+                rest : f32 [ L - s ]
+                Lc : f32 [ (ord == 1)
+                    ? (0.1 + 0.4 * min[ rest, 1.6 ] * (0.3 + 0.7 *
+                       min[ s / 0.6, 1.0 ]))
+                    : (0.08 + 0.2 * (1.0 - fr)) ]
+                Lc *= 0.8 + 0.4 * rnd[]
+                grow[ p, cd, Lc, r * 0.3, ord + 1, sd * 1.7 + s * 3.1,
+                      ps + s, yr, d, r ]
+            s += h
+
+    # a ring of bark splats round a collar at p, along d, radius rw
+    func collar_bark [ p: vec3f, d: vec3f, sv: vec3f, uv: vec3f,
+                         rw: f32 ]
+        keep : i64 [ rs ]
+        g  : f32 [ coarse ]
+        nj : i32 [ max[ 5, i32[ 6.2831853 * rw / (0.025 * g) ] ] ]
+        for [ j: i32 0, j < nj, j += 1 ]
+            ph : f32 [ (f32[ j ] + rnd[] * 0.5) * 6.2831853
+                       / f32[ nj ] ]
+            rd : vec3f [ sv.x * cos[ ph ] + uv.x * sin[ ph ],
+                         sv.y * cos[ ph ] + uv.y * sin[ ph ],
+                         sv.z * cos[ ph ] + uv.z * sin[ ph ] ]
+            nm : vec3f unit[ vec3f [ rd.x + d.x * 0.15,
+                                     rd.y + d.y * 0.15,
+                                     rd.z + d.z * 0.15 ] ]
+            tg : vec3f unit[ cross3[ rd, d ] ]
+            br : f32 [ 0.65 + 0.4 * rnd[] ]
+            put[ vec3f [ p.x + rd.x * rw, p.y + rd.y * rw,
+                         p.z + rd.z * rw ], 0.95,
+                 sc[ d, 0.03 * g * (0.8 + 0.4 * rnd[]) ],
+                 sc[ tg, 0.018 * g * (0.8 + 0.4 * rnd[]) ],
+                 sc[ nm, 0.003 ],
+                 vec3f [ 0.115 * br, 0.09 * br, 0.075 * br ] ]
+        rs = keep
+
+    # far: foliage as one soft blob at p (axes a1 a2 a3), the
+    # needles' mean colour there, shaded as they are
+    # (lf the light share it stands for, else under 0: its own)
+    func clump [ p: vec3f, sd: f32, yr: f32, a1: vec3f, a2: vec3f,
+                 a3: vec3f, lf: f32 ]
+        rr : f32 [ sqrt[ p.x * p.x + p.z * p.z ] ]
+        lt : f32 [ (lf >= 0.0) ? lf
+                   : clamp[ rr / crown_r[ yr ], 0.0, 1.0 ] ]
+        # the needles' mean light: their sheen and the lit ones'
+        # share kept, so a far tree is as bright as a near one
+        sh : f32 [ (0.175 + 0.825 * lt) * (1.0 - 0.5 * (1.0 - lt))
+                   * 1.5 ]
+        gv : f32 [ 0.85 + 0.3 * noise[ p.x * 0.7, p.y * 0.7,
+                                       p.z * 0.7 ] ]
+        wf_t = sd + 1.0
+        solid = 0.25 + 0.2 * lt
+        put[ p, 0.9, a1, a2, a3,
+             vec3f [ 0.045 * gv * sh * (1.0 + 0.25 * hue),
+                     0.0845 * gv * sh * (1.0 + 0.05 * hue),
+                     0.04 * gv * sh * (1.0 - 0.35 * hue) ] ]
+        solid = 0.0
+        wf_t = 0.0
+
+    # far: the trunk as a column of long soft blobs, a metre apart
+    func trunk_far []
+        H  : f32 [ tall ]
+        st : f32 [ (level == 4) ? 1.0 : ((level == 5) ? 2.0 : H * 0.3) ]
+        # farthest: only the foot, under the discs
+        top : f32 [ (level == 6) ? H * 0.3 : H * 0.9 ]
+        wf_b = 0.0
+        wf_s = 0.0
+        wf_t = 0.0
+        y  : f32 [ st * 0.5 ]
+        while [ y < top ]
+            ax : vec3f axis[ y ]
+            r  : f32 girth[ y, 0.0 ]
+            wf_h = y / H
+            put[ ax, 0.95, vec3f [ 0.0, st * 0.35, 0.0 ],
+                 vec3f [ r, 0.0, 0.0 ], vec3f [ 0.0, 0.0, r ],
+                 vec3f [ 0.1, 0.075, 0.062 ] ]
+            y += st
+
+    # farthest: the crown as 7 stacked discs
+    func discs []
+        H : f32 [ tall ]
+        wf_b = 0.0
+        wf_s = 0.0
+        for [ k: i32 0, k < 7, k += 1 ]
+            yr : f32 [ 0.12 + (f32[ k ] + 0.5) / 7.0 * 0.84 ]
+            rc : f32 [ 0.3 * H * width * pow[ 1.0 - yr, shape ] + 0.2 ]
+            ax : vec3f axis[ yr * H ]
+            wf_h = yr
+            clump[ vec3f [ ax.x, ax.y - 0.04 * H, ax.z ], 3.0, yr,
+                   vec3f [ rc * 0.55, 0.0, 0.0 ],
+                   vec3f [ 0.0, 0.0, rc * 0.55 ],
+                   vec3f [ 0.0, H / 7.0 * 0.45, 0.0 ], 0.7 ]
+
+    # the needles on one step of a shoot: 10% of a spruce's (it
+    # carries ~20 a cm, here 2): round it on the 137.5 degree spiral,
+    # forward and swept up a little
+    func needle_step [ p: vec3f, d: vec3f, sv: vec3f, uv: vec3f, r: f32,
+                       ds: f32, sd: f32, to_tip: f32, yr: f32,
+                       fr: f32 ]
+        shoot += ds
+        if [ level >= 4 ] return
+        # its own draws, so every level grows the same branches;
+        # a coarser level g ^ 1.5 fewer, each as much larger
+        keep : i64 [ rs ]
+        rs = (keep + i64[ abs[ p.x ] * 7919.0 + abs[ p.y ] * 104729.0
+                          + abs[ p.z ] * 1299709.0 ]) % 4294967296
+        g : f32 [ coarse ]
+        k : i32 [ i32[ ds / (0.005 * g * sqrt[ g ]) + rnd[] ] ]
+        for [ j: i32 0, j < k, j += 1 ]
+            needles += 1
+            ph : f32 [ f32[ needles ] * 2.3999632 ]
+            rx : f32 [ sv.x * cos[ ph ] + uv.x * sin[ ph ] ]
+            ry : f32 [ sv.y * cos[ ph ] + uv.y * sin[ ph ] ]
+            rz : f32 [ sv.z * cos[ ph ] + uv.z * sin[ ph ] ]
+            nd : vec3f unit[ vec3f [ d.x * 0.7 + rx * 0.7,
+                                     d.y * 0.7 + ry * 0.7 + 0.25,
+                                     d.z * 0.7 + rz * 0.7 ] ]
+            # 6x long, largest toward the branch's root, half that
+            # at its tip
+            # and twice that at the trunk, its own out at the crown
+            pr : f32 [ clamp[ sqrt[ p.x * p.x + p.z * p.z ]
+                       / crown_r[ yr ], 0.0, 1.0 ] ]
+            ns : f32 [ 6.0 * (2.0 - pr)
+                       * (0.5 + 0.5 * clamp[ to_tip / 0.9, 0.0, 1.0 ]) ]
+            ln : f32 [ (0.016 + 0.006 * (rnd[] + noise[ p.x * 4.0,
+                        p.y * 4.0, p.z * 4.0 ])) * ns * sqrt[ g ] ]
+            # coarser: a little longer, much wider (a tuft's cover)
+            gw : f32 [ g ]
+            o  : f32 [ f32[ j ] / f32[ k ] * ds ]
+            cx : f32 [ p.x - d.x * o + rx * r + nd.x * ln * 0.5 ]
+            cy : f32 [ p.y - d.y * o + ry * r + nd.y * ln * 0.5 ]
+            cz : f32 [ p.z - d.z * o + rz * r + nd.z * ln * 0.5 ]
+            sx : vec3f unit[ cross3[ nd, vec3f [ rx, ry, rz ] ] ]
+            tx : vec3f cross3[ sx, nd ]
+            wf_t = sd + f32[ needles % 97 ] * 0.13 + 1.0
+            # shade: new growth light at the tip, older and inner
+            # darker, a slow noise over the tree
+            ng : f32 [ clamp[ 1.0 - to_tip / 0.15, 0.0, 1.0 ] ]
+            rr : f32 [ sqrt[ cx * cx + cz * cz ] ]
+            cr : f32 crown_r[ yr ]
+            # twice as dark deep in as it was
+            lt : f32 [ clamp[ rr / cr, 0.0, 1.0 ] ]
+            sh : f32 [ 0.175 + 0.825 * lt ]
+            # the deeper in, the likelier a needle lies in another's
+            # shadow: half its light (on average the linear dark, twice)
+            if [ rnd[] < 1.0 - lt ] sh *= 0.5
+            gv : f32 [ 0.85 + 0.3 * noise[ cx * 0.7, cy * 0.7,
+                                           cz * 0.7 ] ]
+            col : vec3f [ (0.03 + 0.05 * ng) * gv * sh
+                          * (1.0 + 0.25 * hue),
+                          (0.065 + 0.065 * ng) * gv * sh
+                          * (1.0 + 0.05 * hue),
+                          0.04 * gv * sh * (1.0 - 0.35 * hue) ]
+            solid = 0.25 + 0.2 * lt
+            # on its axis's last 15%, fading to nothing at the tip
+            fq : f32 [ clamp[ (fr - 0.85) / 0.15, 0.0, 1.0 ] ]
+            fa : f32 [ 1.0 - fq * fq * (3.0 - 2.0 * fq) ]
+            put[ vec3f [ cx, cy, cz ], 0.95 * fa, sc[ nd, ln * 0.3 ],
+                 sc[ sx, 0.0012 * ns * gw ], sc[ tx, 0.0007 * ns * gw ],
+                 col ]
+            solid = 0.0
+        rs = keep
+
+    # the tree: the ground, the trunk, the whorls of primaries, the
+    # leader; crown shape and every angle by noise
+    func build []
+        needles = 0
+        shoot = 0.0
+        rs = i64[ seed ] * 7919 + 17
+        H : f32 [ tall ]
+        wf_h = 0.0
+        wf_s = 0.0
+        wf_b = 0.0
+        wf_t = 0.0
+        ground_disc[ H * 0.55 ]
+        # whorls up the tree, a year's growth apart, closer at the
+        # top; the trunk swells at each
+        whorls = vec f32 []
+        yw : f32 [ 0.09 * H ]
+        while [ yw < H * 0.96 ]
+            whorls.push[ yw ]
+            ywr : f32 [ yw / H ]
+            yw += (H / 32.0)
+                  * (1.0 + 0.3 * noise[ ywr * 6.0, 4.4, 7.7 ])
+                  * (1.0 - 0.45 * ywr)
+        if [ level >= 4 ] trunk_far[]
+        el trunk[]
+        if [ level == 6 ]
+            discs[]
+            return
+        wh : i32 [ 0 ]
+        for [ y: f32 ] in whorls
+            yr : f32 [ y / H ]
+            nb : i32 [ 4 + i32[ rnd[] * 3.0 ] ]
+            base : f32 [ rnd[] * 6.2831853 ]
+            # the crown's reach here, noise in its outline
+            reach : f32 [ 0.3 * H * width * pow[ 1.0 - yr, shape ]
+                          * (1.0 + 0.18 * noise[ yr * 4.0, 9.3, 1.1 ]) ]
+            for [ b: i32 0, b < nb + 2, b += 1 ]
+                small : bool [ b >= nb ]
+                az : f32 [ base + f32[ b ] * 6.2831853 / f32[ nb ]
+                           + (rnd[] - 0.5) * 0.7 ]
+                yb : f32 [ (small) ? y + 0.4 * (H / 32.0) * rnd[] : y ]
+                # a gap: this branch never grew (its own hash)
+                gh : i64 [ (i64[ wh ] * 92821 + i64[ b ] * 68917
+                            + i64[ seed ] * 1013) % 1000 ]
+                if [ f32[ gh ] / 1000.0 > full ] continue
+                rise : f32 [ -0.35 + 0.7 * lift + 0.9 * pow[ yr, 1.3 ]
+                           + 0.2 * noise[ az, yr * 5.0, 2.2 ] ]
+                d0 : vec3f [ cos[ az ] * cos[ rise ], sin[ rise ],
+                             sin[ az ] * cos[ rise ] ]
+                L  : f32 [ reach * ((small) ? 0.45 : 1.0)
+                           * (0.8 + 0.35 * rnd[]) + 0.15 ]
+                # from the trunk's middle, curving out through it
+                ax : vec3f axis[ yb ]
+                gr : f32 girth[ yb, az ]
+                tu : vec3f unit[ vec3f [ axis[ yb + 0.1 ].x - ax.x, 0.1,
+                                         axis[ yb + 0.1 ].z - ax.z ] ]
+                wf_h = yb / H
+                wf_b = f32[ wh ] * 3.7 + f32[ b ] * 1.3
+                grow[ ax, d0, L, 0.012 + 0.025 * (1.0 - yr), 1,
+                      f32[ wh ] * 17.3 + f32[ b ] * 5.1, 0.0, yr, tu,
+                      gr ]
+            wh += 1
+        # the leader, up from the top
+        top : vec3f axis[ H * 0.96 ]
+        wf_h = 0.96
+        wf_b = 99.0
+        prim_L = H * 0.06
+        grow[ top, vec3f [ 0.0, 1.0, 0.0 ], H * 0.06, 0.012, 2, 555.0,
+              0.0, 1.0, vec3f [ 0.0, 1.0, 0.0 ], 0.012 ]
+        real : i64 [ i64[ shoot * 2000.0 ] ]
+        log 'pine: level {level}: {n} Gaussians so far, {needles} needles on {shoot} m of shoot (a spruce: ~{real})'
+
+# the app: one spruce in the flora viewer
+element pine : trinity
+    width  : i32    [ 1280 ]
+    height : i32    [ 800 ]
+    public title : string [ 'pine' ]
+    # height (m), seed, wind strength
+    public [ Launch ] tall : f32 [ 12.0 ]
+    public [ Launch ] seed : i32 [ 7 ]
+    public [ Launch ] wind : f32 [ 1.0 ]
+    # branches up: 0 level and drooping, 1 reaching up
+    public [ Launch ] lift : f32 [ 0.5 ]
+    # the level of detail shown: -1 by distance, else 0 (full) .. 6
+    public [ Launch ] detail : i32 [ -1 ]
+    # crown width, droop, share of branches, needle hue, lean (m),
+    # crown outline's power; variant: one of the forest's 32 (its
+    # own settings), -1 these
+    public [ Launch ] crown : f32 [ 1.0 ]
+    public [ Launch ] droop : f32 [ 1.0 ]
+    public [ Launch ] full  : f32 [ 1.0 ]
+    public [ Launch ] hue   : f32 [ 0.0 ]
+    public [ Launch ] lean  : f32 [ 0.0 ]
+    public [ Launch ] shape : f32 [ 0.85 ]
+    public [ Launch ] variant : i32 [ -1 ]
+    mutable tree : PineTree
+
+    public func render [] -> Elements
+        if [ !tree ]
+            tree = PineTree [ tall: tall, seed: seed, lift: lift,
+                width: crown, droop: droop, full: full, hue: hue,
+                lean: lean, shape: shape ]
+            if [ variant >= 0 ] tree.vary[ variant ]
+        e : Elements [ ]
+        e['view'] = PlantView [ plant: tree, detail: detail,
+                                wind: wind ]
+        return e

@@ -15938,6 +15938,172 @@ windowing, mobile, agents, silver-host and its debugging / reload.
    its scale (6 side rings, seam at the ring's end).
    Tried and removed: slope rules measured over a fixed 50 m.
 
+## Alaska in Gaussian splats — live list (Nov 27 2026)
+
+the user (Nov 27): flightsim's Alaska open world rendered as
+Gaussian splats (the ground's cover, rocks, grass, plants, trees,
+snow); in flightsim, not trinity as a whole. A trained model
+outputs 3D Gaussian splats of plants and patches; at generation
+time a large area is rendered into 2D projections; only the
+immediate area draws live 3D Gaussians. Layers, each its own
+splat set over the terrain's heights, placed by the terrain's
+masks: grass and meadow, fireweed and lupine, shrub edge, spruce
+families of ages, rocks and scree, snow and ice, river gravel. His picture: a fireweed meadow in front, a dark shrub
+edge, conifers in families of ages, snow mountains in the haze; each
+plant hundreds of shapes (lavender, fireweed).
+DECIDED (Nov 28, his: a whole nature simulator this way; splats
+for living things only): splats are for life, things of many
+thin soft parts that light passes through (needles, leaves,
+grass, moss, fur, feathers). Rock, scree, ground, snow, ice,
+water and anything built stay meshes. Each species is growth
+rules on the pine's base (pine/pine.ag): grown from a seed and a
+few settings, its four levels of detail of the one body, shade
+baked in, sheen and light through leaves, wind (roots still),
+solid depth-tested wood where thick, soft where thin. Next:
+birch, alder, fireweed, grass, moss, then animals. In order:
+0. BUILT, seen hidden (Nov 27) a first grass field as Gaussian
+   splats, made by rules (no capture or model yet): flightsim
+   GrassSplat, 8 blades a 0.35 m cell, each 3 long thin Gaussians
+   along its bent stem (3 bones; waves, gusts, sway), one instanced
+   quad a Gaussian (24 a cell, 614,400 a near tile); each projected
+   to its own screen ellipse (the projection's local affine, as
+   3DGS), a pixel's blur added with opacity kept (Mip-Splatting);
+   lit from the blade's face, sun through it; see-through, no depth
+   write, unsorted. Out to 28 m (a hard line there until item 4).
+   `flightsim --meadow true` (Esc menu: Meadow) stands in it.
+   34 fps there, trees view 37.
+   Then (Nov 27) pines as Gaussian splats (PineSplat): standing in
+   the cone trees' cells and hashes, a trunk of 16, 14 whorls of 7
+   branches, each a limb and 9 needle pads tilted either side
+   (996 a tree), the cones' wind; out to 55 m (a window of 24 x 24
+   tree cells). His call (z-fighting): only the ground and the
+   splats draw now; the cone trees, swath mounds and fireweed
+   meshes are made but not drawn, so past 55 m there are no trees.
+   WASD walks the still views (shift x5, 4 or 20 m/s); the
+   meadow's camera keeps 1.7 m over the ground (Terrain.height_at
+   reads the finest pack's tile). Seen hidden: walked 100 m into
+   the pines, 23 fps there. The pads read as round blobs: needles
+   to come (finer Gaussians or streaks within each).
+0b. BUILT, seen hidden (Nov 28, his: "a pine tree alone drawn")
+   `silver pine` (pine/pine.ag): one spruce as 27,620 Gaussians
+   built once on the CPU (a tapering trunk of 48; 30 whorls of 5-7
+   branches, low ones drooping, high ones reaching up, each its own
+   height; each branch a limb of 4 and needle tufts every 6 cm, 4
+   a step, 6-10 cm long, either side; new growth lighter at the
+   tips, darker deep in the crown; a disc of 500 ground
+   Gaussians). Each frame sorted far to near (two-pass radix of
+   16-bit depth keys) into a host-visible storage buffer; drawn as
+   instanced quads, straight alpha, no depth write (true 3DGS
+   order: soft edges, no stacking). Drag orbits, wheel zooms;
+   --tall, --seed. 60 fps (the hidden cap).
+   Then (Nov 28, his: a real tree, everything Perlin, nothing
+   perfect, 10% of a real pine's needles) the tree is grown: a
+   Perlin gradient noise of its own (CPU); the trunk's centre line
+   wanders, its girth tapers, flares at the foot and is bumpy,
+   drawn as a shell of furrowed bark plates; whorls a year apart
+   (spacing by noise), 4-6 primaries and 2 small ones between,
+   each grown step by step (gravity heavier out along it, three
+   noise curves of its own wander, the tip turning up), with
+   secondaries and shoots alternating either side, each its own
+   noise and droop (low ones hang). Needles on the last ~0.9 m of
+   growth at 2 a cm (a spruce ~20), on the 137.5 degree spiral,
+   forward and swept up; colour by noise, new growth lighter,
+   inner darker. Wind on the GPU: trunk sway, each branch on its
+   own noise clock (most at the tip), each twig flutters. Sorted
+   as an index list, again only when the eye moves. Seed 7, 12 m:
+   1,230,452 Gaussians, 1,168,140 needles on 5,842 m of shoot (a
+   spruce ~11.7 million), built in 0.67 s, 58-60 fps. At 10% the
+   crown is see-through: each needle Gaussian could stand for its
+   ten (wider), his call.
+   Then (Nov 28, his: branches merge into their parent, never a
+   plain crossing; curve into it with Perlin) every axis starts at
+   its parent's middle along the parent's way and curves out to
+   its own within 2.5 parent radii (the bend rippled by noise),
+   swollen there in a collar (to ~2.4x its radius, the swell
+   rippled), its colour from the parent's bark to its own wood;
+   finer steps through the collar. Trunk to primaries, primaries
+   to secondaries. Seed 7: 1,047,406 Gaussians, built in 0.61 s,
+   59 fps.
+   Then (Nov 28, his: needles 4x larger near the base; more
+   merging; refined, not blurry, branch edges): needles 4x long and
+   wide at the tree's foot, their own size by 60% up; the bend out
+   of the parent over 4 parent radii, the collar to ~3.2x (its
+   swell to the 1.5 power, rippled); the trunk swells 24% at each
+   whorl (whorl heights now made first). Wood is solid: a flat
+   inside to 1.6 sigma, its edge one pixel wide (fwidth), darker
+   toward its sides across the stem's own axis; segments 1.1x
+   their step long so they join without seams. The trunk a solid
+   round core a ring (crisp outline) with soft furrowed bark plates
+   just inside it. Seed 7: 769,492 Gaussians (710,451 needles),
+   0.43 s, 60 fps.
+   Then (Nov 28): bark is flat shards only (five uneven sides, own
+   turn and colour, darker rims), drawn on the shard's own axes so
+   the outline never swings; the trunk's core and soft plates gone;
+   collars wrapped in shards. Branches and the trunk tip sway by
+   (share along)^3.17 (a tenth at the middle, roots locked). Shards
+   and wood are a solid pass (SolidLit, drawn first, opaque): each
+   pixel's depth where its ray meets the shard's plane or the
+   wood's ellipsoid, lit by that surface, so overlaps never pop;
+   only needles and ground are sorted. Wood segments 2.6x their
+   step long: smooth tubes. 57 fps.
+   Then (Nov 28): bark back to soft splats; needles 6x, twice that
+   by the trunk, a waxy shine; branch ends fade out over their last
+   30% (needles 15%); --lift (branches up, 0..1, 0.5); shade baked
+   in (low down and in by the trunk darker); the trunk's skin from
+   3D noise, bark lit by its own face. Four levels of detail of the
+   one tree (same branches: needles and bark keep their own draws):
+   level n has 2^1.5n fewer needles, 2^n wider, wood every 2^n-th
+   step; 792k, 293k, 95k, 34k Gaussians; picked by the tree's
+   height on screen (350, 150, 60 px, a tenth held either way), or
+   --detail 0..3. Wood under about a pixel wide is not drawn (it
+   was opaque and outdrew the needles far off). Seen hidden: each
+   level beside the finer one where they swap; 60 fps.
+1. OPEN the splat renderer in trinity: compute passes that project
+   each Gaussian (centre, scale, rotation, opacity; albedo and
+   surface direction for live light), bin them into 16 x 16 px
+   tiles, sort each tile front to back, blend; wind by a few bones
+   per plant (skinned Gaussians); hierarchical level of detail
+   (Kerbl et al. 2024: parents merge children).
+2. OPEN training data: plants as splats, fitted (optimization, on
+   ai/grad) to ~100 rendered views each. A: our own procedural
+   plants (exact labels: species, height, flowering). B: photo
+   captures of real plants, fitted the same way.
+3. OPEN the generative model (GS-LRM / TRELLIS / DiffSplat style):
+   diffusion or flow over a fixed count of Gaussians a plant or
+   patch, conditioned on species, size, season, density (text
+   later); trained on ai/grad. TRELLIS (open weights) possible as an
+   offline teacher; weak on thin foliage.
+4. OPEN generation time: each terrain tile's patches scattered by
+   soil, moisture and sun, then its splats rendered from a grid of
+   view directions into atlases (colour, surface direction, depth)
+   kept with the terrain packs; far tiles draw them lit live.
+5. OPEN (Nov 27, his picture: density by distance) level of
+   detail on the terrain's own quadtree: full density 0-30 m; about
+   1/4 the Gaussians at twice the size 30-120 m; 1/16 120-500 m;
+   1/64 500 m-2 km (a few a tree); past 2 km the tile's baked
+   projections. A coarse Gaussian stands for its group of finer
+   ones (hierarchical 3DGS: merged place, size, colour, coverage);
+   each band edge crossfades. Built at generation time, kept with
+   the terrain packs. Replaces the hard cuts (grass 28 m, pines
+   55 m) and the bare ground past them.
+   BUILT, seen hidden (Nov 27), drawn live from rules (not yet
+   baked): grass in 3 bands (0.35, 1.4, 5.6 m cells; out to 28,
+   112, 448 m): blades near, then 3 low soft mounds a cell in the
+   grass's mean colour, leaning with the wind. Pines in 3 bands:
+   ~1,000 Gaussians a tree to 55 m, 64 (trunk of 4, 60 branch
+   clumps) to 220 m, 8 (trunk, 7 crown discs) to 900 m; each band
+   fades in over the last's edge. Splats with an axis end behind
+   the eye, or wider than the view, are dropped (a black wedge
+   over the trees view). Meadow 28 fps, trees view 16-31 fps
+   (terrain pass ~21 ms a frame). Past 900 m: bare ground.
+Built before this plan (Nov 27), kept until splats replace them:
+- trinity Pipeline.instances (instanced draws; its last member).
+- flightsim MeadowLit: a procedural fireweed (make_plant, ~140
+  vertices) instanced 78,400 times a near tile out to 60 m, in
+  colonies, bent through 4 bones by three layers of wind; the
+  bloom patches (bloom, bloom_dots on the ground); the swath mounds
+  (ShrubLit) past 30-60 m.
+
 ## Alaska terrain textures — live list (Oct 31 2026)
 
 1. DONE three 1024 x 1024 textures: dark rock, sparse forest,

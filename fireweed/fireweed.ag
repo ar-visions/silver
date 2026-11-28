@@ -1,0 +1,360 @@
+# fireweed: a patch of fireweed (Chamaenerion angustifolium) grown
+# by rules, each stalk its own draw of the patch's settings; drawn
+# as 3D Gaussian splats (flora)
+export 1.0.0
+
+import vec
+import img
+import gltf
+import trinity
+import flora
+
+# a patch of fireweed: stalks spread over a disc in clumps, each
+# with its own height, lean, leaves, and spike of seed pods below,
+# open flowers, then buds at the tip (it blooms from the bottom up)
+Plant Fireweed
+    # stalks, the patch's radius (m); a stalk's mean height (m) and
+    # its spread (share); how far up the spike has bloomed (0..1)
+    # and its spread; the spike's share of the stalk; leaves a
+    # stalk, a leaf's length and width (m); petal length (m); the
+    # petals' hue (-1 blue-purple, 0 magenta, 1 pink); the lean at
+    # the top (m); how clumped the stalks are (0 even, 1 clumps)
+    public count   : i32 [ 480 ]
+    public radius  : f32 [ 1.6 ]
+    public height  : f32 [ 1.4 ]
+    public vary    : f32 [ 0.25 ]
+    public bloom   : f32 [ 0.5 ]
+    public bvary   : f32 [ 0.2 ]
+    public spike   : f32 [ 0.55 ]
+    public leaves  : i32 [ 20 ]
+    public leaf    : f32 [ 0.11 ]
+    public leaf_w  : f32 [ 0.012 ]
+    public petal   : f32 [ 0.02 ]
+    public hue     : f32 [ 0.0 ]
+    public bend    : f32 [ 0.1 ]
+    public clumps  : f32 [ 0.6 ]
+    # the stalk being grown: its height, foot, lean way, seed
+    mutable sh_H   : f32
+    mutable foot   : vec3f
+    mutable lean_a : f32
+    mutable sd     : f32
+    # a spike part's place up its spike (0..1), which its shade
+    # follows; under 0: its height in the patch
+    mutable on_spike : f32 [ -1.0 ]
+    # where the spike's flowers start (0..1 up it)
+    mutable spike_lo : f32
+
+    # the patch: a stalk at a time, levels 0 (petals) to 4 (two
+    # blobs a stalk)
+    func build []
+        rs = i64[ seed ] * 7919 + 17
+        tall = max[ height * (1.0 + vary), radius * 1.2 ]
+        wf_h = 0.0
+        wf_s = 0.0
+        wf_b = 0.0
+        wf_t = 0.0
+        ground_disc[ radius * 1.4 ]
+        k : i32 [ 0 ]
+        tries : i32 [ 0 ]
+        while [ k < count && tries < count * 20 ]
+            tries += 1
+            an : f32 [ rnd[] * 6.2831853 ]
+            r  : f32 [ sqrt[ rnd[] ] * radius ]
+            x  : f32 [ cos[ an ] * r ]
+            z  : f32 [ sin[ an ] * r ]
+            # clumps: kept where the noise is high
+            cn : f32 [ noise[ x * 1.3, z * 1.3, 3.3 ] * 0.5 + 0.5 ]
+            if [ rnd[] > 1.0 - clumps + clumps * cn * 1.6 ] continue
+            stalk[ vec3f [ x, 0.0, z ], k ]
+            k += 1
+
+    # the stalk's middle at height share u (0 foot .. 1 tip)
+    func stalk_at [ u: f32 ] -> vec3f
+        lb : f32 [ bend * u * u
+                   + 0.02 * noise[ u * 3.0, sd, 1.7 ] * sh_H ]
+        return vec3f [ foot.x + cos[ lean_a ] * lb,
+                       foot.y + u * sh_H,
+                       foot.z + sin[ lean_a ] * lb ]
+
+    # one stalk: its own height, bloom, lean and colours
+    func stalk [ p: vec3f, k: i32 ]
+        keep : i64 [ rs ]
+        rs = (keep + i64[ k ] * 2654435761) % 4294967296
+        foot   = p
+        sd     = f32[ k ] * 1.37 + 0.5
+        sh_H   = height * (1.0 + vary * (rnd[] * 2.0 - 1.0))
+        lean_a = rnd[] * 6.2831853
+        bl     : f32 [ clamp[ bloom + bvary * (rnd[] * 2.0 - 1.0),
+                              0.0, 1.0 ] ]
+        sp     : f32 [ spike * (0.8 + 0.4 * rnd[]) ]
+        hv     : f32 [ hue + 0.3 * (rnd[] - 0.5) ]
+        lv_len : f32 [ leaf * (0.8 + 0.4 * rnd[]) ]
+        wf_b = sd
+        g : f32 [ coarse ]
+        if [ level >= 3 ]
+            stalk_far[ sp, bl, hv ]
+            rs = keep
+            return
+        # the stalk
+        st : f32 [ 0.015 * g ]
+        u  : f32 [ 0.0 ]
+        while [ u < 1.0 ]
+            du : f32 [ st / sh_H ]
+            a  : vec3f stalk_at[ u ]
+            b  : vec3f stalk_at[ min[ u + du, 1.0 ] ]
+            d  : vec3f unit[ vec3f [ b.x - a.x, b.y - a.y, b.z - a.z ] ]
+            sv : vec3f unit[ cross3[ d, vec3f [ 1.0, 0.0, 0.0 ] ] ]
+            uv : vec3f cross3[ sv, d ]
+            # thick at the foot, thinning fast, then slender
+            rr : f32 [ 0.002 + 0.008 * (1.0 - u) * (1.0 - u) ]
+            # green, a little warmer up by the spike
+            rd : f32 [ clamp[ (u - 0.6) / 0.4, 0.0, 1.0 ] ]
+            wind_at[ u ]
+            put[ vec3f [ (a.x + b.x) * 0.5, (a.y + b.y) * 0.5,
+                         (a.z + b.z) * 0.5 ], 0.95,
+                 sc[ d, st * 0.6 ], sc[ sv, rr ], sc[ uv, rr ],
+                 vec3f [ 0.06 + 0.03 * rd, 0.095 - 0.015 * rd,
+                         0.035 ] ]
+            u += du
+        # leaves on the spiral below the spike, shrinking upward
+        nl : i32 [ i32[ f32[ leaves ] / (g * g) ] ]
+        for [ j: i32 0, j < nl, j += 1 ]
+            uj : f32 [ 0.08 + (f32[ j ] + 0.5) / f32[ nl ]
+                       * (1.0 - sp - 0.08) ]
+            # twice the size at the foot, as before at the top
+            bf : f32 [ 2.0 - f32[ j ] / f32[ max[ nl - 1, 1 ] ] ]
+            lf_leaf[ uj, f32[ j ] * g * g * 2.3999632 + sd,
+                     (lv_len * (1.0 - 0.55 * uj) * g * 0.7
+                      + lv_len * 0.3) * bf, bf ]
+        # the spike: pods below the bloom, flowers in it, buds above
+        nf : i32 [ i32[ sp * sh_H / (0.012 * g * g) ] ]
+        # the spike's height a drawn flower stands for
+        sl : f32 [ sp * sh_H * 0.97 / f32[ max[ nf, 1 ] ] ]
+        for [ j: i32 0, j < nf, j += 1 ]
+            t  : f32 [ (f32[ j ] + 0.5) / f32[ nf ] ]
+            uj : f32 [ 1.0 - sp + t * sp * 0.97 ]
+            ph : f32 [ f32[ j ] * g * g * 2.3999632 + sd * 3.0 ]
+            on_spike = t
+            spike_lo = max[ bl - 0.4, 0.0 ]
+            if [ t < bl - 0.4 ] pod[ uj, ph, t ]
+            el [ t < bl ] flower[ uj, ph, hv, sl ]
+            el bud[ uj, ph, t, bl, hv, sl ]
+        on_spike = -1.0
+        rs = keep
+
+    # the wind for what is put next: the stalk sways on its own
+    # clock (its seed), most at the top
+    func wind_at [ u: f32 ]
+        wf_s = u * 0.7
+        wf_t = 0.0
+
+    # one leaf at height share u, way ph round the stalk, length L
+    # (bf its size over the top leaves'): long and narrow, out and
+    # up, its tip drooping, flat
+    func lf_leaf [ u: f32, ph: f32, L: f32, bf: f32 ]
+        a  : vec3f stalk_at[ u ]
+        out : vec3f [ cos[ ph ], 0.0, sin[ ph ] ]
+        up : f32 [ 0.9 + 0.3 * noise[ ph, sd, 4.1 ] ]
+        g  : f32 [ coarse ]
+        pc : i32 [ (level == 0) ? 3 : ((level == 1) ? 2 : 1) ]
+        # broad low on the stalk, narrow up by the spike
+        lw : f32 [ 1.0 + 2.0 * (1.0 - clamp[ u / 0.6, 0.0, 1.0 ]) ]
+        w  : f32 [ leaf_w * lw * bf * (0.85 + 0.3 * rnd[])
+                   * min[ g, 2.0 ] ]
+        tw : vec3f [ 0.0 - out.z, 0.0, out.x ]
+        wind_at[ u ]
+        wf_t = sd + ph
+        for [ q: i32 0, q < pc, q += 1 ]
+            f  : f32 [ (f32[ q ] + 0.5) / f32[ pc ] ]
+            # up near the stalk, bending out and down toward the tip
+            dy : f32 [ up * (1.0 - f * 1.3) ]
+            d  : vec3f unit[ vec3f [ out.x, dy, out.z ] ]
+            c  : vec3f [ a.x + out.x * L * f * 0.9,
+                         a.y + L * f * up * (0.8 - 0.5 * f),
+                         a.z + out.z * L * f * 0.9 ]
+            nm : vec3f unit[ cross3[ d, tw ] ]
+            ww : f32 [ w * (1.0 - 0.6 * abs[ f - 0.35 ]) ]
+            # deeper green low down, fresher toward the spike
+            gv : f32 [ (0.85 + 0.3 * rnd[]) * (0.75 + 0.35 * u) ]
+            solid = 0.35
+            put[ c, 0.95, sc[ d, L / f32[ pc ] * 0.6 ], sc[ tw, ww ],
+                 sc[ nm, 0.0008 ],
+                 vec3f [ 0.035 * gv, 0.085 * gv, 0.03 * gv ] ]
+            solid = 0.0
+
+    # the petals' colour for hue hv: a red pink, bluer below 0
+    func petal_col [ hv: f32, v: f32 ] -> vec3f
+        bl : f32 [ clamp[ 0.0 - hv, 0.0, 1.0 ] ]
+        pk : f32 [ clamp[ hv, 0.0, 1.0 ] ]
+        return vec3f [ (0.98 - 0.35 * bl + 0.08 * pk) * v,
+                       (0.035 + 0.05 * bl + 0.12 * pk) * v,
+                       (0.1 + 0.35 * bl - 0.05 * pk) * v ]
+
+    # an open flower: on a short stalk out from the spike, four
+    # round petals in a cross facing out and up, a pale middle
+    func flower [ u: f32, ph: f32, hv: f32, sl: f32 ]
+        a   : vec3f stalk_at[ u ]
+        out : vec3f [ cos[ ph ], 0.0, sin[ ph ] ]
+        cw  : f32 cone[]
+        fc  : vec3f [ a.x + out.x * 0.018 * cw, a.y + 0.004,
+                      a.z + out.z * 0.018 * cw ]
+        fn  : vec3f unit[ vec3f [ out.x, 0.45, out.z ] ]
+        t1  : vec3f unit[ cross3[ fn, vec3f [ 0.0, 1.0, 0.0 ] ] ]
+        t2  : vec3f cross3[ fn, t1 ]
+        g   : f32 [ coarse ]
+        pl  : f32 [ petal * (0.85 + 0.3 * rnd[]) ]
+        # its own width (0.7 to 1.3), a fifth over the petals',
+        # wide where the flowers start, narrow up the cone
+        fw  : f32 [ 1.2 * (0.7 + 0.6 * rnd[]) * cw ]
+        v   : f32 [ 0.85 + 0.3 * rnd[] ]
+        wind_at[ u ]
+        wf_t = sd + ph * 3.1
+        solid = 0.4
+        if [ level >= 1 ]
+            # the flower as one blob, no wider than its petals, as
+            # tall as the spike's share it stands for
+            ht : f32 [ max[ pl * 0.9, sl * 0.55 ] ]
+            put[ vec3f [ a.x + out.x * 0.012 * cw, a.y,
+                         a.z + out.z * 0.012 * cw ],
+                 0.95, vec3f [ 0.0, ht, 0.0 ],
+                 sc[ t1, pl * 0.9 * fw ], sc[ out, pl * 0.55 * fw ],
+                 petal_col[ hv, v ] ]
+            solid = 0.0
+            return
+        tu : f32 [ rnd[] * 1.57 ]
+        for [ q: i32 0, q < 4, q += 1 ]
+            aq : f32 [ tu + f32[ q ] * 1.5707963 ]
+            rd : vec3f [ t1.x * cos[ aq ] + t2.x * sin[ aq ],
+                         t1.y * cos[ aq ] + t2.y * sin[ aq ],
+                         t1.z * cos[ aq ] + t2.z * sin[ aq ] ]
+            sd2 : vec3f unit[ cross3[ fn, rd ] ]
+            put[ vec3f [ fc.x + rd.x * pl * 0.55,
+                         fc.y + rd.y * pl * 0.55,
+                         fc.z + rd.z * pl * 0.55 ], 0.95,
+                 sc[ rd, pl * 0.45 ], sc[ sd2, pl * 0.38 * fw ],
+                 sc[ fn, 0.0006 ], petal_col[ hv, v ] ]
+        put[ fc, 0.95, sc[ t1, pl * 0.12 ], sc[ t2, pl * 0.12 ],
+             sc[ fn, 0.003 ], vec3f [ 0.5, 0.42, 0.45 ] ]
+        solid = 0.0
+
+    # the spike's cone: how far out (x) a part stands, wide where
+    # the flowers start, narrowing to the tip
+    func cone [] -> f32
+        k : f32 [ clamp[ (on_spike - spike_lo)
+                         / max[ 1.0 - spike_lo, 0.05 ], 0.0, 1.0 ] ]
+        return 2.0 - 1.5 * k
+
+    # a bud above the bloom: dark purple-red, smaller toward the
+    # tip, which droops
+    func bud [ u: f32, ph: f32, t: f32, bl: f32, hv: f32,
+               sl: f32 ]
+        a   : vec3f stalk_at[ u ]
+        out : vec3f [ cos[ ph ], 0.0, sin[ ph ] ]
+        k   : f32 [ clamp[ (t - bl) / max[ 1.0 - bl, 0.05 ],
+                           0.0, 1.0 ] ]
+        sz  : f32 [ (0.006 - 0.003 * k) * min[ coarse, 1.3 ] ]
+        cw  : f32 cone[]
+        c   : vec3f [ a.x + out.x * 0.008 * cw, a.y,
+                      a.z + out.z * 0.008 * cw ]
+        d   : vec3f unit[ vec3f [ out.x * 0.5, 1.0, out.z * 0.5 ] ]
+        pc  : vec3f petal_col[ hv, 0.55 ]
+        wind_at[ u ]
+        put[ c, 0.95, sc[ d, max[ sz * 1.6, sl * 0.5 ] ],
+             vec3f [ sz, 0.0, 0.0 ], vec3f [ 0.0, 0.0, sz ],
+             vec3f [ pc.x * 0.8 + 0.05, pc.y * 0.6 + 0.02,
+                     pc.z * 0.7 + 0.02 ] ]
+
+    # a seed pod below the bloom: thin, reddish, angled up
+    func pod [ u: f32, ph: f32, t: f32 ]
+        a   : vec3f stalk_at[ u ]
+        out : vec3f [ cos[ ph ], 0.0, sin[ ph ] ]
+        L   : f32 [ 0.045 * (0.8 + 0.4 * rnd[]) ]
+        d   : vec3f unit[ vec3f [ out.x * 0.45, 1.0, out.z * 0.45 ] ]
+        sv  : vec3f unit[ cross3[ d, vec3f [ 0.0, 1.0, 0.0 ] ] ]
+        uv  : vec3f cross3[ sv, d ]
+        rw  : f32 [ 0.0015 * min[ coarse, 2.0 ] ]
+        wind_at[ u ]
+        put[ vec3f [ a.x + d.x * L * 0.5, a.y + d.y * L * 0.5,
+                     a.z + d.z * L * 0.5 ], 0.9,
+             sc[ d, L * 0.4 ], sc[ sv, rw ], sc[ uv, rw ],
+             vec3f [ 0.12, 0.08, 0.05 ] ]
+
+    # far (levels 3 and 4): the leafy stalk as long blobs, the
+    # spike as its pods', flowers' and buds' colours
+    func stalk_far [ sp: f32, bl: f32, hv: f32 ]
+        n  : i32 [ (level == 3) ? 3 : 1 ]
+        lo : f32 [ 1.0 - sp ]
+        for [ j: i32 0, j < n, j += 1 ]
+            u  : f32 [ lo * (f32[ j ] + 0.5) / f32[ n ] ]
+            a  : vec3f stalk_at[ u ]
+            ww : f32 [ leaf * 0.55 * (1.0 - 0.5 * u) ]
+            wind_at[ u ]
+            solid = 0.35
+            put[ a, 0.85,
+                 vec3f [ 0.0, lo * sh_H * 0.3 / f32[ n ], 0.0 ],
+                 vec3f [ ww, 0.0, 0.0 ], vec3f [ 0.0, 0.0, ww ],
+                 vec3f [ 0.035, 0.08, 0.03 ] ]
+        # the spike: pods red, flowers, buds dark
+        m  : i32 [ (level == 3) ? 3 : 1 ]
+        for [ j: i32 0, j < m, j += 1 ]
+            t  : f32 [ (f32[ j ] + 0.5) / f32[ m ] ]
+            u  : f32 [ lo + t * sp ]
+            a  : vec3f stalk_at[ u ]
+            pc : vec3f petal_col[ hv, 1.0 ]
+            fl : f32 [ (m == 1) ? 0.6
+                       : ((t < bl - 0.4) ? 0.15
+                          : ((t < bl) ? 1.0 : 0.45)) ]
+            ww : f32 [ 0.02 * (1.0 - 0.4 * t) ]
+            wind_at[ u ]
+            solid = 0.4
+            put[ a, 0.85,
+                 vec3f [ 0.0, sp * sh_H * 0.3 / f32[ m ], 0.0 ],
+                 vec3f [ ww, 0.0, 0.0 ], vec3f [ 0.0, 0.0, ww ],
+                 vec3f [ pc.x * fl + 0.12 * (1.0 - fl),
+                         pc.y * fl + 0.06 * (1.0 - fl),
+                         pc.z * fl + 0.05 * (1.0 - fl) ] ]
+        solid = 0.0
+
+    # lower down in the patch, less light
+    func shade [ c: vec3f ] -> f32
+        if [ c.y < 0.0 ] return 1.0
+        h : f32 [ (on_spike >= 0.0) ? on_spike
+                  : clamp[ c.y / height, 0.0, 1.0 ] ]
+        # darker down the stalks and their spikes; the lower, the
+        # likelier a part lies in another's shadow: half its light
+        # (the linear dark, twice on average)
+        k : f32 [ 0.25 + 0.75 * h ]
+        if [ rnd[] < 1.0 - h ] k *= 0.5
+        return k
+
+# the app: a patch of fireweed in the flora viewer
+element fireweed : trinity
+    width  : i32    [ 1280 ]
+    height : i32    [ 800 ]
+    public title : string [ 'fireweed' ]
+    public [ Launch ] seed   : i32 [ 7 ]
+    public [ Launch ] wind   : f32 [ 1.0 ]
+    public [ Launch ] detail : i32 [ -1 ]
+    public [ Launch ] count  : i32 [ 480 ]
+    public [ Launch ] radius : f32 [ 1.6 ]
+    public [ Launch ] tall   : f32 [ 1.4 ]
+    public [ Launch ] vary   : f32 [ 0.25 ]
+    public [ Launch ] bloom  : f32 [ 0.5 ]
+    public [ Launch ] spike  : f32 [ 0.55 ]
+    public [ Launch ] leaves : i32 [ 20 ]
+    public [ Launch ] petal  : f32 [ 0.02 ]
+    public [ Launch ] hue    : f32 [ 0.0 ]
+    public [ Launch ] bend   : f32 [ 0.1 ]
+    public [ Launch ] clumps : f32 [ 0.6 ]
+    mutable patch : Fireweed
+
+    public func render [] -> Elements
+        if [ !patch ]
+            patch = Fireweed [ seed: seed, count: count, radius: radius,
+                height: tall, vary: vary, bloom: bloom, spike: spike,
+                leaves: leaves, petal: petal, hue: hue, bend: bend,
+                clumps: clumps, levels: 5 ]
+        e : Elements [ ]
+        e['view'] = PlantView [ plant: patch, detail: detail,
+                                wind: wind ]
+        return e
